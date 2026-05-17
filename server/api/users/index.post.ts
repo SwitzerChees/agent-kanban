@@ -10,6 +10,7 @@ const createUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1),
   password: z.string().min(8),
+  role: z.enum(['admin', 'member']).optional().default('member'),
 });
 
 export default defineEventHandler(async (event) => {
@@ -21,7 +22,7 @@ export default defineEventHandler(async (event) => {
     email: body.email.toLowerCase(),
     name: body.name.trim(),
     passwordHash: hashPassword(body.password),
-    role: 'admin',
+    role: body.role,
     active: true,
     createdAt: now,
     updatedAt: now,

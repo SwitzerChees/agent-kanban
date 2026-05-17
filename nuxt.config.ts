@@ -3,6 +3,11 @@ export default defineNuxtConfig({
   modules: ['@nuxt/ui'],
   css: ['~/assets/css/main.css'],
   devtools: { enabled: true },
+  vite: {
+    server: {
+      allowedHosts: ['agent-kanban.hackerman.ch'],
+    },
+  },
   ui: {
     fonts: false,
   },

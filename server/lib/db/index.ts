@@ -30,7 +30,7 @@ export function ensureDatabase() {
       email TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'admin',
+      role TEXT NOT NULL DEFAULT 'member',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -132,6 +132,10 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks(column_id);
     CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(task_id);
     CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id);
+  `);
+
+  sqlite.exec(`
+    UPDATE columns SET name_de = 'In Prüfung' WHERE key = 'in_review' AND name_de = 'In Pruefung';
   `);
 
   seedAdmin();

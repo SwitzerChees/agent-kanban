@@ -11,7 +11,7 @@ export interface PublicUser {
   id: string;
   email: string;
   name: string;
-  role: 'admin';
+  role: 'admin' | 'member';
 }
 
 export function toPublicUser(user: User): PublicUser {
