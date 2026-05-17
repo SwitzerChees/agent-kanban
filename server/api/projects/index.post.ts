@@ -1,0 +1,19 @@
+import { readBody } from 'h3';
+import { z } from 'zod';
+import { requireAdmin } from '../../lib/security/auth';
+import { createProject } from '../../lib/kanban';
+
+const createProjectSchema = z.object({
+  name: z.string().min(1),
+  key: z.string().min(1).max(12),
+  description: z.string().optional().nullable(),
+  folderPath: z.string().min(1),
+  userIds: z.array(z.string()).optional(),
+});
+
+export default defineEventHandler(async (event) => {
+  const admin = requireAdmin(event);
+  const body = createProjectSchema.parse(await readBody(event));
+  const board = await createProject(body, admin);
+  return { project: board };
+});

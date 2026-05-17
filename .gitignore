@@ -1,0 +1,8 @@
+.nuxt
+.output
+node_modules
+bun.lockb
+.env
+*.log
+symphony_workspaces
+.data
