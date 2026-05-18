@@ -1,10 +1,13 @@
-import { and, asc, count, eq, max } from 'drizzle-orm';
+import { and, asc, count, eq, gt, like, max } from 'drizzle-orm';
+import path from 'node:path';
 import { db, schema } from './db';
 import { loadWorkflow } from './workflow';
 import { resolveServiceConfig } from './config';
 import { runCodexSession } from './codex';
 import { runtimeLogger } from './logger';
 import { logTaskActivity } from './kanban';
+import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
+import { checkAgentsCompletionGate } from './completion-gate';
 import type { Issue } from './types';
 
 let dispatcher: LocalTaskDispatcher | null = null;
@@ -23,6 +26,7 @@ class LocalTaskDispatcher {
 
   start() {
     if (this.timer) return;
+    this.requeueInterruptedTasks();
     this.timer = setInterval(() => {
       void this.tick();
     }, Number.parseInt(process.env.KANBAN_AGENT_POLL_MS ?? '5000', 10));
@@ -54,6 +58,29 @@ class LocalTaskDispatcher {
     }
   }
 
+  private requeueInterruptedTasks() {
+    const runningRows = db.select({ task: schema.tasks })
+      .from(schema.tasks)
+      .where(eq(schema.tasks.agentStatus, 'running'))
+      .all();
+    const now = new Date().toISOString();
+
+    for (const row of runningRows) {
+      const todoColumn = db.select().from(schema.columns)
+        .where(and(eq(schema.columns.projectId, row.task.projectId), eq(schema.columns.key, 'todo')))
+        .get();
+      db.update(schema.tasks).set({
+        agentStatus: 'queued',
+        columnId: todoColumn?.id ?? row.task.columnId,
+        updatedAt: now,
+      }).where(eq(schema.tasks.id, row.task.id)).run();
+      logTaskActivity(row.task.projectId, row.task.id, null, 'codex_requeued', {
+        reason: 'dispatcher_startup_recovery',
+      });
+      runtimeLogger.warn('requeued interrupted local codex task', { task_id: row.task.id, task_key: row.task.key });
+    }
+  }
+
   private async runTask(queued: typeof schema.tasks.$inferSelect, queuedColumn: typeof schema.columns.$inferSelect) {
     const project = db.select().from(schema.projects).where(eq(schema.projects.id, queued.projectId)).get();
     if (!project) {
@@ -80,14 +107,24 @@ class LocalTaskDispatcher {
       const workflow = await loadWorkflow();
       const config = resolveServiceConfig(workflow);
       const issue = taskToIssue(queued, inProgressColumn?.nameEn ?? queuedColumn.nameEn);
+      const agentsContext = await loadAgentsContext(project.folderPath);
+      const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : project.folderPath;
+      const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
+      const runStartedAt = new Date().toISOString();
+      logTaskActivity(queued.projectId, queued.id, null, agentsContext.path ? 'agents_context_loaded' : 'agents_context_missing', {
+        path: agentsContext.path,
+        workspacePath,
+        truncated: agentsContext.truncated,
+      });
       let seenSteeringAt = new Date().toISOString();
       let seenAttachmentAt = seenSteeringAt;
       runtimeLogger.info('local codex task started', { task_id: queued.id, task_key: queued.key, project: project.key });
       await runCodexSession({
         config: config.codex,
-        workspacePath: project.folderPath,
+        workspacePath,
         issue,
         promptTemplate: workflow.prompt_template || defaultTaskPrompt(),
+        promptPrefix: agentsPromptPrefix,
         attempt: null,
         maxTurns: Math.min(config.agent.maxTurns, Number.parseInt(process.env.KANBAN_AGENT_MAX_TURNS ?? String(config.agent.maxTurns), 10)),
         signal: new AbortController().signal,
@@ -124,6 +161,11 @@ class LocalTaskDispatcher {
           }
           return false;
         },
+        completionCheck: async () => checkAgentsCompletionGate({
+          workspacePath,
+          agentsContent: agentsContext.content,
+          hasAgentBrowserEvidence: hasAgentBrowserEvidence(queued.id, runStartedAt),
+        }),
       });
 
       const reviewColumn = db.select().from(schema.columns)
@@ -197,9 +239,22 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
   };
 }
 
+function hasAgentBrowserEvidence(taskId: string, after: string) {
+  const value = db.select({ value: count() })
+    .from(schema.activity)
+    .where(and(
+      eq(schema.activity.taskId, taskId),
+      gt(schema.activity.createdAt, after),
+      like(schema.activity.metadata, '%agent-browser%'),
+    ))
+    .get()?.value ?? 0;
+  return value > 0;
+}
+
 function defaultTaskPrompt() {
   return [
     'You are working on a local Kanban task.',
+    'Mandatory project instructions from AGENTS.md have been injected above. Follow them before and during all work.',
     'Task: {{ issue.identifier }} - {{ issue.title }}',
     '',
     '{{ issue.description }}',

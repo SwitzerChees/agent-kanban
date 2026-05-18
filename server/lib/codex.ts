@@ -17,17 +17,26 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
+interface CompletionCheckResult {
+  ok: boolean;
+  message?: string | null;
+  prompt?: string | null;
+  metadata?: unknown;
+}
+
 interface RunCodexSessionOptions {
   config: CodexConfig;
   workspacePath: string;
   issue: Issue;
   promptTemplate: string;
+  promptPrefix?: string | null;
   attempt: number | null;
   maxTurns: number;
   signal: AbortSignal;
   onEvent: (event: CodexRuntimeEvent) => void;
   refreshIssue: () => Promise<Issue | null>;
   shouldContinue: (issue: Issue) => boolean;
+  completionCheck?: (issue: Issue) => Promise<CompletionCheckResult | null>;
 }
 
 export async function runCodexSession(options: RunCodexSessionOptions): Promise<void> {
@@ -70,12 +79,17 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
     }
 
     let currentIssue = options.issue;
+    let nextPrompt: string | null = null;
     for (let turnNumber = 1; turnNumber <= options.maxTurns; turnNumber += 1) {
       if (options.signal.aborted) throw new Error('turn_cancelled');
 
-      const prompt = turnNumber === 1
+      const renderedPrompt = turnNumber === 1
         ? await renderPrompt(options.promptTemplate, currentIssue, options.attempt)
-        : continuationPrompt(currentIssue, turnNumber, options.maxTurns);
+        : nextPrompt ?? continuationPrompt(currentIssue, turnNumber, options.maxTurns);
+      nextPrompt = null;
+      const prompt = options.promptPrefix?.trim()
+        ? `${options.promptPrefix.trim()}\n\n---\n\n${renderedPrompt}`
+        : renderedPrompt;
 
       const turnResponse = await peer.request('turn/start', compactObject({
         threadId,
@@ -104,6 +118,36 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
 
       const refreshedIssue = await options.refreshIssue();
       if (refreshedIssue) currentIssue = refreshedIssue;
+      const completionCheck = await options.completionCheck?.(currentIssue);
+      if (completionCheck && !completionCheck.ok) {
+        options.onEvent({
+          event: 'completion_gate_failed',
+          timestamp: now(),
+          codex_app_server_pid: peer.pid(),
+          session_id: `${threadId}-${turnId}`,
+          thread_id: threadId,
+          turn_id: turnId,
+          message: completionCheck.message ?? 'completion gate failed',
+          raw: completionCheck.metadata,
+        });
+        if (turnNumber >= options.maxTurns || !completionCheck.prompt) {
+          throw new Error(`completion_gate_failed: ${completionCheck.message ?? 'missing completion requirements'}`);
+        }
+        nextPrompt = completionCheck.prompt;
+        continue;
+      }
+      if (completionCheck?.ok) {
+        options.onEvent({
+          event: 'completion_gate_passed',
+          timestamp: now(),
+          codex_app_server_pid: peer.pid(),
+          session_id: `${threadId}-${turnId}`,
+          thread_id: threadId,
+          turn_id: turnId,
+          message: completionCheck.message ?? 'completion gate passed',
+          raw: completionCheck.metadata,
+        });
+      }
       if (!options.shouldContinue(currentIssue)) break;
     }
   } finally {

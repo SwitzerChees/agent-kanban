@@ -71,6 +71,17 @@ interface TaskEvent {
   createdAt: string;
 }
 
+type ActivityTone = 'neutral' | 'info' | 'success' | 'warning' | 'error';
+
+interface ActivityItem {
+  id: string;
+  title: string;
+  detail: string | null;
+  badge: string;
+  tone: ActivityTone;
+  createdAt: string;
+}
+
 interface TaskDetail {
   task: Task;
   comments: TaskComment[];
@@ -89,6 +100,11 @@ const dictionary = {
   en: {
     app: 'Agent Kanban',
     subtitle: 'Local project control for Codex work',
+    loginEyebrow: 'Private agent workspace',
+    loginHeadline: 'Sign in to the operations board',
+    loginCopy: 'Manage projects, tasks, and Codex sessions from one local control surface.',
+    loginStatus: 'Local runtime',
+    loginStatusDetail: 'Nuxt, SQLite, and Codex are connected through this dashboard.',
     login: 'Sign in',
     email: 'Email',
     password: 'Password',
@@ -129,6 +145,8 @@ const dictionary = {
     memberRole: 'Member',
     adminRole: 'Admin',
     activity: 'Live activity',
+    activityReadableHint: 'Technical noise is compressed into a readable timeline.',
+    hiddenActivityEvents: 'technical events hidden',
     steering: 'Steering message',
     sendMessage: 'Send message',
     lockedTask: 'Codex is running. Title and description are locked.',
@@ -164,6 +182,11 @@ const dictionary = {
   de: {
     app: 'Agent Kanban',
     subtitle: 'Lokale Projektsteuerung für Codex-Arbeit',
+    loginEyebrow: 'Privater Agent-Arbeitsbereich',
+    loginHeadline: 'Anmelden am Operations-Board',
+    loginCopy: 'Verwalte Projekte, Aufgaben und Codex-Sessions in einer lokalen Steuerzentrale.',
+    loginStatus: 'Lokale Laufzeit',
+    loginStatusDetail: 'Nuxt, SQLite und Codex sind über dieses Dashboard verbunden.',
     login: 'Anmelden',
     email: 'E-Mail',
     password: 'Passwort',
@@ -204,6 +227,8 @@ const dictionary = {
     memberRole: 'Mitglied',
     adminRole: 'Admin',
     activity: 'Live-Aktivität',
+    activityReadableHint: 'Technische Details werden zu einer lesbaren Zeitleiste verdichtet.',
+    hiddenActivityEvents: 'technische Events ausgeblendet',
     steering: 'Steering Message',
     sendMessage: 'Nachricht senden',
     lockedTask: 'Codex arbeitet. Titel und Beschreibung sind gesperrt.',
@@ -265,7 +290,7 @@ const activeTaskTab = ref<'activity' | 'task'>('activity');
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let taskEventSource: EventSource | null = null;
 
-const loginForm = reactive({ email: 'admin@example.com', password: 'adminadmin' });
+const loginForm = reactive({ email: '', password: '' });
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
 const projectForm = reactive({ name: '', key: '', folderPath: '', description: '', userIds: [] as string[] });
 const taskForm = reactive({
@@ -295,6 +320,12 @@ const taskTabs = computed(() => [
   { key: 'activity' as const, label: t.value.activityTab },
   { key: 'task' as const, label: t.value.taskTab },
 ]);
+const readableActivityItems = computed(() => {
+  return (selectedTaskDetail.value?.events ?? [])
+    .map(formatActivityEvent)
+    .filter((item): item is ActivityItem => item !== null);
+});
+const hiddenActivityCount = computed(() => Math.max(0, (selectedTaskDetail.value?.events.length ?? 0) - readableActivityItems.value.length));
 const boardStats = computed(() => ({
   tasks: board.value?.tasks.length ?? 0,
   columns: board.value?.columns.length ?? 0,
@@ -666,6 +697,143 @@ const agentColor = (status: Task['agentStatus']) => {
   return 'neutral';
 };
 
+const formatActivityEvent = (event: TaskEvent): ActivityItem | null => {
+  const metadata = parseMetadata(event.metadata);
+  const codexEvent = metadataString(metadata.event);
+  const message = metadataString(metadata.message);
+  const command = extractCommand(message);
+  const label = (en: string, de: string) => locale.value === 'de' ? de : en;
+
+  if (event.action === 'codex_event') {
+    if (isLowSignalCodexEvent(codexEvent)) return null;
+    if (codexEvent === 'item/started' && command) {
+      return activityItem(event, label('Command started', 'Befehl gestartet'), command, label('Command', 'Befehl'), 'info');
+    }
+    if (codexEvent === 'item/completed' && command) {
+      return activityItem(event, label('Command finished', 'Befehl abgeschlossen'), command, label('Command', 'Befehl'), 'success');
+    }
+    if (codexEvent === 'item/started' || codexEvent === 'item/completed') return null;
+    if (codexEvent === 'turn/diff/updated') {
+      return activityItem(event, label('Files changed', 'Dateien geändert'), label('Codex has updated the working tree.', 'Codex hat Dateien im Arbeitsbaum angepasst.'), label('Change', 'Änderung'), 'warning');
+    }
+    if (codexEvent === 'turn/started' || codexEvent === 'session_started') {
+      return activityItem(event, label('Work started', 'Arbeit gestartet'), friendlyDetail(message), label('Codex', 'Codex'), 'info');
+    }
+    if (codexEvent === 'turn/completed') {
+      return activityItem(event, label('Work pass finished', 'Arbeitsdurchlauf abgeschlossen'), friendlyDetail(message), label('Codex', 'Codex'), 'success');
+    }
+    if (codexEvent === 'app_server_started') {
+      return activityItem(event, label('Codex runtime started', 'Codex-Laufzeit gestartet'), friendlyDetail(message), label('System', 'System'), 'neutral');
+    }
+    if (codexEvent?.includes('approval')) {
+      return activityItem(event, label('Approval handled', 'Freigabe verarbeitet'), friendlyDetail(message), label('Policy', 'Richtlinie'), 'warning');
+    }
+    return activityItem(event, humanizeEventName(codexEvent ?? event.action), friendlyDetail(message), label('Codex', 'Codex'), 'neutral');
+  }
+
+  if (event.action === 'codex_started') {
+    return activityItem(event, label('Codex started the task', 'Codex hat die Aufgabe gestartet'), label('The task is locked while the agent is working.', 'Die Aufgabe ist gesperrt, solange der Agent arbeitet.'), label('Start', 'Start'), 'info');
+  }
+  if (event.action === 'codex_completed') {
+    return activityItem(event, label('Codex finished', 'Codex ist fertig'), label('The task was moved to review.', 'Die Aufgabe wurde in Prüfung verschoben.'), label('Done', 'Fertig'), 'success');
+  }
+  if (event.action === 'codex_failed') {
+    return activityItem(event, label('Codex failed', 'Codex ist fehlgeschlagen'), metadataString(metadata.error) ?? friendlyDetail(message), label('Error', 'Fehler'), 'error');
+  }
+  if (event.action === 'codex_queued') {
+    return activityItem(event, label('Queued for Codex', 'Für Codex eingeplant'), label('The task will be processed in board order.', 'Die Aufgabe wird gemäß Board-Reihenfolge abgearbeitet.'), label('Queue', 'Warteschlange'), 'warning');
+  }
+  if (event.action === 'steering_message') {
+    return activityItem(event, label('Steering message sent', 'Steering Message gesendet'), metadataString(metadata.body), label('Input', 'Hinweis'), 'info');
+  }
+  if (event.action === 'task_created') {
+    return activityItem(event, label('Task created', 'Aufgabe erstellt'), null, label('Task', 'Aufgabe'), 'neutral');
+  }
+  if (event.action === 'task_updated') {
+    return activityItem(event, label('Task updated', 'Aufgabe aktualisiert'), metadata.columnChanged ? label('The Kanban area or order changed.', 'Kanban-Bereich oder Reihenfolge wurde geändert.') : null, label('Task', 'Aufgabe'), 'neutral');
+  }
+
+  return activityItem(event, humanizeEventName(event.action), friendlyDetail(message), label('Event', 'Event'), 'neutral');
+};
+
+const activityItem = (event: TaskEvent, title: string, detail: string | null | undefined, badge: string, tone: ActivityTone): ActivityItem => ({
+  id: event.id,
+  title,
+  detail: detail ? shorten(detail, 280) : null,
+  badge,
+  tone,
+  createdAt: event.createdAt,
+});
+
+const parseMetadata = (metadata: string | null): Record<string, unknown> => {
+  if (!metadata) return {};
+  try {
+    const parsed = JSON.parse(metadata);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+};
+
+const metadataString = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
+
+const isLowSignalCodexEvent = (event?: string | null) => {
+  return !event
+    || event === 'item/agentMessage/delta'
+    || event === 'thread/tokenUsage/updated'
+    || event === 'account/rateLimits/updated'
+    || event === 'thread/status/changed'
+    || event === 'mcpServer/startupStatus/updated';
+};
+
+const extractCommand = (message: string | null) => {
+  const match = message?.match(/^item\/(?:started|completed):\s*(.+)$/);
+  if (!match) return null;
+  return cleanupCommand(match[1] ?? '');
+};
+
+const cleanupCommand = (command: string) => {
+  let cleaned = command.trim().replace(/^\/bin\/bash -lc\s+/, '').trim();
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1);
+  }
+  return cleaned.replace(/\\"/g, '"').replace(/\\'/g, "'");
+};
+
+const friendlyDetail = (message: string | null) => {
+  if (!message || ['item/started', 'item/completed', 'turn/started', 'turn/completed', 'turn/diff/updated'].includes(message)) return null;
+  return message.includes(': ') ? message.split(': ').slice(1).join(': ') : message;
+};
+
+const humanizeEventName = (value: string) => {
+  const words = value.replaceAll('_', ' ').replaceAll('/', ' ').replace(/\b\w/g, (match) => match.toUpperCase());
+  return words || value;
+};
+
+const shorten = (value: string, maxLength: number) => value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+
+const activityToneClass = (tone: ActivityTone) => ({
+  success: 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/35 dark:text-emerald-100',
+  warning: 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-100',
+  error: 'border-red-200 bg-red-50 text-red-950 dark:border-red-900/60 dark:bg-red-950/35 dark:text-red-100',
+  info: 'border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900/60 dark:bg-sky-950/35 dark:text-sky-100',
+  neutral: 'border-zinc-200 bg-white text-zinc-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100',
+}[tone]);
+
+const activityDotClass = (tone: ActivityTone) => ({
+  success: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  error: 'bg-red-500',
+  info: 'bg-sky-500',
+  neutral: 'bg-zinc-400',
+}[tone]);
+
+const formatActivityTime = (value: string) => new Date(value).toLocaleTimeString([], {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
 const toggleLocale = () => {
   locale.value = locale.value === 'en' ? 'de' : 'en';
 };
@@ -678,20 +846,72 @@ const humanError = (error: unknown) => {
 
 <template>
   <div class="min-h-screen bg-zinc-100 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50 ak-grid-bg">
-    <section v-if="!user" class="grid min-h-screen place-items-center px-6">
-      <UCard class="w-full max-w-md border border-zinc-200/80 bg-white/90 shadow-2xl shadow-zinc-950/10 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/90">
-        <form class="space-y-5" @submit.prevent="login">
-          <div class="space-y-2">
-            <UBadge color="primary" variant="soft">Local Codex Workflow</UBadge>
-            <h1 class="text-3xl font-semibold tracking-tight">{{ t.app }}</h1>
-            <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ t.subtitle }}</p>
+    <section v-if="!user" class="relative grid min-h-screen place-items-center overflow-hidden px-4 py-10 sm:px-6">
+      <div class="absolute inset-0 ak-login-surface" />
+      <div class="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/80 bg-white/92 shadow-2xl shadow-zinc-950/12 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/92 lg:grid-cols-[1.05fr_0.95fr]">
+        <div class="relative hidden min-h-[620px] overflow-hidden bg-zinc-950 p-10 text-white lg:flex lg:flex-col lg:justify-between">
+          <div class="absolute inset-0 ak-login-panel" />
+          <div class="relative">
+            <div class="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-xs font-medium text-teal-100">
+              <span class="size-2 rounded-full bg-teal-300 shadow-[0_0_18px_rgba(94,234,212,0.9)]" />
+              {{ t.loginStatus }}
+            </div>
+            <h1 class="max-w-md text-4xl font-semibold leading-tight tracking-tight">{{ t.app }}</h1>
+            <p class="mt-4 max-w-md text-sm leading-6 text-zinc-300">{{ t.loginCopy }}</p>
           </div>
-          <UInput v-model="loginForm.email" :placeholder="t.email" type="email" icon="i-lucide-mail" size="lg" />
-          <UInput v-model="loginForm.password" :placeholder="t.password" type="password" icon="i-lucide-lock" size="lg" />
+          <div class="relative grid gap-3 rounded-2xl border border-white/10 bg-white/8 p-4 shadow-2xl shadow-black/30">
+            <div class="grid grid-cols-3 gap-2">
+              <div class="h-28 rounded-xl border border-white/10 bg-white/10 p-2">
+                <div class="mb-2 h-2 w-14 rounded-full bg-teal-300/80" />
+                <div class="space-y-1.5">
+                  <div class="h-8 rounded-lg bg-white/12" />
+                  <div class="h-8 rounded-lg bg-white/8" />
+                </div>
+              </div>
+              <div class="h-28 rounded-xl border border-white/10 bg-white/10 p-2">
+                <div class="mb-2 h-2 w-16 rounded-full bg-amber-300/80" />
+                <div class="space-y-1.5">
+                  <div class="h-8 rounded-lg bg-white/14" />
+                  <div class="h-8 rounded-lg bg-white/8" />
+                </div>
+              </div>
+              <div class="h-28 rounded-xl border border-white/10 bg-white/10 p-2">
+                <div class="mb-2 h-2 w-12 rounded-full bg-emerald-300/80" />
+                <div class="space-y-1.5">
+                  <div class="h-8 rounded-lg bg-white/12" />
+                  <div class="h-8 rounded-lg bg-white/8" />
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+              <UIcon name="i-lucide-terminal-square" class="size-5 text-teal-200" />
+              <p class="text-sm leading-5 text-zinc-200">{{ t.loginStatusDetail }}</p>
+            </div>
+          </div>
+        </div>
+
+        <form class="grid gap-6 p-6 sm:p-10 lg:p-12" @submit.prevent="login">
+          <div class="space-y-3">
+            <UBadge color="primary" variant="soft">{{ t.loginEyebrow }}</UBadge>
+            <div>
+              <h1 class="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">{{ t.loginHeadline }}</h1>
+              <p class="mt-3 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{{ t.subtitle }}</p>
+            </div>
+          </div>
+
+          <div class="grid gap-4">
+            <UFormField :label="t.email" required size="lg">
+              <UInput v-model="loginForm.email" class="w-full" type="email" icon="i-lucide-mail" size="xl" autocomplete="email" required />
+            </UFormField>
+            <UFormField :label="t.password" required size="lg">
+              <UInput v-model="loginForm.password" class="w-full" type="password" icon="i-lucide-lock" size="xl" autocomplete="current-password" required />
+            </UFormField>
+          </div>
+
           <UAlert v-if="errorMessage" color="error" variant="soft" icon="i-lucide-alert-circle" :description="errorMessage" />
-          <UButton block size="lg" type="submit" icon="i-lucide-log-in">{{ t.login }}</UButton>
+          <UButton block size="xl" type="submit" icon="i-lucide-log-in">{{ t.login }}</UButton>
         </form>
-      </UCard>
+      </div>
     </section>
 
     <div v-else class="flex min-h-screen">
@@ -1080,10 +1300,10 @@ const humanError = (error: unknown) => {
         v-model:open="taskModalOpen"
         :title="selectedTaskId ? t.editTask : t.createTask"
         :description="t.taskDialog"
-        :ui="{ content: 'max-w-3xl', body: 'p-0 sm:p-0' }"
+        :ui="{ content: 'max-w-4xl', body: 'p-0 sm:p-0 overflow-y-auto', footer: 'justify-end border-t border-zinc-200 bg-zinc-50/95 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/90' }"
       >
         <template #body>
-          <form @submit.prevent="saveTaskAction">
+          <form id="task-form" @submit.prevent="saveTaskAction">
             <div class="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
               <div>
                 <p class="text-xs font-bold uppercase tracking-wide text-teal-600 dark:text-teal-400">{{ selectedTaskDetail?.task.key ?? t.taskDialog }}</p>
@@ -1135,20 +1355,39 @@ const humanError = (error: unknown) => {
                 </div>
 
                 <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                  <div class="mb-3 flex items-center justify-between">
-                    <p class="text-sm font-semibold">{{ t.activity }}</p>
-                    <UBadge color="neutral" variant="soft">{{ selectedTaskDetail?.events.length ?? 0 }}</UBadge>
+                  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p class="text-sm font-semibold">{{ t.activity }}</p>
+                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.activityReadableHint }}</p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <UBadge color="primary" variant="soft">{{ readableActivityItems.length }}</UBadge>
+                      <UBadge v-if="hiddenActivityCount" color="neutral" variant="soft">{{ hiddenActivityCount }} {{ t.hiddenActivityEvents }}</UBadge>
+                    </div>
                   </div>
-                  <div class="max-h-[52vh] space-y-2 overflow-y-auto font-mono text-xs">
-                    <p
-                      v-for="event in selectedTaskDetail?.events ?? []"
-                      :key="event.id"
-                      class="rounded-lg bg-zinc-50 p-2 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300"
-                    >
-                      <span class="text-zinc-400">{{ new Date(event.createdAt).toLocaleTimeString() }}</span>
-                      <span class="ml-2">{{ event.action }}</span>
-                      <span v-if="event.metadata" class="ml-2 break-all text-zinc-500">{{ event.metadata }}</span>
-                    </p>
+                  <div class="pr-1">
+                    <ol class="relative space-y-3 border-l border-zinc-200 pl-4 dark:border-zinc-800">
+                      <li
+                        v-for="item in readableActivityItems"
+                        :key="item.id"
+                        class="relative"
+                      >
+                        <span
+                          class="absolute -left-[21px] top-3 size-2.5 rounded-full ring-4 ring-white dark:ring-zinc-950"
+                          :class="activityDotClass(item.tone)"
+                        />
+                        <div class="rounded-xl border p-3 shadow-sm" :class="activityToneClass(item.tone)">
+                          <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="flex min-w-0 items-center gap-2">
+                              <UBadge color="neutral" variant="subtle">{{ item.badge }}</UBadge>
+                              <p class="min-w-0 truncate text-sm font-semibold">{{ item.title }}</p>
+                            </div>
+                            <time class="shrink-0 text-xs opacity-65">{{ formatActivityTime(item.createdAt) }}</time>
+                          </div>
+                          <p v-if="item.detail" class="mt-2 whitespace-pre-wrap break-words text-sm leading-6 opacity-80">{{ item.detail }}</p>
+                        </div>
+                      </li>
+                    </ol>
                   </div>
                 </div>
               </section>
@@ -1198,25 +1437,31 @@ const humanError = (error: unknown) => {
                 </div>
               </div>
             </div>
-            <div class="flex justify-end gap-3 border-t border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
-              <UButton
-                v-if="selectedTaskId && editingTask?.agentStatus !== 'running'"
-                class="mr-auto"
-                color="error"
-                variant="soft"
-                icon="i-lucide-trash-2"
-                type="button"
-                :loading="taskSubmitting"
-                @click.prevent.stop="requestDeleteTask"
-              >
-                {{ t.deleteTask }}
-              </UButton>
-              <UButton color="neutral" variant="ghost" type="button" @click="taskModalOpen = false">{{ t.cancel }}</UButton>
-              <UButton v-if="!hasAgentActivity || canSendSteering" icon="i-lucide-clipboard-plus" type="submit" :loading="taskSubmitting">
-                {{ canSendSteering ? t.sendMessage : selectedTaskId ? t.updateTask : t.createTask }}
-              </UButton>
-            </div>
           </form>
+        </template>
+        <template #footer>
+          <UButton
+            v-if="selectedTaskId && editingTask?.agentStatus !== 'running'"
+            class="mr-auto"
+            color="error"
+            variant="soft"
+            icon="i-lucide-trash-2"
+            type="button"
+            :loading="taskSubmitting"
+            @click.prevent.stop="requestDeleteTask"
+          >
+            {{ t.deleteTask }}
+          </UButton>
+          <UButton color="neutral" variant="ghost" type="button" @click="taskModalOpen = false">{{ t.cancel }}</UButton>
+          <UButton
+            v-if="!hasAgentActivity || canSendSteering"
+            icon="i-lucide-clipboard-plus"
+            type="submit"
+            form="task-form"
+            :loading="taskSubmitting"
+          >
+            {{ canSendSteering ? t.sendMessage : selectedTaskId ? t.updateTask : t.createTask }}
+          </UButton>
         </template>
       </UModal>
 

@@ -19,3 +19,25 @@ body {
     linear-gradient(to bottom, var(--ak-grid) 1px, transparent 1px);
   background-size: 32px 32px;
 }
+
+.ak-login-surface {
+  background:
+    radial-gradient(circle at 18% 18%, rgba(20, 184, 166, 0.18), transparent 30%),
+    radial-gradient(circle at 78% 12%, rgba(14, 165, 233, 0.13), transparent 28%),
+    linear-gradient(135deg, rgba(244, 244, 245, 0.98), rgba(228, 228, 231, 0.86));
+}
+
+.dark .ak-login-surface {
+  background:
+    radial-gradient(circle at 18% 18%, rgba(20, 184, 166, 0.18), transparent 30%),
+    radial-gradient(circle at 78% 12%, rgba(14, 165, 233, 0.16), transparent 28%),
+    linear-gradient(135deg, rgba(9, 9, 11, 1), rgba(24, 24, 27, 0.92));
+}
+
+.ak-login-panel {
+  background:
+    linear-gradient(120deg, rgba(20, 184, 166, 0.18), transparent 42%),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: auto, 28px 28px, 28px 28px;
+}
