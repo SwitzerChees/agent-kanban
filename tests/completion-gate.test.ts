@@ -18,19 +18,25 @@ describe('AGENTS.md completion gate', () => {
     expect(result.metadata.skipped).toBe(true);
   });
 
-  it('rejects finishing on master without agent-browser evidence', async () => {
+  it('rejects finishing on master without a merged task PR and agent-browser evidence', async () => {
     const result = await checkAgentsCompletionGate({
       workspacePath: '/repo',
       agentsContent: agentsWithPrRules,
       hasAgentBrowserEvidence: false,
+      taskIdentifier: 'TASK-1',
     }, fakeRunner({
       'git rev-parse --show-toplevel': { ok: true, stdout: '/repo\n', stderr: '' },
       'git status --porcelain': { ok: true, stdout: '', stderr: '' },
       'git branch --show-current': { ok: true, stdout: 'master\n', stderr: '' },
+      'gh pr list --state merged --search TASK-1 in:title --json state,mergedAt,url,headRefName,baseRefName --limit 10': {
+        ok: true,
+        stdout: '[]',
+        stderr: '',
+      },
     }));
 
     expect(result.ok).toBe(false);
-    expect(result.message).toContain("dedicated task branch");
+    expect(result.message).toContain("no merged task Pull Request");
     expect(result.message).toContain('agent-browser');
   });
 
@@ -71,6 +77,27 @@ describe('AGENTS.md completion gate', () => {
     }));
 
     expect(result.ok).toBe(true);
+  });
+
+  it('passes on master after a matching task PR has been merged', async () => {
+    const result = await checkAgentsCompletionGate({
+      workspacePath: '/repo',
+      agentsContent: agentsWithPrRules,
+      hasAgentBrowserEvidence: true,
+      taskIdentifier: 'TASK-2',
+    }, fakeRunner({
+      'git rev-parse --show-toplevel': { ok: true, stdout: '/repo\n', stderr: '' },
+      'git status --porcelain': { ok: true, stdout: '', stderr: '' },
+      'git branch --show-current': { ok: true, stdout: 'master\n', stderr: '' },
+      'gh pr list --state merged --search TASK-2 in:title --json state,mergedAt,url,headRefName,baseRefName --limit 10': {
+        ok: true,
+        stdout: JSON.stringify([{ state: 'MERGED', mergedAt: '2026-05-18T08:00:00Z', url: 'https://github.com/acme/repo/pull/2' }]),
+        stderr: '',
+      },
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(result.metadata.pullRequest).toMatchObject({ url: 'https://github.com/acme/repo/pull/2' });
   });
 });
 

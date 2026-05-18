@@ -4,6 +4,8 @@ export interface CompletionGateInput {
   workspacePath: string;
   agentsContent: string | null;
   hasAgentBrowserEvidence: boolean;
+  taskIdentifier?: string | null;
+  taskTitle?: string | null;
 }
 
 export interface CompletionGateResult {
@@ -60,7 +62,11 @@ export async function checkAgentsCompletionGate(
       if (!branch.ok || !branchName) {
         issues.push('The current Git branch could not be determined.');
       } else if (MAIN_BRANCHES.has(branchName)) {
-        issues.push(`The task is on '${branchName}'. AGENTS.md requires a dedicated task branch and PR workflow.`);
+        const mergedPullRequest = await findMergedPullRequestForTask(input, runCommand);
+        metadata.pullRequest = mergedPullRequest;
+        if (!mergedPullRequest) {
+          issues.push(`The task is on '${branchName}' and no merged task Pull Request could be verified. AGENTS.md requires a dedicated task branch and PR workflow.`);
+        }
       } else {
         const pr = await runCommand('gh', ['pr', 'view', '--json', 'state,mergedAt,url,headRefName,baseRefName'], input.workspacePath);
         if (!pr.ok) {
@@ -96,6 +102,34 @@ export async function checkAgentsCompletionGate(
   };
 }
 
+async function findMergedPullRequestForTask(input: CompletionGateInput, runCommand: CommandRunner) {
+  const searchTerms = [input.taskIdentifier, input.taskTitle]
+    .map((term) => term?.trim())
+    .filter((term): term is string => Boolean(term));
+
+  for (const term of searchTerms) {
+    const result = await runCommand('gh', [
+      'pr',
+      'list',
+      '--state',
+      'merged',
+      '--search',
+      `${term} in:title`,
+      '--json',
+      'state,mergedAt,url,headRefName,baseRefName',
+      '--limit',
+      '10',
+    ], input.workspacePath);
+
+    if (!result.ok) continue;
+    const pullRequests = parseJsonArray(result.stdout);
+    const merged = pullRequests.find((item) => item.state === 'MERGED' && typeof item.mergedAt === 'string' && item.mergedAt);
+    if (merged) return merged;
+  }
+
+  return null;
+}
+
 function passed(metadata: Record<string, unknown>): CompletionGateResult {
   return {
     ok: true,
@@ -125,6 +159,17 @@ function parseJsonObject(value: string): Record<string, unknown> | null {
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
   } catch {
     return null;
+  }
+}
+
+function parseJsonArray(value: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
+      : [];
+  } catch {
+    return [];
   }
 }
 

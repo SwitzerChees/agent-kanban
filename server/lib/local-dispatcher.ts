@@ -165,6 +165,8 @@ class LocalTaskDispatcher {
           workspacePath,
           agentsContent: agentsContext.content,
           hasAgentBrowserEvidence: hasAgentBrowserEvidence(queued.id, runStartedAt),
+          taskIdentifier: queued.key,
+          taskTitle: queued.title,
         }),
       });
 
