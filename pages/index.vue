@@ -98,13 +98,13 @@ interface Board {
 
 const dictionary = {
   en: {
-    app: 'Agent Kanban',
-    subtitle: 'Local project control for Codex work',
-    loginEyebrow: 'Private agent workspace',
-    loginHeadline: 'Sign in to the operations board',
-    loginCopy: 'Manage projects, tasks, and Codex sessions from one local control surface.',
-    loginStatus: 'Local runtime',
-    loginStatusDetail: 'Nuxt, SQLite, and Codex are connected through this dashboard.',
+    app: 'Work Board',
+    subtitle: 'Projects, tasks, and reviews in one place',
+    loginEyebrow: 'Private work board',
+    loginHeadline: 'Sign in to your work board',
+    loginCopy: 'Plan work, share context, and follow progress without switching tools.',
+    loginStatus: 'Ready for work',
+    loginStatusDetail: 'Your projects, tasks, files, and progress are available in one protected place.',
     login: 'Sign in',
     email: 'Email',
     password: 'Password',
@@ -112,23 +112,23 @@ const dictionary = {
     projects: 'Projects',
     users: 'Users',
     admin: 'Admin',
-    workspace: 'Workspace',
+    workspace: 'Projects',
     createProject: 'Create project',
     createUser: 'Create user',
-    projectDialog: 'Project control record',
-    userDialog: 'Administrator account',
+    projectDialog: 'Project details',
+    userDialog: 'User details',
     taskDialog: 'Task details',
     projectName: 'Project name',
-    projectKey: 'Key',
-    projectFolder: 'Filesystem folder',
+    projectKey: 'Short label',
+    projectFolder: 'Project location',
     projectNameHelp: 'A readable name shown in the sidebar and board header.',
-    projectKeyHelp: 'Short uppercase key used for task IDs, for example APP.',
-    projectFolderHelp: 'Absolute or relative folder where Codex will work for this project.',
+    projectKeyHelp: 'Short label shown on task cards, for example APP.',
+    projectFolderHelp: "Where this project's files are stored.",
     description: 'Description',
     assignedUsers: 'Assigned users',
     newTask: 'New task',
     title: 'Title',
-    area: 'Kanban area',
+    area: 'Board area',
     assignee: 'Assignee',
     priority: 'Priority',
     files: 'Files',
@@ -144,49 +144,54 @@ const dictionary = {
     role: 'Role',
     memberRole: 'Member',
     adminRole: 'Admin',
-    activity: 'Live activity',
-    activityReadableHint: 'Technical noise is compressed into a readable timeline.',
-    hiddenActivityEvents: 'technical events hidden',
-    steering: 'Steering message',
+    activity: 'Progress',
+    activityReadableHint: 'Important updates are shown in plain language.',
+    hiddenActivityEvents: 'quiet updates hidden',
+    guidance: 'Guidance',
     sendMessage: 'Send message',
-    lockedTask: 'Codex is running. Title and description are locked.',
+    lockedTask: 'Work is in progress. Title and description are locked.',
     todoAutomationHint: 'Tasks moved here are processed from top to bottom.',
-    activityTab: 'Activity',
-    taskTab: 'Original task',
-    readonlyTask: 'This is the original task text. It is read-only after agent work has started.',
+    activityTab: 'Progress',
+    taskTab: 'Task brief',
+    readonlyTask: 'This is the original task brief. It stays unchanged once work has started.',
     dropHere: 'Drop here',
-    noSteeringAfterFinish: 'The agent has finished. Steering messages are closed, but activity remains available.',
+    noGuidanceAfterFinish: 'Work is finished. New guidance is closed, but the progress history remains available.',
     refresh: 'Refresh',
     noProject: 'No project selected',
-    folder: 'Folder',
+    folder: 'Location',
     attachments: 'attachments',
     language: 'Language',
+    openSidebar: 'Open sidebar',
+    closeSidebar: 'Close sidebar',
+    darkMode: 'Dark mode',
+    lightMode: 'Light mode',
     userName: 'Name',
     columns: 'Areas',
     tasks: 'Tasks',
     members: 'Members',
-    queueCodex: 'Queue Codex',
     emptyColumn: 'No tasks here',
     openBoard: 'Open board',
-    projectTableHint: 'Manage filesystem-bound projects. Created projects appear in the sidebar immediately.',
-    userTableHint: 'Create admin users who can access and manage projects.',
+    projectTableHint: 'Manage projects and access. New projects appear in the sidebar immediately.',
+    userTableHint: 'Create users and manage who can access projects.',
     primaryDetails: 'Primary details',
-    placement: 'Board placement',
-    evidence: 'Evidence and files',
-    credentials: 'Credentials',
+    placement: 'Board area',
+    evidence: 'Files and screenshots',
+    credentials: 'Sign-in details',
     cancel: 'Cancel',
+    close: 'Close',
     save: 'Save',
     create: 'Create',
+    total: 'total',
     priorities: { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' },
   },
   de: {
-    app: 'Agent Kanban',
-    subtitle: 'Lokale Projektsteuerung für Codex-Arbeit',
-    loginEyebrow: 'Privater Agent-Arbeitsbereich',
-    loginHeadline: 'Anmelden am Operations-Board',
-    loginCopy: 'Verwalte Projekte, Aufgaben und Codex-Sessions in einer lokalen Steuerzentrale.',
-    loginStatus: 'Lokale Laufzeit',
-    loginStatusDetail: 'Nuxt, SQLite und Codex sind über dieses Dashboard verbunden.',
+    app: 'Arbeitsboard',
+    subtitle: 'Projekte, Aufgaben und Prüfungen an einem Ort',
+    loginEyebrow: 'Privates Arbeitsboard',
+    loginHeadline: 'Am Arbeitsboard anmelden',
+    loginCopy: 'Plane Arbeit, teile Kontext und verfolge den Fortschritt ohne Werkzeugwechsel.',
+    loginStatus: 'Bereit für die Arbeit',
+    loginStatusDetail: 'Projekte, Aufgaben, Dateien und Fortschritt sind an einem geschützten Ort verfügbar.',
     login: 'Anmelden',
     email: 'E-Mail',
     password: 'Passwort',
@@ -194,23 +199,23 @@ const dictionary = {
     projects: 'Projekte',
     users: 'Benutzer',
     admin: 'Admin',
-    workspace: 'Arbeitsbereich',
+    workspace: 'Projekte',
     createProject: 'Projekt erstellen',
     createUser: 'Benutzer erstellen',
-    projectDialog: 'Projekt-Kontrolldatensatz',
-    userDialog: 'Administratorkonto',
+    projectDialog: 'Projektdetails',
+    userDialog: 'Benutzerdetails',
     taskDialog: 'Aufgabendetails',
     projectName: 'Projektname',
     projectKey: 'Kürzel',
-    projectFolder: 'Dateisystem-Ordner',
+    projectFolder: 'Projektablage',
     projectNameHelp: 'Lesbarer Name für Sidebar und Board-Kopf.',
-    projectKeyHelp: 'Kurzes Großbuchstaben-Kürzel für Aufgaben-IDs, zum Beispiel APP.',
-    projectFolderHelp: 'Absoluter oder relativer Ordner, in dem Codex für das Projekt arbeitet.',
+    projectKeyHelp: 'Kurzes Kürzel auf Aufgabenkarten, zum Beispiel APP.',
+    projectFolderHelp: 'Ort, an dem die Projektdateien gespeichert sind.',
     description: 'Beschreibung',
     assignedUsers: 'Zugewiesene Benutzer',
     newTask: 'Neue Aufgabe',
     title: 'Titel',
-    area: 'Kanban-Bereich',
+    area: 'Board-Bereich',
     assignee: 'Zuweisung',
     priority: 'Priorität',
     files: 'Dateien',
@@ -226,44 +231,50 @@ const dictionary = {
     role: 'Rolle',
     memberRole: 'Mitglied',
     adminRole: 'Admin',
-    activity: 'Live-Aktivität',
-    activityReadableHint: 'Technische Details werden zu einer lesbaren Zeitleiste verdichtet.',
-    hiddenActivityEvents: 'technische Events ausgeblendet',
-    steering: 'Steering Message',
+    activity: 'Fortschritt',
+    activityReadableHint: 'Wichtige Schritte werden verständlich zusammengefasst.',
+    hiddenActivityEvents: 'leise Aktualisierungen ausgeblendet',
+    guidance: 'Hinweis',
     sendMessage: 'Nachricht senden',
-    lockedTask: 'Codex arbeitet. Titel und Beschreibung sind gesperrt.',
+    lockedTask: 'Die Aufgabe wird bearbeitet. Titel und Beschreibung sind gesperrt.',
     todoAutomationHint: 'Aufgaben, die hierher gezogen werden, werden von oben nach unten abgearbeitet.',
-    activityTab: 'Aktivität',
-    taskTab: 'Ursprüngliche Aufgabe',
-    readonlyTask: 'Das ist die ursprüngliche Aufgabenbeschreibung. Nach Agent-Start ist sie schreibgeschützt.',
+    activityTab: 'Fortschritt',
+    taskTab: 'Auftrag',
+    readonlyTask: 'Das ist der ursprüngliche Auftrag. Er bleibt unverändert, sobald die Bearbeitung begonnen hat.',
     dropHere: 'Hier ablegen',
-    noSteeringAfterFinish: 'Der Agent ist fertig. Steering Messages sind geschlossen, die Aktivität bleibt sichtbar.',
+    noGuidanceAfterFinish: 'Die Bearbeitung ist abgeschlossen. Neue Hinweise sind geschlossen, der Verlauf bleibt sichtbar.',
     refresh: 'Aktualisieren',
     noProject: 'Kein Projekt ausgewählt',
-    folder: 'Ordner',
+    folder: 'Ablage',
     attachments: 'Anhänge',
     language: 'Sprache',
+    openSidebar: 'Sidebar öffnen',
+    closeSidebar: 'Sidebar schließen',
+    darkMode: 'Dunkelmodus',
+    lightMode: 'Hellmodus',
     userName: 'Name',
     columns: 'Bereiche',
     tasks: 'Aufgaben',
     members: 'Mitglieder',
-    queueCodex: 'Codex starten',
     emptyColumn: 'Keine Aufgaben',
     openBoard: 'Board öffnen',
-    projectTableHint: 'Verwalte Projekte mit gebundenem Ordner. Neue Projekte erscheinen sofort links.',
-    userTableHint: 'Erstelle Admin-Benutzer für Projektzugriff und Verwaltung.',
+    projectTableHint: 'Verwalte Projekte und Zugriffe. Neue Projekte erscheinen sofort links.',
+    userTableHint: 'Erstelle Benutzer und verwalte, wer Zugriff auf Projekte hat.',
     primaryDetails: 'Kerndaten',
-    placement: 'Board-Position',
-    evidence: 'Nachweise und Dateien',
-    credentials: 'Zugangsdaten',
+    placement: 'Board-Bereich',
+    evidence: 'Dateien und Screenshots',
+    credentials: 'Anmeldedaten',
     cancel: 'Abbrechen',
+    close: 'Schließen',
     save: 'Speichern',
     create: 'Erstellen',
+    total: 'gesamt',
     priorities: { low: 'Niedrig', normal: 'Normal', high: 'Hoch', urgent: 'Dringend' },
   },
 } as const;
 
 const locale = ref<Locale>('en');
+const colorMode = useColorMode();
 const activeView = ref<View>('board');
 const user = ref<User | null>(null);
 const users = ref<User[]>([]);
@@ -304,6 +315,9 @@ const taskForm = reactive({
 const taskFiles = ref<File[]>([]);
 
 const t = computed(() => dictionary[locale.value]);
+const isDarkMode = computed(() => colorMode.value === 'dark');
+const themeToggleLabel = computed(() => isDarkMode.value ? t.value.lightMode : t.value.darkMode);
+const themeToggleIcon = computed(() => isDarkMode.value ? 'i-lucide-sun' : 'i-lucide-moon');
 const isAdmin = computed(() => user.value?.role === 'admin');
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
 const defaultSwimlaneId = computed(() => board.value?.swimlanes[0]?.id ?? '');
@@ -315,7 +329,7 @@ const hasAgentActivity = computed(() => {
   if (status === 'running' || status === 'done' || status === 'failed') return true;
   return selectedTaskDetail.value?.events.some((event) => ['codex_started', 'codex_event', 'codex_completed', 'codex_failed'].includes(event.action)) ?? false;
 });
-const canSendSteering = computed(() => editingTask.value?.agentStatus === 'running');
+const canSendGuidance = computed(() => editingTask.value?.agentStatus === 'running');
 const taskTabs = computed(() => [
   { key: 'activity' as const, label: t.value.activityTab },
   { key: 'task' as const, label: t.value.taskTab },
@@ -339,19 +353,24 @@ const roleItems = computed(() => [
   { label: t.value.memberRole, value: 'member' },
   { label: t.value.adminRole, value: 'admin' },
 ]);
+const userRows = computed(() => users.value.map((row) => ({
+  ...row,
+  roleLabel: row.role === 'admin' ? t.value.adminRole : t.value.memberRole,
+})));
 
-const projectColumns: TableColumn<Project>[] = [
-  { accessorKey: 'key', header: 'Key' },
-  { accessorKey: 'name', header: 'Name' },
-  { accessorKey: 'folderPath', header: 'Folder' },
-  { accessorKey: 'description', header: 'Description' },
-];
+useHead(() => ({ title: t.value.app }));
 
-const userColumns: TableColumn<User>[] = [
-  { accessorKey: 'name', header: 'Name' },
-  { accessorKey: 'email', header: 'Email' },
-  { accessorKey: 'role', header: 'Role' },
-];
+const projectColumns = computed<TableColumn<Project>[]>(() => [
+  { accessorKey: 'key', header: t.value.projectKey },
+  { accessorKey: 'name', header: t.value.projectName },
+  { accessorKey: 'description', header: t.value.description },
+]);
+
+const userColumns = computed<TableColumn<User & { roleLabel: string }>[]>(() => [
+  { accessorKey: 'name', header: t.value.userName },
+  { accessorKey: 'email', header: t.value.email },
+  { accessorKey: 'roleLabel', header: t.value.role },
+]);
 
 onMounted(async () => {
   locale.value = (localStorage.getItem('ak_locale') as Locale | null) ?? 'en';
@@ -577,12 +596,12 @@ const saveTaskAction = async () => {
           },
         });
       }
-      if (taskFiles.value.length && (!hasAgentActivity.value || canSendSteering.value)) {
+      if (taskFiles.value.length && (!hasAgentActivity.value || canSendGuidance.value)) {
         const attachmentForm = new FormData();
         for (const file of taskFiles.value) attachmentForm.append('files', file);
         await $fetch(`/api/tasks/${selectedTaskId.value}/attachments`, { method: 'POST', body: attachmentForm });
       }
-      if (taskMessage.value.trim() && canSendSteering.value) {
+      if (taskMessage.value.trim() && canSendGuidance.value) {
         await $fetch(`/api/tasks/${selectedTaskId.value}/messages`, { method: 'POST', body: { body: taskMessage.value } });
       }
       taskFiles.value = [];
@@ -697,6 +716,19 @@ const agentColor = (status: Task['agentStatus']) => {
   return 'neutral';
 };
 
+const taskStatusLabel = (status: Task['agentStatus']) => {
+  const labels: Record<Task['agentStatus'], { en: string; de: string }> = {
+    idle: { en: 'Waiting', de: 'Wartet' },
+    queued: { en: 'Ready', de: 'Vorgemerkt' },
+    running: { en: 'In progress', de: 'In Bearbeitung' },
+    failed: { en: 'Needs review', de: 'Prüfen' },
+    done: { en: 'Ready for review', de: 'Bereit zur Prüfung' },
+  };
+  return labels[status][locale.value];
+};
+
+const projectSidebarText = (project: Project) => project.description?.trim() || t.value.openBoard;
+
 const formatActivityEvent = (event: TaskEvent): ActivityItem | null => {
   const metadata = parseMetadata(event.metadata);
   const codexEvent = metadataString(metadata.event);
@@ -707,53 +739,53 @@ const formatActivityEvent = (event: TaskEvent): ActivityItem | null => {
   if (event.action === 'codex_event') {
     if (isLowSignalCodexEvent(codexEvent)) return null;
     if (codexEvent === 'item/started' && command) {
-      return activityItem(event, label('Command started', 'Befehl gestartet'), command, label('Command', 'Befehl'), 'info');
+      return activityItem(event, label('Step started', 'Schritt gestartet'), label('A work step has started.', 'Ein Arbeitsschritt wurde gestartet.'), label('Step', 'Schritt'), 'info');
     }
     if (codexEvent === 'item/completed' && command) {
-      return activityItem(event, label('Command finished', 'Befehl abgeschlossen'), command, label('Command', 'Befehl'), 'success');
+      return activityItem(event, label('Step finished', 'Schritt abgeschlossen'), label('A work step was completed.', 'Ein Arbeitsschritt wurde abgeschlossen.'), label('Step', 'Schritt'), 'success');
     }
     if (codexEvent === 'item/started' || codexEvent === 'item/completed') return null;
     if (codexEvent === 'turn/diff/updated') {
-      return activityItem(event, label('Files changed', 'Dateien geändert'), label('Codex has updated the working tree.', 'Codex hat Dateien im Arbeitsbaum angepasst.'), label('Change', 'Änderung'), 'warning');
+      return activityItem(event, label('Files updated', 'Dateien aktualisiert'), label('Changes were prepared for this task.', 'Änderungen wurden für diese Aufgabe vorbereitet.'), label('Change', 'Änderung'), 'warning');
     }
     if (codexEvent === 'turn/started' || codexEvent === 'session_started') {
-      return activityItem(event, label('Work started', 'Arbeit gestartet'), friendlyDetail(message), label('Codex', 'Codex'), 'info');
+      return activityItem(event, label('Work started', 'Bearbeitung gestartet'), friendlyDetail(message), label('Start', 'Start'), 'info');
     }
     if (codexEvent === 'turn/completed') {
-      return activityItem(event, label('Work pass finished', 'Arbeitsdurchlauf abgeschlossen'), friendlyDetail(message), label('Codex', 'Codex'), 'success');
+      return activityItem(event, label('Work step finished', 'Bearbeitungsschritt abgeschlossen'), friendlyDetail(message), label('Step', 'Schritt'), 'success');
     }
     if (codexEvent === 'app_server_started') {
-      return activityItem(event, label('Codex runtime started', 'Codex-Laufzeit gestartet'), friendlyDetail(message), label('System', 'System'), 'neutral');
+      return activityItem(event, label('Preparation started', 'Vorbereitung gestartet'), null, label('Start', 'Start'), 'neutral');
     }
     if (codexEvent?.includes('approval')) {
-      return activityItem(event, label('Approval handled', 'Freigabe verarbeitet'), friendlyDetail(message), label('Policy', 'Richtlinie'), 'warning');
+      return activityItem(event, label('Rule checked', 'Regel geprüft'), friendlyDetail(message), label('Check', 'Prüfung'), 'warning');
     }
-    return activityItem(event, humanizeEventName(codexEvent ?? event.action), friendlyDetail(message), label('Codex', 'Codex'), 'neutral');
+    return activityItem(event, label('Progress update', 'Fortschritt aktualisiert'), friendlyDetail(message), label('Update', 'Aktualisierung'), 'neutral');
   }
 
   if (event.action === 'codex_started') {
-    return activityItem(event, label('Codex started the task', 'Codex hat die Aufgabe gestartet'), label('The task is locked while the agent is working.', 'Die Aufgabe ist gesperrt, solange der Agent arbeitet.'), label('Start', 'Start'), 'info');
+    return activityItem(event, label('Work started', 'Bearbeitung gestartet'), label('The task is locked while work is in progress.', 'Die Aufgabe ist gesperrt, solange sie bearbeitet wird.'), label('Start', 'Start'), 'info');
   }
   if (event.action === 'codex_completed') {
-    return activityItem(event, label('Codex finished', 'Codex ist fertig'), label('The task was moved to review.', 'Die Aufgabe wurde in Prüfung verschoben.'), label('Done', 'Fertig'), 'success');
+    return activityItem(event, label('Ready for review', 'Bereit zur Prüfung'), label('The task was moved to review.', 'Die Aufgabe wurde in Prüfung verschoben.'), label('Done', 'Fertig'), 'success');
   }
   if (event.action === 'codex_failed') {
-    return activityItem(event, label('Codex failed', 'Codex ist fehlgeschlagen'), metadataString(metadata.error) ?? friendlyDetail(message), label('Error', 'Fehler'), 'error');
+    return activityItem(event, label('Work needs review', 'Bearbeitung prüfen'), label('The task could not be completed automatically. Review the history or add a new note.', 'Die Aufgabe konnte nicht automatisch abgeschlossen werden. Prüfe den Verlauf oder ergänze einen neuen Hinweis.'), label('Review', 'Prüfen'), 'error');
   }
   if (event.action === 'codex_queued') {
-    return activityItem(event, label('Queued for Codex', 'Für Codex eingeplant'), label('The task will be processed in board order.', 'Die Aufgabe wird gemäß Board-Reihenfolge abgearbeitet.'), label('Queue', 'Warteschlange'), 'warning');
+    return activityItem(event, label('Ready to start', 'Zur Bearbeitung vorgemerkt'), label('The task will be handled in board order.', 'Die Aufgabe wird gemäß Board-Reihenfolge bearbeitet.'), label('Ready', 'Bereit'), 'warning');
   }
   if (event.action === 'steering_message') {
-    return activityItem(event, label('Steering message sent', 'Steering Message gesendet'), metadataString(metadata.body), label('Input', 'Hinweis'), 'info');
+    return activityItem(event, label('Guidance sent', 'Hinweis gesendet'), metadataString(metadata.body), label('Input', 'Hinweis'), 'info');
   }
   if (event.action === 'task_created') {
     return activityItem(event, label('Task created', 'Aufgabe erstellt'), null, label('Task', 'Aufgabe'), 'neutral');
   }
   if (event.action === 'task_updated') {
-    return activityItem(event, label('Task updated', 'Aufgabe aktualisiert'), metadata.columnChanged ? label('The Kanban area or order changed.', 'Kanban-Bereich oder Reihenfolge wurde geändert.') : null, label('Task', 'Aufgabe'), 'neutral');
+    return activityItem(event, label('Task updated', 'Aufgabe aktualisiert'), metadata.columnChanged ? label('The board area or order changed.', 'Board-Bereich oder Reihenfolge wurde geändert.') : null, label('Task', 'Aufgabe'), 'neutral');
   }
 
-  return activityItem(event, humanizeEventName(event.action), friendlyDetail(message), label('Event', 'Event'), 'neutral');
+  return activityItem(event, label('Progress update', 'Fortschritt aktualisiert'), friendlyDetail(message), label('Update', 'Aktualisierung'), 'neutral');
 };
 
 const activityItem = (event: TaskEvent, title: string, detail: string | null | undefined, badge: string, tone: ActivityTone): ActivityItem => ({
@@ -802,12 +834,29 @@ const cleanupCommand = (command: string) => {
 
 const friendlyDetail = (message: string | null) => {
   if (!message || ['item/started', 'item/completed', 'turn/started', 'turn/completed', 'turn/diff/updated'].includes(message)) return null;
-  return message.includes(': ') ? message.split(': ').slice(1).join(': ') : message;
+  const detail = message.includes(': ') ? message.split(': ').slice(1).join(': ') : message;
+  return isInternalDetail(detail) ? null : detail;
 };
 
-const humanizeEventName = (value: string) => {
-  const words = value.replaceAll('_', ' ').replaceAll('/', ' ').replace(/\b\w/g, (match) => match.toUpperCase());
-  return words || value;
+const isInternalDetail = (value: string) => {
+  const normalized = value.trim().toLowerCase();
+  return !normalized
+    || normalized.startsWith('item/')
+    || normalized.startsWith('turn/')
+    || normalized.startsWith('thread/')
+    || normalized.startsWith('account/')
+    || normalized.startsWith('mcpserver/')
+    || normalized.includes('/bin/bash')
+    || normalized.includes('codex')
+    || normalized.includes('nuxt')
+    || normalized.includes('sqlite')
+    || normalized.includes('drizzle')
+    || normalized.includes('agent-browser')
+    || normalized.includes('app-server')
+    || normalized.includes('completion_gate')
+    || normalized.includes('session_')
+    || normalized.includes('approval_')
+    || /^(bun|git|gh|node|npm|npx|pnpm|curl|rg)\s/.test(normalized);
 };
 
 const shorten = (value: string, maxLength: number) => value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
@@ -838,9 +887,32 @@ const toggleLocale = () => {
   locale.value = locale.value === 'en' ? 'de' : 'en';
 };
 
+const toggleTheme = () => {
+  colorMode.preference = isDarkMode.value ? 'light' : 'dark';
+};
+
 const humanError = (error: unknown) => {
   const candidate = error as { statusMessage?: string; data?: { message?: string } };
-  return candidate.data?.message ?? candidate.statusMessage ?? 'Request failed';
+  const raw = candidate.data?.message ?? candidate.statusMessage ?? '';
+  const key = raw.trim().toLowerCase();
+  const label = (en: string, de: string) => locale.value === 'de' ? de : en;
+  const messages: Record<string, { en: string; de: string }> = {
+    invalid_credentials: { en: 'Email or password is incorrect.', de: 'E-Mail oder Passwort ist nicht korrekt.' },
+    unauthorized: { en: 'Please sign in again.', de: 'Bitte melde dich erneut an.' },
+    admin_required: { en: 'Only administrators can do this.', de: 'Nur Administratoren können das ausführen.' },
+    project_not_found: { en: 'The project could not be found.', de: 'Das Projekt wurde nicht gefunden.' },
+    project_forbidden: { en: 'You do not have access to this project.', de: 'Du hast keinen Zugriff auf dieses Projekt.' },
+    task_not_found: { en: 'The task could not be found.', de: 'Die Aufgabe wurde nicht gefunden.' },
+    task_locked_after_agent_start: { en: 'This task is already being worked on. Title and description cannot be changed anymore.', de: 'Diese Aufgabe wird bereits bearbeitet. Titel und Beschreibung können nicht mehr geändert werden.' },
+    task_running_cannot_delete: { en: 'This task is in progress and cannot be deleted.', de: 'Diese Aufgabe wird gerade bearbeitet und kann nicht gelöscht werden.' },
+    task_closed_for_attachments: { en: 'Files can no longer be added to this task.', de: 'Zu dieser Aufgabe können keine Dateien mehr hinzugefügt werden.' },
+    task_not_accepting_steering: { en: 'This task is not accepting new guidance right now.', de: 'Diese Aufgabe nimmt im Moment keine neuen Hinweise an.' },
+    empty_message: { en: 'Please enter a message.', de: 'Bitte gib eine Nachricht ein.' },
+    missing_backlog_column: { en: 'The board is missing its first task area.', de: 'Dem Board fehlt der erste Aufgabenbereich.' },
+    invalid_column: { en: 'Please choose a valid board area.', de: 'Bitte wähle einen gültigen Board-Bereich.' },
+    invalid_project_key: { en: 'Please use a short project key with letters and numbers.', de: 'Bitte verwende ein kurzes Projektkürzel mit Buchstaben und Zahlen.' },
+  };
+  return messages[key]?.[locale.value] ?? label('The action could not be completed.', 'Die Aktion konnte nicht abgeschlossen werden.');
 };
 </script>
 
@@ -884,7 +956,7 @@ const humanError = (error: unknown) => {
               </div>
             </div>
             <div class="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
-              <UIcon name="i-lucide-terminal-square" class="size-5 text-teal-200" />
+              <UIcon name="i-lucide-shield-check" class="size-5 text-teal-200" />
               <p class="text-sm leading-5 text-zinc-200">{{ t.loginStatusDetail }}</p>
             </div>
           </div>
@@ -933,7 +1005,7 @@ const humanError = (error: unknown) => {
             variant="ghost"
             size="sm"
             :icon="sidebarCollapsed ? 'i-lucide-panel-left-open' : 'i-lucide-panel-left-close'"
-            :aria-label="sidebarCollapsed ? 'Open sidebar' : 'Close sidebar'"
+            :aria-label="sidebarCollapsed ? t.openSidebar : t.closeSidebar"
             @click="sidebarCollapsed = !sidebarCollapsed"
           />
         </div>
@@ -987,7 +1059,7 @@ const humanError = (error: unknown) => {
                   <UIcon name="i-lucide-chevron-right" class="size-4 text-zinc-400 transition group-hover:translate-x-0.5" />
                 </div>
                 <p class="font-medium leading-tight">{{ project.name }}</p>
-                <p class="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">{{ project.folderPath }}</p>
+                <p class="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">{{ projectSidebarText(project) }}</p>
               </template>
             </button>
             <p v-if="!projects.length && !sidebarCollapsed" class="rounded-xl border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -1009,7 +1081,16 @@ const humanError = (error: unknown) => {
           >
             <span v-if="!sidebarCollapsed">{{ locale.toUpperCase() }}</span>
           </UButton>
-          <UColorModeButton :class="sidebarCollapsed ? 'w-full justify-center px-0' : ''" variant="soft" color="neutral" />
+          <UButton
+            variant="soft"
+            color="neutral"
+            :icon="themeToggleIcon"
+            :aria-label="themeToggleLabel"
+            :class="sidebarCollapsed ? 'w-full justify-center px-0' : ''"
+            @click="toggleTheme"
+          >
+            <span v-if="!sidebarCollapsed">{{ themeToggleLabel }}</span>
+          </UButton>
           <UButton :class="sidebarCollapsed ? '' : 'ml-auto'" variant="ghost" color="neutral" icon="i-lucide-log-out" @click="logout">
             <span v-if="!sidebarCollapsed">{{ t.logout }}</span>
           </UButton>
@@ -1025,7 +1106,7 @@ const humanError = (error: unknown) => {
                 {{ activeView === 'board' ? selectedProject?.name ?? t.noProject : activeView === 'projects' ? t.projects : t.users }}
               </h1>
               <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                {{ activeView === 'board' ? selectedProject?.folderPath ?? t.subtitle : activeView === 'projects' ? t.projectTableHint : t.userTableHint }}
+                {{ activeView === 'board' ? selectedProject?.description || t.subtitle : activeView === 'projects' ? t.projectTableHint : t.userTableHint }}
               </p>
             </div>
           </div>
@@ -1044,7 +1125,7 @@ const humanError = (error: unknown) => {
               <div class="flex items-center justify-between">
                 <div>
                   <h2 class="font-semibold">{{ t.projects }}</h2>
-                  <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ projects.length }} total</p>
+                  <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ projects.length }} {{ t.total }}</p>
                 </div>
                 <UButton icon="i-lucide-folder-plus" size="lg" @click="openProjectModal()">{{ t.createProject }}</UButton>
               </div>
@@ -1084,12 +1165,12 @@ const humanError = (error: unknown) => {
               <div class="flex items-center justify-between">
                 <div>
                   <h2 class="font-semibold">{{ t.users }}</h2>
-                  <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ users.length }} total</p>
+                  <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ users.length }} {{ t.total }}</p>
                 </div>
                 <UButton icon="i-lucide-user-plus" size="lg" @click="openUserModal">{{ t.createUser }}</UButton>
               </div>
             </template>
-            <UTable :data="users" :columns="userColumns" />
+            <UTable :data="userRows" :columns="userColumns" />
           </UCard>
         </section>
 
@@ -1165,7 +1246,7 @@ const humanError = (error: unknown) => {
                       >
                         <div class="mb-2 flex items-start justify-between gap-2">
                           <UBadge variant="subtle" color="neutral">{{ task.key }}</UBadge>
-                          <UBadge :color="agentColor(task.agentStatus)" variant="subtle">{{ task.agentStatus }}</UBadge>
+                          <UBadge :color="agentColor(task.agentStatus)" variant="subtle">{{ taskStatusLabel(task.agentStatus) }}</UBadge>
                         </div>
                         <h3 class="text-sm font-semibold leading-snug">{{ task.title }}</h3>
                         <p v-if="task.description" class="mt-2 line-clamp-3 text-xs text-zinc-500 dark:text-zinc-400">{{ task.description }}</p>
@@ -1205,6 +1286,9 @@ const humanError = (error: unknown) => {
         :description="t.projectDialog"
         :ui="{ content: 'max-w-3xl', body: 'p-0 sm:p-0' }"
       >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
         <template #body>
           <form class="grid gap-0" @submit.prevent="saveProjectAction">
             <div class="border-b border-zinc-200 bg-zinc-50/80 px-6 py-5 dark:border-zinc-800 dark:bg-zinc-900/70">
@@ -1222,7 +1306,7 @@ const humanError = (error: unknown) => {
               </UFormField>
 
               <UFormField :label="t.projectFolder" :description="t.projectFolderHelp" required size="lg">
-                <UInput v-model="projectForm.folderPath" class="w-full" size="xl" icon="i-lucide-hard-drive" required />
+                <UInput v-model="projectForm.folderPath" class="w-full" size="xl" icon="i-lucide-folder-open" required />
               </UFormField>
 
               <UFormField :label="t.description" size="lg">
@@ -1267,6 +1351,9 @@ const humanError = (error: unknown) => {
         :description="t.userDialog"
         :ui="{ content: 'max-w-2xl', body: 'p-0 sm:p-0' }"
       >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
         <template #body>
           <form @submit.prevent="createUser">
             <div class="border-b border-zinc-200 bg-zinc-50/80 px-6 py-5 dark:border-zinc-800 dark:bg-zinc-900/70">
@@ -1302,12 +1389,15 @@ const humanError = (error: unknown) => {
         :description="t.taskDialog"
         :ui="{ content: 'max-w-4xl', body: 'p-0 sm:p-0 overflow-y-auto', footer: 'justify-end border-t border-zinc-200 bg-zinc-50/95 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/90' }"
       >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
         <template #body>
           <form id="task-form" @submit.prevent="saveTaskAction">
             <div class="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
               <div>
                 <p class="text-xs font-bold uppercase tracking-wide text-teal-600 dark:text-teal-400">{{ selectedTaskDetail?.task.key ?? t.taskDialog }}</p>
-                <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{{ selectedTaskId ? selectedTaskDetail?.task.agentStatus : t.pasteHint }}</p>
+                <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{{ selectedTaskId && selectedTaskDetail ? taskStatusLabel(selectedTaskDetail.task.agentStatus) : t.pasteHint }}</p>
               </div>
               <UFormField :label="t.area" required size="sm">
                 <USelect v-model="taskForm.columnId" class="w-56 max-w-full" :items="columnItems" size="lg" :disabled="!selectedTaskId || hasAgentActivity" />
@@ -1330,10 +1420,10 @@ const humanError = (error: unknown) => {
 
               <section v-if="activeTaskTab === 'activity'" class="grid gap-4">
                 <UAlert v-if="taskLocked" color="warning" variant="soft" icon="i-lucide-lock" :description="t.lockedTask" />
-                <UAlert v-else color="neutral" variant="soft" icon="i-lucide-lock" :description="t.noSteeringAfterFinish" />
+                <UAlert v-else color="neutral" variant="soft" icon="i-lucide-lock" :description="t.noGuidanceAfterFinish" />
 
-                <div v-if="canSendSteering" class="grid gap-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                  <UFormField :label="t.steering" size="lg">
+                <div v-if="canSendGuidance" class="grid gap-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                  <UFormField :label="t.guidance" size="lg">
                     <UTextarea v-model="taskMessage" class="w-full" :rows="3" size="lg" @paste="handlePaste" />
                   </UFormField>
                   <div class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -1454,13 +1544,13 @@ const humanError = (error: unknown) => {
           </UButton>
           <UButton color="neutral" variant="ghost" type="button" @click="taskModalOpen = false">{{ t.cancel }}</UButton>
           <UButton
-            v-if="!hasAgentActivity || canSendSteering"
+            v-if="!hasAgentActivity || canSendGuidance"
             icon="i-lucide-clipboard-plus"
             type="submit"
             form="task-form"
             :loading="taskSubmitting"
           >
-            {{ canSendSteering ? t.sendMessage : selectedTaskId ? t.updateTask : t.createTask }}
+            {{ canSendGuidance ? t.sendMessage : selectedTaskId ? t.updateTask : t.createTask }}
           </UButton>
         </template>
       </UModal>
@@ -1472,6 +1562,9 @@ const humanError = (error: unknown) => {
         :description="t.deleteTaskConfirm"
         :ui="{ content: 'max-w-md' }"
       >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
         <template #body>
           <div class="grid gap-5">
             <div class="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-900 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-100">
