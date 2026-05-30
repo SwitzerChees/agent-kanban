@@ -62,6 +62,13 @@ export function ensureDatabase() {
       PRIMARY KEY(project_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS project_tags (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, name)
+    );
+
     CREATE TABLE IF NOT EXISTS columns (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -110,10 +117,26 @@ export function ensureDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS task_tags (
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(task_id, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS attachment_annotations (
+      attachment_id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+      annotation_data TEXT NOT NULL,
+      rendered_storage_path TEXT NOT NULL,
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS comments (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL REFERENCES users(id),
+      kind TEXT NOT NULL DEFAULT 'comment',
       body TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -131,11 +154,26 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks(column_id);
     CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(task_id);
+    CREATE INDEX IF NOT EXISTS idx_project_tags_project ON project_tags(project_id);
+    CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
     CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id);
   `);
 
   sqlite.exec(`
     UPDATE columns SET name_de = 'In Prüfung' WHERE key = 'in_review' AND name_de = 'In Pruefung';
+  `);
+
+  const commentColumns = sqlite.prepare('PRAGMA table_info(comments)').all() as Array<{ name: string }>;
+  if (!commentColumns.some((column) => column.name === 'kind')) {
+    sqlite.exec("ALTER TABLE comments ADD COLUMN kind TEXT NOT NULL DEFAULT 'steering';");
+  }
+
+  sqlite.exec(`
+    INSERT OR IGNORE INTO project_tags (project_id, name, created_at)
+    SELECT tasks.project_id, task_tags.name, MIN(task_tags.created_at)
+    FROM task_tags
+    INNER JOIN tasks ON tasks.id = task_tags.task_id
+    GROUP BY tasks.project_id, task_tags.name;
   `);
 
   seedAdmin();

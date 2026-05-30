@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, max, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, max, notInArray, sql } from 'drizzle-orm';
 import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
 import type { User } from './db/schema';
@@ -20,6 +20,7 @@ export async function createProject(input: {
   description?: string | null;
   folderPath: string;
   userIds?: string[];
+  tags?: string[];
 }, admin: User) {
   const now = new Date().toISOString();
   const folderPath = path.resolve(input.folderPath);
@@ -54,6 +55,14 @@ export async function createProject(input: {
       }).onConflictDoNothing().run();
     }
 
+    for (const tag of normalizeTags(input.tags ?? [])) {
+      tx.insert(schema.projectTags).values({
+        projectId,
+        name: tag,
+        createdAt: now,
+      }).onConflictDoNothing().run();
+    }
+
     for (const column of DEFAULT_COLUMNS) {
       tx.insert(schema.columns).values({
         id: randomUUID(),
@@ -82,6 +91,7 @@ export async function updateProject(projectId: string, input: {
   description?: string | null;
   folderPath?: string;
   userIds?: string[];
+  tags?: string[];
 }, admin: User) {
   getProject(projectId, admin);
   const updates: Partial<typeof schema.projects.$inferInsert> = {
@@ -112,6 +122,9 @@ export async function updateProject(projectId: string, input: {
       }
     }
   });
+  if (input.tags) {
+    setProjectTags(projectId, input.tags);
+  }
 
   return getProject(projectId, admin);
 }
@@ -160,6 +173,14 @@ export function getBoard(projectId: string, user: User) {
   const taskAttachments = taskIds.length
     ? db.select().from(schema.attachments).where(inArray(schema.attachments.taskId, taskIds)).all()
     : [];
+  const attachmentIds = taskAttachments.map((attachment) => attachment.id);
+  const annotations = attachmentIds.length
+    ? db.select().from(schema.attachmentAnnotations).where(inArray(schema.attachmentAnnotations.attachmentId, attachmentIds)).all()
+    : [];
+  const taskTags = taskIds.length
+    ? db.select().from(schema.taskTags).where(inArray(schema.taskTags.taskId, taskIds)).orderBy(asc(schema.taskTags.name)).all()
+    : [];
+  const projectTags = getProjectTags(projectId);
   const members = db.select({ user: schema.users })
     .from(schema.projectUsers)
     .innerJoin(schema.users, eq(schema.projectUsers.userId, schema.users.id))
@@ -170,12 +191,16 @@ export function getBoard(projectId: string, user: User) {
 
   return {
     project,
+    projectTags,
     columns: projectColumns,
     swimlanes: lanes,
     members,
     tasks: taskRows.map((task) => ({
       ...task,
-      attachments: taskAttachments.filter((attachment) => attachment.taskId === task.id),
+      attachments: taskAttachments
+        .filter((attachment) => attachment.taskId === task.id)
+        .map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
+      tags: taskTags.filter((tag) => tag.taskId === task.id).map((tag) => tag.name),
     })),
   };
 }
@@ -188,10 +213,19 @@ export function getTaskDetail(taskId: string, user: User) {
     .where(eq(schema.attachments.taskId, taskId))
     .orderBy(asc(schema.attachments.createdAt))
     .all();
+  const annotations = attachments.length
+    ? db.select().from(schema.attachmentAnnotations).where(inArray(schema.attachmentAnnotations.attachmentId, attachments.map((attachment) => attachment.id))).all()
+    : [];
+  const tags = db.select().from(schema.taskTags)
+    .where(eq(schema.taskTags.taskId, taskId))
+    .orderBy(asc(schema.taskTags.name))
+    .all()
+    .map((tag) => tag.name);
   const comments = db.select({
     id: schema.comments.id,
     taskId: schema.comments.taskId,
     userId: schema.comments.userId,
+    kind: schema.comments.kind,
     body: schema.comments.body,
     createdAt: schema.comments.createdAt,
     userName: schema.users.name,
@@ -208,7 +242,12 @@ export function getTaskDetail(taskId: string, user: User) {
 
   return {
     project,
-    task: { ...task, attachments },
+    projectTags: getProjectTags(project.id),
+    task: {
+      ...task,
+      attachments: attachments.map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
+      tags,
+    },
     comments,
     events,
   };
@@ -239,6 +278,7 @@ export async function createTask(projectId: string, input: {
   swimlaneId?: string | null;
   assigneeId?: string | null;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
+  tags?: string[];
   files?: UploadedTaskFile[];
 }, user: User) {
   const project = getProject(projectId, user);
@@ -266,10 +306,14 @@ export async function createTask(projectId: string, input: {
     updatedAt: now,
   }).run();
 
+  if (input.tags?.length) {
+    setTaskTags(taskId, input.tags, projectId);
+  }
+
   for (const file of input.files ?? []) {
     await storeTaskAttachment(taskId, file, user.id);
   }
-  logTaskActivity(projectId, taskId, user.id, 'task_created', { columnKey: column.key });
+  logTaskActivity(projectId, taskId, user.id, 'task_created', { columnKey: column.key, tags: normalizeTags(input.tags ?? []) });
 
   return getBoard(projectId, user).tasks.find((task) => task.id === taskId);
 }
@@ -281,6 +325,7 @@ export function updateTask(taskId: string, input: {
   swimlaneId?: string | null;
   assigneeId?: string | null;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
+  tags?: string[];
   position?: number;
   agentStatus?: 'idle' | 'queued' | 'running' | 'failed' | 'done';
 }, user: User) {
@@ -294,7 +339,7 @@ export function updateTask(taskId: string, input: {
   let nextAgentStatus = input.agentStatus;
   if (input.columnId) {
     const targetColumn = getProjectColumn(task.projectId, input.columnId);
-    if (targetColumn.key === 'todo' && task.agentStatus !== 'running' && task.agentStatus !== 'done') {
+    if (targetColumn.key === 'todo' && task.agentStatus !== 'running') {
       nextAgentStatus = 'queued';
     } else if (task.agentStatus === 'queued' && targetColumn.key !== 'todo') {
       nextAgentStatus = 'idle';
@@ -313,9 +358,14 @@ export function updateTask(taskId: string, input: {
     updatedAt: new Date().toISOString(),
   }).where(eq(schema.tasks.id, taskId)).run();
 
+  if (input.tags !== undefined) {
+    setTaskTags(taskId, input.tags, task.projectId);
+  }
+
   const updated = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   logTaskActivity(task.projectId, taskId, user.id, 'task_updated', {
     columnChanged: input.columnId !== undefined,
+    tagsChanged: input.tags !== undefined,
     agentStatus: nextAgentStatus,
   });
   if (nextAgentStatus === 'queued' && task.agentStatus !== 'queued') {
@@ -366,33 +416,77 @@ export async function addTaskAttachments(taskId: string, files: UploadedTaskFile
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
-  if (task.agentStatus === 'done' || task.agentStatus === 'failed') {
-    throw createError({ statusCode: 409, statusMessage: 'task_closed_for_attachments' });
-  }
   for (const file of files) {
     await storeTaskAttachment(taskId, file, user.id);
   }
   return getTaskDetail(taskId, user);
 }
 
+export function getTaskAttachment(taskId: string, attachmentId: string, user: User) {
+  const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+  if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
+  getProject(task.projectId, user);
+  const attachment = db.select().from(schema.attachments)
+    .where(and(eq(schema.attachments.id, attachmentId), eq(schema.attachments.taskId, taskId)))
+    .get();
+  if (!attachment) throw createError({ statusCode: 404, statusMessage: 'attachment_not_found' });
+  const annotation = db.select().from(schema.attachmentAnnotations)
+    .where(eq(schema.attachmentAnnotations.attachmentId, attachmentId))
+    .get() ?? null;
+  return { task, attachment, annotation };
+}
+
+export async function saveAttachmentAnnotation(taskId: string, attachmentId: string, input: {
+  annotationData: unknown;
+  renderedImage: Buffer;
+}, user: User) {
+  const { task, attachment } = getTaskAttachment(taskId, attachmentId, user);
+  if (!attachment.mimeType.startsWith('image/')) {
+    throw createError({ statusCode: 400, statusMessage: 'attachment_not_image' });
+  }
+  const now = new Date().toISOString();
+  const storagePath = appDataDir('annotations', task.projectId, taskId, `${attachmentId}.png`);
+  await fs.writeFile(storagePath, input.renderedImage);
+  db.insert(schema.attachmentAnnotations).values({
+    attachmentId,
+    annotationData: JSON.stringify(input.annotationData),
+    renderedStoragePath: storagePath,
+    updatedBy: user.id,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: schema.attachmentAnnotations.attachmentId,
+    set: {
+      annotationData: JSON.stringify(input.annotationData),
+      renderedStoragePath: storagePath,
+      updatedBy: user.id,
+      updatedAt: now,
+    },
+  }).run();
+  logTaskActivity(task.projectId, taskId, user.id, 'attachment_annotated', { fileName: attachment.fileName });
+  return getTaskDetail(taskId, user);
+}
+
+export function addTaskComment(taskId: string, body: string, user: User) {
+  const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+  if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
+  getProject(task.projectId, user);
+  const comment = insertTaskComment(taskId, body, user, 'comment');
+  logTaskActivity(task.projectId, taskId, user.id, 'comment_added', { body: comment.body });
+  return comment;
+}
+
 export function addTaskMessage(taskId: string, body: string, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
-  if (task.agentStatus !== 'running') {
+  if (!['running', 'queued', 'done', 'failed'].includes(task.agentStatus)) {
     throw createError({ statusCode: 409, statusMessage: 'task_not_accepting_steering' });
   }
-  const now = new Date().toISOString();
-  const comment = {
-    id: randomUUID(),
-    taskId,
-    userId: user.id,
-    body: body.trim(),
-    createdAt: now,
-  };
-  if (!comment.body) throw createError({ statusCode: 400, statusMessage: 'empty_message' });
-  db.insert(schema.comments).values(comment).run();
+  const comment = insertTaskComment(taskId, body, user, 'steering');
   logTaskActivity(task.projectId, taskId, user.id, 'steering_message', { body: comment.body });
+  if (task.agentStatus === 'done' || task.agentStatus === 'failed') {
+    requeueTaskForFollowUp(task, user.id, comment.body);
+  }
   return comment;
 }
 
@@ -431,6 +525,124 @@ export interface UploadedTaskFile {
   fileName: string;
   mimeType: string;
   data: Buffer;
+}
+
+function insertTaskComment(taskId: string, body: string, user: User, kind: 'comment' | 'steering') {
+  const now = new Date().toISOString();
+  const comment = {
+    id: randomUUID(),
+    taskId,
+    userId: user.id,
+    kind,
+    body: body.trim(),
+    createdAt: now,
+  };
+  if (!comment.body) throw createError({ statusCode: 400, statusMessage: 'empty_message' });
+  db.insert(schema.comments).values(comment).run();
+  return {
+    ...comment,
+    userName: user.name,
+  };
+}
+
+function requeueTaskForFollowUp(task: typeof schema.tasks.$inferSelect, userId: string, body: string) {
+  const todoColumn = db.select().from(schema.columns)
+    .where(and(eq(schema.columns.projectId, task.projectId), eq(schema.columns.key, 'todo')))
+    .get();
+  if (!todoColumn) throw createError({ statusCode: 400, statusMessage: 'missing_todo_column' });
+  const now = new Date().toISOString();
+  db.update(schema.tasks).set({
+    columnId: todoColumn.id,
+    agentStatus: 'queued',
+    position: nextTaskPosition(task.projectId, todoColumn.id, task.swimlaneId),
+    updatedAt: now,
+  }).where(eq(schema.tasks.id, task.id)).run();
+  logTaskActivity(task.projectId, task.id, userId, 'followup_requested', { body });
+  logTaskActivity(task.projectId, task.id, userId, 'codex_queued', { reason: 'follow_up' });
+}
+
+function decorateAttachment(
+  attachment: typeof schema.attachments.$inferSelect,
+  annotation?: typeof schema.attachmentAnnotations.$inferSelect | null,
+) {
+  const url = `/api/tasks/${attachment.taskId}/attachments/${attachment.id}`;
+  return {
+    ...attachment,
+    url,
+    annotatedUrl: annotation ? `${url}?variant=annotated` : null,
+    annotation: annotation
+      ? {
+          data: annotation.annotationData,
+          updatedAt: annotation.updatedAt,
+        }
+      : null,
+  };
+}
+
+function getProjectTags(projectId: string) {
+  return db.select().from(schema.projectTags)
+    .where(eq(schema.projectTags.projectId, projectId))
+    .orderBy(asc(schema.projectTags.name))
+    .all()
+    .map((tag) => tag.name);
+}
+
+function setProjectTags(projectId: string, rawTags: string[]) {
+  const tags = normalizeTags(rawTags);
+  const now = new Date().toISOString();
+  db.delete(schema.projectTags).where(eq(schema.projectTags.projectId, projectId)).run();
+  for (const tag of tags) {
+    db.insert(schema.projectTags).values({
+      projectId,
+      name: tag,
+      createdAt: now,
+    }).onConflictDoNothing().run();
+  }
+  const taskIds = db.select({ id: schema.tasks.id }).from(schema.tasks)
+    .where(eq(schema.tasks.projectId, projectId))
+    .all()
+    .map((task) => task.id);
+  if (!taskIds.length) return;
+  if (tags.length) {
+    db.delete(schema.taskTags)
+      .where(and(inArray(schema.taskTags.taskId, taskIds), notInArray(schema.taskTags.name, tags)))
+      .run();
+    return;
+  }
+  db.delete(schema.taskTags)
+    .where(inArray(schema.taskTags.taskId, taskIds))
+    .run();
+}
+
+function setTaskTags(taskId: string, rawTags: string[], projectId: string) {
+  const allowed = new Set(getProjectTags(projectId).map((tag) => tag.toLocaleLowerCase()));
+  const tags = normalizeTags(rawTags).filter((tag) => allowed.has(tag.toLocaleLowerCase()));
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    tx.delete(schema.taskTags).where(eq(schema.taskTags.taskId, taskId)).run();
+    for (const tag of tags) {
+      tx.insert(schema.taskTags).values({
+        taskId,
+        name: tag,
+        createdAt: now,
+      }).run();
+    }
+  });
+}
+
+function normalizeTags(rawTags: string[]) {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const rawTag of rawTags) {
+    const tag = rawTag.trim().replace(/^#+/, '').replace(/\s+/g, ' ').slice(0, 40);
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= 12) break;
+  }
+  return tags;
 }
 
 function defaultBacklogColumn(projectId: string) {

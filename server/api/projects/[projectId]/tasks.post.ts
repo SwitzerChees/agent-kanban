@@ -10,6 +10,7 @@ const jsonTaskSchema = z.object({
   swimlaneId: z.string().optional().nullable(),
   assigneeId: z.string().optional().nullable(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+  tags: z.array(z.string()).optional(),
 });
 
 export default defineEventHandler(async (event) => {
@@ -40,6 +41,7 @@ export default defineEventHandler(async (event) => {
       swimlaneId: fields.get('swimlaneId') || null,
       assigneeId: fields.get('assigneeId') || null,
       priority: fields.get('priority') || undefined,
+      tags: parseTagsField(fields.get('tags')),
     });
     return { task: await createTask(projectId, { ...taskInput, files }, user) };
   }
@@ -47,3 +49,14 @@ export default defineEventHandler(async (event) => {
   const body = jsonTaskSchema.parse(await readBody(event));
   return { task: await createTask(projectId, body, user) };
 });
+
+function parseTagsField(value: string | undefined) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string');
+  } catch {
+    // Fall through to comma-separated tags for hand-written clients.
+  }
+  return value.split(',').map((tag) => tag.trim()).filter(Boolean);
+}

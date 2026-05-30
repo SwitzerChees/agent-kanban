@@ -38,6 +38,14 @@ export const projectUsers = sqliteTable('project_users', {
   pk: primaryKey({ columns: [table.projectId, table.userId] }),
 }));
 
+export const projectTags = sqliteTable('project_tags', {
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.projectId, table.name] }),
+}));
+
 export const columns = sqliteTable('columns', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -86,10 +94,27 @@ export const attachments = sqliteTable('attachments', {
   createdAt: text('created_at').notNull(),
 });
 
+export const taskTags = sqliteTable('task_tags', {
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.taskId, table.name] }),
+}));
+
+export const attachmentAnnotations = sqliteTable('attachment_annotations', {
+  attachmentId: text('attachment_id').primaryKey().references(() => attachments.id, { onDelete: 'cascade' }),
+  annotationData: text('annotation_data').notNull(),
+  renderedStoragePath: text('rendered_storage_path').notNull(),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const comments = sqliteTable('comments', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
   userId: text('user_id').notNull().references(() => users.id),
+  kind: text('kind', { enum: ['comment', 'steering'] }).notNull().default('comment'),
   body: text('body').notNull(),
   createdAt: text('created_at').notNull(),
 });
@@ -106,7 +131,10 @@ export const activity = sqliteTable('activity', {
 
 export type User = typeof users.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type ProjectTag = typeof projectTags.$inferSelect;
 export type Column = typeof columns.$inferSelect;
 export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
+export type TaskTag = typeof taskTags.$inferSelect;
+export type AttachmentAnnotation = typeof attachmentAnnotations.$inferSelect;

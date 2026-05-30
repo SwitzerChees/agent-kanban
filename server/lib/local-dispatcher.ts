@@ -1,9 +1,9 @@
-import { and, asc, count, eq, gt, like, max } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, like, max } from 'drizzle-orm';
 import path from 'node:path';
 import { db, schema } from './db';
 import { loadWorkflow } from './workflow';
 import { resolveServiceConfig } from './config';
-import { runCodexSession } from './codex';
+import { runCodexSession, type CodexSteeringBatch, type CodexUserInput } from './codex';
 import { runtimeLogger } from './logger';
 import { logTaskActivity } from './kanban';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
@@ -116,8 +116,18 @@ class LocalTaskDispatcher {
         workspacePath,
         truncated: agentsContext.truncated,
       });
-      let seenSteeringAt = new Date().toISOString();
-      let seenAttachmentAt = seenSteeringAt;
+      let seenSteeringAt = runStartedAt;
+      let seenAttachmentAt = runStartedAt;
+      let agentMessageBuffer = '';
+      let lastAgentUpdateLogMs = 0;
+      const flushAgentUpdate = (force = false) => {
+        const body = normalizeAgentMessage(agentMessageBuffer);
+        if (!body) return;
+        const nowMs = Date.now();
+        if (!force && nowMs - lastAgentUpdateLogMs < 3000) return;
+        lastAgentUpdateLogMs = nowMs;
+        logTaskActivity(queued.projectId, queued.id, null, 'codex_text_update', { body });
+      };
       runtimeLogger.info('local codex task started', { task_id: queued.id, task_key: queued.key, project: project.key });
       await runCodexSession({
         config: config.codex,
@@ -136,6 +146,18 @@ class LocalTaskDispatcher {
             session_id: event.session_id,
             message: event.message,
           });
+          if (event.event === 'item/agentMessage/delta') {
+            const fragment = naturalAgentFragment(event.message);
+            if (fragment) {
+              agentMessageBuffer += fragment;
+              flushAgentUpdate(false);
+            }
+            return;
+          }
+          if (event.event === 'item/completed') {
+            flushAgentUpdate(true);
+            agentMessageBuffer = '';
+          }
           logTaskActivity(queued.projectId, queued.id, null, 'codex_event', event);
         },
         refreshIssue: async () => {
@@ -144,9 +166,21 @@ class LocalTaskDispatcher {
           const currentColumn = db.select().from(schema.columns).where(eq(schema.columns.id, task.columnId)).get();
           return taskToIssue(task, currentColumn?.nameEn ?? 'In Progress');
         },
+        loadSteering: async () => {
+          const batch = buildLiveSteeringBatch(queued, seenSteeringAt, seenAttachmentAt);
+          if (!batch) return null;
+          return {
+            input: batch.input,
+            description: batch.description,
+            markDelivered: () => {
+              if (batch.newestSteeringAt) seenSteeringAt = maxIso(seenSteeringAt, batch.newestSteeringAt);
+              if (batch.newestAttachmentAt) seenAttachmentAt = maxIso(seenAttachmentAt, batch.newestAttachmentAt);
+            },
+          };
+        },
         shouldContinue: () => {
           const newestMessage = db.select({ value: max(schema.comments.createdAt) }).from(schema.comments)
-            .where(eq(schema.comments.taskId, queued.id))
+            .where(and(eq(schema.comments.taskId, queued.id), eq(schema.comments.kind, 'steering')))
             .get()?.value;
           if (newestMessage && newestMessage > seenSteeringAt) {
             seenSteeringAt = newestMessage;
@@ -157,6 +191,15 @@ class LocalTaskDispatcher {
             .get()?.value;
           if (newestAttachment && newestAttachment > seenAttachmentAt) {
             seenAttachmentAt = newestAttachment;
+            return true;
+          }
+          const newestAnnotation = db.select({ value: max(schema.attachmentAnnotations.updatedAt) })
+            .from(schema.attachmentAnnotations)
+            .innerJoin(schema.attachments, eq(schema.attachmentAnnotations.attachmentId, schema.attachments.id))
+            .where(eq(schema.attachments.taskId, queued.id))
+            .get()?.value;
+          if (newestAnnotation && newestAnnotation > seenAttachmentAt) {
+            seenAttachmentAt = newestAnnotation;
             return true;
           }
           return false;
@@ -205,6 +248,17 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
     .where(eq(schema.attachments.taskId, task.id))
     .orderBy(asc(schema.attachments.createdAt))
     .all();
+  const attachmentIds = attachments.map((attachment) => attachment.id);
+  const annotations = attachmentIds.length
+    ? db.select().from(schema.attachmentAnnotations)
+      .where(inArray(schema.attachmentAnnotations.attachmentId, attachmentIds))
+      .all()
+    : [];
+  const tags = db.select().from(schema.taskTags)
+    .where(eq(schema.taskTags.taskId, task.id))
+    .orderBy(asc(schema.taskTags.name))
+    .all()
+    .map((tag) => tag.name);
   const steering = db.select({
     body: schema.comments.body,
     createdAt: schema.comments.createdAt,
@@ -212,16 +266,26 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
   })
     .from(schema.comments)
     .innerJoin(schema.users, eq(schema.comments.userId, schema.users.id))
-    .where(eq(schema.comments.taskId, task.id))
+    .where(and(eq(schema.comments.taskId, task.id), eq(schema.comments.kind, 'steering')))
     .orderBy(asc(schema.comments.createdAt))
     .all();
+  const agentUpdates = latestAgentUpdates(task.id);
   const detailBlocks = [
     task.description,
+    tags.length ? `Tags: ${tags.map((tag) => `#${tag}`).join(', ')}` : null,
     attachments.length
-      ? ['Attachments available to inspect:', ...attachments.map((file) => `- ${file.fileName}: ${file.storagePath}`)].join('\n')
+      ? ['Attachments available to inspect:', ...attachments.map((file) => {
+          const annotation = annotations.find((item) => item.attachmentId === file.id);
+          return annotation
+            ? `- ${file.fileName}: ${annotation.renderedStoragePath} (annotated image; original at ${file.storagePath})`
+            : `- ${file.fileName}: ${file.storagePath}`;
+        })].join('\n')
       : null,
     steering.length
       ? ['Steering messages from the project team:', ...steering.map((message) => `- ${message.createdAt} ${message.userName}: ${message.body}`)].join('\n')
+      : null,
+    agentUpdates.length
+      ? ['Previous agent status summaries:', ...agentUpdates.map((update) => `- ${update.createdAt}: ${update.body}`)].join('\n')
       : null,
   ].filter(Boolean);
 
@@ -234,11 +298,130 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
     state,
     branch_name: null,
     url: null,
-    labels: [`agent:${task.agentStatus}`],
+    labels: [`agent:${task.agentStatus}`, ...tags],
     blocked_by: [],
     created_at: task.createdAt,
     updated_at: task.updatedAt,
   };
+}
+
+function buildLiveSteeringBatch(
+  task: typeof schema.tasks.$inferSelect,
+  seenSteeringAt: string,
+  seenAttachmentAt: string,
+): (CodexSteeringBatch & { newestSteeringAt: string | null; newestAttachmentAt: string | null }) | null {
+  const steering = db.select({
+    body: schema.comments.body,
+    createdAt: schema.comments.createdAt,
+    userName: schema.users.name,
+  })
+    .from(schema.comments)
+    .innerJoin(schema.users, eq(schema.comments.userId, schema.users.id))
+    .where(and(eq(schema.comments.taskId, task.id), eq(schema.comments.kind, 'steering')))
+    .orderBy(asc(schema.comments.createdAt))
+    .all()
+    .filter((message) => message.createdAt > seenSteeringAt);
+
+  const attachmentRows = db.select({
+    attachment: schema.attachments,
+    annotation: schema.attachmentAnnotations,
+  })
+    .from(schema.attachments)
+    .leftJoin(schema.attachmentAnnotations, eq(schema.attachmentAnnotations.attachmentId, schema.attachments.id))
+    .where(eq(schema.attachments.taskId, task.id))
+    .orderBy(asc(schema.attachments.createdAt))
+    .all()
+    .filter((row) => row.attachment.createdAt > seenAttachmentAt || (row.annotation?.updatedAt ?? '') > seenAttachmentAt);
+
+  if (!steering.length && !attachmentRows.length) return null;
+
+  const attachmentDescriptions = attachmentRows.map((row) => {
+    const pathForAgent = row.annotation?.renderedStoragePath ?? row.attachment.storagePath;
+    const annotationNote = row.annotation ? ' annotated image' : '';
+    return `- ${row.attachment.createdAt} ${row.attachment.fileName}:${annotationNote} ${pathForAgent}`;
+  });
+  const lines = [
+    `New project steering for ${task.key}: ${task.title}`,
+    'Use this context immediately before continuing. If it conflicts with previous work, adapt the current work instead of starting over.',
+    steering.length
+      ? ['Steering messages:', ...steering.map((message) => `- ${message.createdAt} ${message.userName}: ${message.body}`)].join('\n')
+      : null,
+    attachmentDescriptions.length
+      ? ['New or updated attachments:', ...attachmentDescriptions].join('\n')
+      : null,
+  ].filter(Boolean);
+
+  const input: CodexUserInput[] = [{ type: 'text', text: lines.join('\n\n'), text_elements: [] }];
+  for (const row of attachmentRows) {
+    if (!row.attachment.mimeType.startsWith('image/')) continue;
+    input.push({
+      type: 'localImage',
+      path: row.annotation?.renderedStoragePath ?? row.attachment.storagePath,
+      detail: 'original',
+    });
+  }
+
+  return {
+    input,
+    description: `delivered ${steering.length} steering message(s) and ${attachmentRows.length} attachment update(s)`,
+    newestSteeringAt: newestIso(steering.map((message) => message.createdAt)),
+    newestAttachmentAt: newestIso(attachmentRows.flatMap((row) => [
+      row.attachment.createdAt,
+      row.annotation?.updatedAt ?? null,
+    ])),
+  };
+}
+
+function newestIso(values: Array<string | null | undefined>) {
+  return values.filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+}
+
+function maxIso(left: string, right: string) {
+  return left > right ? left : right;
+}
+
+function latestAgentUpdates(taskId: string) {
+  return db.select({
+    metadata: schema.activity.metadata,
+    createdAt: schema.activity.createdAt,
+  })
+    .from(schema.activity)
+    .where(and(eq(schema.activity.taskId, taskId), eq(schema.activity.action, 'codex_text_update')))
+    .orderBy(desc(schema.activity.createdAt))
+    .limit(5)
+    .all()
+    .map((row) => ({
+      createdAt: row.createdAt,
+      body: parseMetadataString(row.metadata, 'body'),
+    }))
+    .filter((row): row is { createdAt: string; body: string } => Boolean(row.body))
+    .reverse();
+}
+
+function naturalAgentFragment(message: string | null | undefined) {
+  if (!message || message === 'item/agentMessage/delta') return null;
+  if (message.startsWith('item/') || message.startsWith('turn/') || message.startsWith('thread/')) return null;
+  return message;
+}
+
+function normalizeAgentMessage(message: string) {
+  const normalized = message
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return normalized ? normalized.slice(-3000) : null;
+}
+
+function parseMetadataString(metadata: string | null, key: string) {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata);
+    const value = parsed?.[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function hasAgentBrowserEvidence(taskId: string, after: string) {

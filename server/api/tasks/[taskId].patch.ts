@@ -10,6 +10,7 @@ const schema = z.object({
   swimlaneId: z.string().optional().nullable(),
   assigneeId: z.string().optional().nullable(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+  tags: z.array(z.string()).optional(),
   position: z.number().int().optional(),
   agentStatus: z.enum(['idle', 'queued', 'running', 'failed', 'done']).optional(),
 });

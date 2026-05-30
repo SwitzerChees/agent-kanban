@@ -9,6 +9,7 @@ const updateProjectSchema = z.object({
   description: z.string().optional().nullable(),
   folderPath: z.string().min(1).optional(),
   userIds: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional(),
 });
 
 export default defineEventHandler(async (event) => {

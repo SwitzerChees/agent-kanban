@@ -41,6 +41,12 @@ interface Attachment {
   fileName: string;
   mimeType: string;
   size: number;
+  url: string;
+  annotatedUrl: string | null;
+  annotation: {
+    data: string;
+    updatedAt: string;
+  } | null;
 }
 
 interface Task {
@@ -55,11 +61,13 @@ interface Task {
   assigneeId: string | null;
   agentStatus: 'idle' | 'queued' | 'running' | 'failed' | 'done';
   attachments: Attachment[];
+  tags: string[];
 }
 
 interface TaskComment {
   id: string;
   userName: string;
+  kind: 'comment' | 'steering';
   body: string;
   createdAt: string;
 }
@@ -71,18 +79,8 @@ interface TaskEvent {
   createdAt: string;
 }
 
-type ActivityTone = 'neutral' | 'info' | 'success' | 'warning' | 'error';
-
-interface ActivityItem {
-  id: string;
-  title: string;
-  detail: string | null;
-  badge: string;
-  tone: ActivityTone;
-  createdAt: string;
-}
-
 interface TaskDetail {
+  projectTags: string[];
   task: Task;
   comments: TaskComment[];
   events: TaskEvent[];
@@ -90,10 +88,36 @@ interface TaskDetail {
 
 interface Board {
   project: Project;
+  projectTags: string[];
   columns: BoardColumn[];
   swimlanes: Swimlane[];
   members: User[];
   tasks: Task[];
+}
+
+interface AnnotationPoint {
+  x: number;
+  y: number;
+}
+
+interface AnnotationStroke {
+  color: string;
+  width: number;
+  points: AnnotationPoint[];
+}
+
+interface AnnotationData {
+  version: 1;
+  strokes: AnnotationStroke[];
+}
+
+interface PendingTaskFile {
+  id: string;
+  file: File;
+  url: string;
+  annotation: AnnotationData;
+  annotatedUrl: string | null;
+  renderedFile: File | null;
 }
 
 const dictionary = {
@@ -145,14 +169,18 @@ const dictionary = {
     memberRole: 'Member',
     adminRole: 'Admin',
     activity: 'Progress',
-    activityReadableHint: 'Important updates are shown in plain language.',
-    hiddenActivityEvents: 'quiet updates hidden',
+    activityReadableHint: 'Send steering while the agent is running and keep the latest AI update in view.',
+    latestUpdate: 'Latest update',
+    noAgentUpdate: 'No AI update yet.',
+    steeringHelp: 'Use steering to correct direction while the agent is running. Follow-up work can be requested after review.',
+    steeringUnavailable: 'Steering is available once the task is queued or in progress.',
     guidance: 'Guidance',
     sendMessage: 'Send message',
     lockedTask: 'Work is in progress. Title and description are locked.',
     todoAutomationHint: 'Tasks moved here are processed from top to bottom.',
     activityTab: 'Progress',
     taskTab: 'Task brief',
+    commentsTab: 'Comments',
     readonlyTask: 'This is the original task brief. It stays unchanged once work has started.',
     dropHere: 'Drop here',
     noGuidanceAfterFinish: 'Work is finished. New guidance is closed, but the progress history remains available.',
@@ -160,6 +188,28 @@ const dictionary = {
     noProject: 'No project selected',
     folder: 'Location',
     attachments: 'attachments',
+    tags: 'Tags',
+    projectTags: 'Project tags',
+    projectTagsHelp: 'Define the fixed tags available for tasks in this project. Separate tags with commas.',
+    tagsHelp: 'Choose one or more project tags.',
+    chooseTags: 'Choose tags',
+    noProjectTags: 'No project tags defined',
+    comments: 'Comments',
+    commentPlaceholder: 'Write a comment for the team.',
+    sendComment: 'Send comment',
+    noComments: 'No comments yet',
+    followUp: 'Follow-up task',
+    followUpHelp: 'Add what was not good enough and send the task back to the agent.',
+    followUpPlaceholder: 'Describe what should be improved or continued.',
+    followUpFilesOnlyMessage: 'Continue with the attached follow-up material.',
+    requestFollowUp: 'Continue work',
+    images: 'Images',
+    editImage: 'Edit image',
+    annotateImage: 'Annotate image',
+    annotationHelp: 'Mark the image for the agent. The drawing stays editable and an annotated copy is passed to the agent.',
+    undo: 'Undo',
+    clear: 'Clear',
+    saveAnnotation: 'Save annotation',
     language: 'Language',
     openSidebar: 'Open sidebar',
     closeSidebar: 'Close sidebar',
@@ -232,14 +282,18 @@ const dictionary = {
     memberRole: 'Mitglied',
     adminRole: 'Admin',
     activity: 'Fortschritt',
-    activityReadableHint: 'Wichtige Schritte werden verständlich zusammengefasst.',
-    hiddenActivityEvents: 'leise Aktualisierungen ausgeblendet',
+    activityReadableHint: 'Sende Hinweise während der Bearbeitung und behalte das letzte KI-Update im Blick.',
+    latestUpdate: 'Letztes Update',
+    noAgentUpdate: 'Noch kein KI-Update vorhanden.',
+    steeringHelp: 'Nutze Hinweise, um während der Bearbeitung die Richtung zu korrigieren. Folgearbeit kann nach der Prüfung angefordert werden.',
+    steeringUnavailable: 'Hinweise sind verfügbar, sobald die Aufgabe vorgemerkt oder in Bearbeitung ist.',
     guidance: 'Hinweis',
     sendMessage: 'Nachricht senden',
     lockedTask: 'Die Aufgabe wird bearbeitet. Titel und Beschreibung sind gesperrt.',
     todoAutomationHint: 'Aufgaben, die hierher gezogen werden, werden von oben nach unten abgearbeitet.',
     activityTab: 'Fortschritt',
     taskTab: 'Auftrag',
+    commentsTab: 'Kommentare',
     readonlyTask: 'Das ist der ursprüngliche Auftrag. Er bleibt unverändert, sobald die Bearbeitung begonnen hat.',
     dropHere: 'Hier ablegen',
     noGuidanceAfterFinish: 'Die Bearbeitung ist abgeschlossen. Neue Hinweise sind geschlossen, der Verlauf bleibt sichtbar.',
@@ -247,6 +301,28 @@ const dictionary = {
     noProject: 'Kein Projekt ausgewählt',
     folder: 'Ablage',
     attachments: 'Anhänge',
+    tags: 'Tags',
+    projectTags: 'Projekt-Tags',
+    projectTagsHelp: 'Definiere die festen Tags, die in diesem Projekt für Aufgaben verfügbar sind. Tags mit Kommas trennen.',
+    tagsHelp: 'Wähle ein oder mehrere Projekt-Tags.',
+    chooseTags: 'Tags auswählen',
+    noProjectTags: 'Keine Projekt-Tags definiert',
+    comments: 'Kommentare',
+    commentPlaceholder: 'Kommentar für das Team schreiben.',
+    sendComment: 'Kommentar senden',
+    noComments: 'Noch keine Kommentare',
+    followUp: 'Folgeaufgabe',
+    followUpHelp: 'Beschreibe, was noch nicht gut genug war, und gib die Aufgabe zurück an den Agenten.',
+    followUpPlaceholder: 'Beschreibe, was verbessert oder weiterbearbeitet werden soll.',
+    followUpFilesOnlyMessage: 'Bitte mit dem angehängten Folge-Material weiterarbeiten.',
+    requestFollowUp: 'Weiterarbeiten lassen',
+    images: 'Bilder',
+    editImage: 'Bild bearbeiten',
+    annotateImage: 'Bild markieren',
+    annotationHelp: 'Markiere das Bild für den Agenten. Die Zeichnung bleibt editierbar und eine markierte Kopie wird an den Agenten übergeben.',
+    undo: 'Rückgängig',
+    clear: 'Leeren',
+    saveAnnotation: 'Markierung speichern',
     language: 'Sprache',
     openSidebar: 'Sidebar öffnen',
     closeSidebar: 'Sidebar schließen',
@@ -291,19 +367,33 @@ const projectModalOpen = ref(false);
 const userModalOpen = ref(false);
 const taskModalOpen = ref(false);
 const deleteTaskModalOpen = ref(false);
+const annotationModalOpen = ref(false);
 const taskSubmitting = ref(false);
+const annotationSubmitting = ref(false);
 const sidebarCollapsed = ref(false);
 const editingProjectId = ref<string | null>(null);
 const selectedTaskId = ref<string | null>(null);
 const selectedTaskDetail = ref<TaskDetail | null>(null);
 const taskMessage = ref('');
-const activeTaskTab = ref<'activity' | 'task'>('activity');
+const commentMessage = ref('');
+const followUpMessage = ref('');
+const activeTaskTab = ref<'activity' | 'task' | 'comments'>('activity');
+const tagDropdownOpen = ref(false);
+const selectedAnnotationAttachment = ref<Attachment | null>(null);
+const selectedAnnotationPendingFile = ref<PendingTaskFile | null>(null);
+const annotationImageEl = ref<HTMLImageElement | null>(null);
+const annotationCanvas = ref<HTMLCanvasElement | null>(null);
+const annotationData = ref<AnnotationData>({ version: 1, strokes: [] });
+const annotationColor = ref('#ef4444');
+const annotationWidth = ref(5);
+const drawingStroke = ref<AnnotationStroke | null>(null);
+const annotationColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'];
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let taskEventSource: EventSource | null = null;
 
 const loginForm = reactive({ email: '', password: '' });
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
-const projectForm = reactive({ name: '', key: '', folderPath: '', description: '', userIds: [] as string[] });
+const projectForm = reactive({ name: '', key: '', folderPath: '', description: '', userIds: [] as string[], tags: '' });
 const taskForm = reactive({
   title: '',
   description: '',
@@ -311,8 +401,9 @@ const taskForm = reactive({
   swimlaneId: '',
   assigneeId: '',
   priority: 'normal' as Task['priority'],
+  tags: [] as string[],
 });
-const taskFiles = ref<File[]>([]);
+const taskFiles = ref<PendingTaskFile[]>([]);
 
 const t = computed(() => dictionary[locale.value]);
 const isDarkMode = computed(() => colorMode.value === 'dark');
@@ -322,24 +413,33 @@ const isAdmin = computed(() => user.value?.role === 'admin');
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
 const defaultSwimlaneId = computed(() => board.value?.swimlanes[0]?.id ?? '');
 const editingTask = computed(() => selectedTaskDetail.value?.task ?? null);
-const taskLocked = computed(() => editingTask.value?.agentStatus === 'running');
 const backlogColumn = computed(() => board.value?.columns.find((column) => column.key === 'backlog') ?? board.value?.columns[0] ?? null);
 const hasAgentActivity = computed(() => {
   const status = editingTask.value?.agentStatus;
   if (status === 'running' || status === 'done' || status === 'failed') return true;
-  return selectedTaskDetail.value?.events.some((event) => ['codex_started', 'codex_event', 'codex_completed', 'codex_failed'].includes(event.action)) ?? false;
+  return selectedTaskDetail.value?.events.some((event) => ['codex_started', 'codex_text_update', 'codex_completed', 'codex_failed'].includes(event.action)) ?? false;
 });
-const canSendGuidance = computed(() => editingTask.value?.agentStatus === 'running');
+const canSendGuidance = computed(() => {
+  const status = editingTask.value?.agentStatus;
+  return status === 'queued' || status === 'running';
+});
+const canRequestFollowUp = computed(() => {
+  const status = editingTask.value?.agentStatus;
+  return status === 'done' || status === 'failed';
+});
+const currentProjectTags = computed(() => selectedTaskDetail.value?.projectTags ?? board.value?.projectTags ?? []);
+const taskTagPreview = computed(() => taskForm.tags);
+const teamComments = computed(() => (selectedTaskDetail.value?.comments ?? []).filter((comment) => comment.kind === 'comment'));
+const commentCount = computed(() => teamComments.value.length);
 const taskTabs = computed(() => [
   { key: 'activity' as const, label: t.value.activityTab },
   { key: 'task' as const, label: t.value.taskTab },
+  { key: 'comments' as const, label: `${t.value.commentsTab} (${commentCount.value})` },
 ]);
-const readableActivityItems = computed(() => {
-  return (selectedTaskDetail.value?.events ?? [])
-    .map(formatActivityEvent)
-    .filter((item): item is ActivityItem => item !== null);
-});
-const hiddenActivityCount = computed(() => Math.max(0, (selectedTaskDetail.value?.events.length ?? 0) - readableActivityItems.value.length));
+const latestAgentUpdate = computed(() => latestTextUpdate(selectedTaskDetail.value?.events ?? []));
+const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? []).filter(isImageAttachment));
+const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
+const selectedAnnotationImageUrl = computed(() => selectedAnnotationAttachment.value?.url ?? selectedAnnotationPendingFile.value?.url ?? '');
 const boardStats = computed(() => ({
   tasks: board.value?.tasks.length ?? 0,
   columns: board.value?.columns.length ?? 0,
@@ -395,6 +495,7 @@ watch(taskModalOpen, (open) => {
 onBeforeUnmount(() => {
   if (boardRefreshTimer) clearInterval(boardRefreshTimer);
   closeTaskEventStream();
+  clearTaskFiles();
 });
 
 const loadSession = async () => {
@@ -429,6 +530,7 @@ const loadBoard = async (projectId: string) => {
   const firstColumnId = board.value.columns[0]?.id ?? '';
   if (!board.value.columns.some((column) => column.id === taskForm.columnId)) taskForm.columnId = firstColumnId;
   taskForm.swimlaneId = taskForm.swimlaneId || defaultSwimlaneId.value;
+  taskForm.tags = taskForm.tags.filter((tag) => board.value?.projectTags.includes(tag));
 };
 
 const refreshCurrentBoard = async () => {
@@ -453,7 +555,7 @@ const selectProject = async (projectId: string) => {
 
 const openProjectModal = async (project?: Project) => {
   editingProjectId.value = project?.id ?? null;
-  Object.assign(projectForm, { name: '', key: '', folderPath: '', description: '', userIds: [] });
+  Object.assign(projectForm, { name: '', key: '', folderPath: '', description: '', userIds: [], tags: '' });
   if (project) {
     Object.assign(projectForm, {
       name: project.name,
@@ -461,11 +563,13 @@ const openProjectModal = async (project?: Project) => {
       folderPath: project.folderPath,
       description: project.description ?? '',
       userIds: [],
+      tags: '',
     });
     const projectBoard = selectedProjectId.value === project.id && board.value
       ? board.value
       : await $fetch<Board>(`/api/projects/${project.id}/board`);
     projectForm.userIds = projectBoard.members.map((member) => member.id);
+    projectForm.tags = projectBoard.projectTags.join(', ');
   }
   projectModalOpen.value = true;
 };
@@ -480,6 +584,9 @@ const openTaskModal = (columnId?: string) => {
   selectedTaskId.value = null;
   selectedTaskDetail.value = null;
   taskMessage.value = '';
+  commentMessage.value = '';
+  followUpMessage.value = '';
+  tagDropdownOpen.value = false;
   activeTaskTab.value = 'task';
   Object.assign(taskForm, {
     title: '',
@@ -488,16 +595,20 @@ const openTaskModal = (columnId?: string) => {
     swimlaneId: defaultSwimlaneId.value,
     assigneeId: '',
     priority: 'normal',
+    tags: [],
   });
-  taskFiles.value = [];
+  clearTaskFiles();
   taskModalOpen.value = true;
 };
 
 const openTaskDetail = async (task: Task) => {
   closeTaskEventStream();
   selectedTaskId.value = task.id;
-  taskFiles.value = [];
+  clearTaskFiles();
   taskMessage.value = '';
+  commentMessage.value = '';
+  followUpMessage.value = '';
+  tagDropdownOpen.value = false;
   selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${task.id}`);
   activeTaskTab.value = hasAgentActivity.value ? 'activity' : 'task';
   const detailTask = selectedTaskDetail.value.task;
@@ -508,6 +619,7 @@ const openTaskDetail = async (task: Task) => {
     swimlaneId: detailTask.swimlaneId ?? defaultSwimlaneId.value,
     assigneeId: '',
     priority: 'normal',
+    tags: detailTask.tags,
   });
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
@@ -561,13 +673,17 @@ const createUser = async () => {
 
 const saveProjectAction = async () => {
   errorMessage.value = null;
+  const body = {
+    ...projectForm,
+    tags: parseTagList(projectForm.tags),
+  };
   try {
     if (editingProjectId.value) {
-      await $fetch(`/api/projects/${editingProjectId.value}`, { method: 'PATCH', body: projectForm });
+      await $fetch(`/api/projects/${editingProjectId.value}`, { method: 'PATCH', body });
     } else {
-      await $fetch('/api/projects', { method: 'POST', body: projectForm });
+      await $fetch('/api/projects', { method: 'POST', body });
     }
-    Object.assign(projectForm, { name: '', key: '', folderPath: '', description: '', userIds: [] });
+    Object.assign(projectForm, { name: '', key: '', folderPath: '', description: '', userIds: [], tags: '' });
     const editedProjectId = editingProjectId.value;
     editingProjectId.value = null;
     await loadAppData();
@@ -586,6 +702,7 @@ const saveTaskAction = async () => {
   taskSubmitting.value = true;
   try {
     if (selectedTaskId.value) {
+      const tags = taskForm.tags;
       if (!hasAgentActivity.value) {
         await $fetch(`/api/tasks/${selectedTaskId.value}`, {
           method: 'PATCH',
@@ -593,18 +710,24 @@ const saveTaskAction = async () => {
             title: taskForm.title,
             description: taskForm.description,
             columnId: taskForm.columnId,
+            tags,
           },
+        });
+      } else {
+        await $fetch(`/api/tasks/${selectedTaskId.value}`, {
+          method: 'PATCH',
+          body: { tags },
         });
       }
       if (taskFiles.value.length && (!hasAgentActivity.value || canSendGuidance.value)) {
         const attachmentForm = new FormData();
-        for (const file of taskFiles.value) attachmentForm.append('files', file);
+        for (const file of taskUploadFiles()) attachmentForm.append('files', file);
         await $fetch(`/api/tasks/${selectedTaskId.value}/attachments`, { method: 'POST', body: attachmentForm });
       }
       if (taskMessage.value.trim() && canSendGuidance.value) {
         await $fetch(`/api/tasks/${selectedTaskId.value}/messages`, { method: 'POST', body: { body: taskMessage.value } });
       }
-      taskFiles.value = [];
+      clearTaskFiles();
       taskMessage.value = '';
       selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}`);
       await loadBoard(selectedProjectId.value);
@@ -615,7 +738,8 @@ const saveTaskAction = async () => {
       if (taskForm.description) form.append('description', taskForm.description);
       if (taskForm.columnId) form.append('columnId', taskForm.columnId);
       if (taskForm.swimlaneId) form.append('swimlaneId', taskForm.swimlaneId);
-      for (const file of taskFiles.value) form.append('files', file);
+      form.append('tags', JSON.stringify(taskForm.tags));
+      for (const file of taskUploadFiles()) form.append('files', file);
       await $fetch(`/api/projects/${selectedProjectId.value}/tasks`, { method: 'POST', body: form });
       taskModalOpen.value = false;
       await nextTick();
@@ -626,10 +750,59 @@ const saveTaskAction = async () => {
         swimlaneId: defaultSwimlaneId.value,
         assigneeId: '',
         priority: 'normal',
+        tags: [],
       });
-      taskFiles.value = [];
+      clearTaskFiles();
       await loadBoard(selectedProjectId.value);
     }
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    taskSubmitting.value = false;
+  }
+};
+
+const sendCommentAction = async () => {
+  if (!selectedTaskId.value || !commentMessage.value.trim() || taskSubmitting.value) return;
+  errorMessage.value = null;
+  taskSubmitting.value = true;
+  try {
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/comments`, {
+      method: 'POST',
+      body: { body: commentMessage.value },
+    });
+    commentMessage.value = '';
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    taskSubmitting.value = false;
+  }
+};
+
+const requestFollowUpAction = async () => {
+  if (!selectedTaskId.value || !selectedProjectId.value || taskSubmitting.value) return;
+  if (!followUpMessage.value.trim() && !taskFiles.value.length) return;
+  errorMessage.value = null;
+  taskSubmitting.value = true;
+  try {
+    await $fetch(`/api/tasks/${selectedTaskId.value}`, {
+      method: 'PATCH',
+      body: { tags: taskForm.tags },
+    });
+    if (taskFiles.value.length) {
+      const attachmentForm = new FormData();
+      for (const file of taskUploadFiles()) attachmentForm.append('files', file);
+      await $fetch(`/api/tasks/${selectedTaskId.value}/attachments`, { method: 'POST', body: attachmentForm });
+    }
+    const body = followUpMessage.value.trim() || t.value.followUpFilesOnlyMessage;
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/messages`, {
+      method: 'POST',
+      body: { body },
+    });
+    clearTaskFiles();
+    followUpMessage.value = '';
+    activeTaskTab.value = 'activity';
+    await loadBoard(selectedProjectId.value);
   } catch (error) {
     errorMessage.value = humanError(error);
   } finally {
@@ -652,8 +825,10 @@ const confirmDeleteTaskAction = async () => {
     taskModalOpen.value = false;
     selectedTaskId.value = null;
     selectedTaskDetail.value = null;
-    taskFiles.value = [];
+    clearTaskFiles();
     taskMessage.value = '';
+    commentMessage.value = '';
+    followUpMessage.value = '';
     await loadBoard(selectedProjectId.value);
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -695,26 +870,72 @@ const clearDragState = () => {
 
 const handlePaste = (event: ClipboardEvent) => {
   const files = [...(event.clipboardData?.files ?? [])];
-  if (files.length) taskFiles.value = [...taskFiles.value, ...files];
+  if (files.length) addTaskFiles(files);
 };
 
 const handleFileInput = (event: Event) => {
   const input = event.target as HTMLInputElement;
-  taskFiles.value = [...taskFiles.value, ...(input.files ? [...input.files] : [])];
+  addTaskFiles(input.files ? [...input.files] : []);
   input.value = '';
 };
+
+const handleFileDrop = (event: DragEvent) => {
+  const files = [...(event.dataTransfer?.files ?? [])];
+  if (files.length) addTaskFiles(files);
+};
+
+const addTaskFiles = (files: File[]) => {
+  const items: PendingTaskFile[] = files.map((file) => ({
+    id: fileId(),
+    file,
+    url: URL.createObjectURL(file),
+    annotation: { version: 1, strokes: [] },
+    annotatedUrl: null,
+    renderedFile: null,
+  }));
+  taskFiles.value = [...taskFiles.value, ...items];
+};
+
+function clearTaskFiles() {
+  for (const item of taskFiles.value) {
+    URL.revokeObjectURL(item.url);
+    if (item.annotatedUrl) URL.revokeObjectURL(item.annotatedUrl);
+  }
+  taskFiles.value = [];
+  selectedAnnotationPendingFile.value = null;
+}
+
+const taskUploadFiles = () => taskFiles.value.map((item) => item.renderedFile ?? item.file);
+
+const fileId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const parseTagList = (value: string) => {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const rawTag of value.split(/[,;\n]/)) {
+    const tag = rawTag.trim().replace(/^#+/, '').replace(/\s+/g, ' ').slice(0, 40);
+    if (!tag) continue;
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= 12) break;
+  }
+  return tags;
+};
+
+const toggleTaskTag = (tag: string) => {
+  taskForm.tags = taskForm.tags.includes(tag)
+    ? taskForm.tags.filter((item) => item !== tag)
+    : [...taskForm.tags, tag];
+};
+
+const isImageAttachment = (attachment: Attachment) => attachment.mimeType.startsWith('image/');
+const isPendingImageFile = (item: PendingTaskFile) => item.file.type.startsWith('image/');
 
 const columnName = (column: BoardColumn) => locale.value === 'de' ? column.nameDe : column.nameEn;
 const tasksForColumn = (columnId: string) =>
   [...(board.value?.tasks.filter((task) => task.columnId === columnId) ?? [])].sort((a, b) => a.position - b.position);
-
-const agentColor = (status: Task['agentStatus']) => {
-  if (status === 'failed') return 'error';
-  if (status === 'running') return 'primary';
-  if (status === 'queued') return 'warning';
-  if (status === 'done') return 'success';
-  return 'neutral';
-};
 
 const taskStatusLabel = (status: Task['agentStatus']) => {
   const labels: Record<Task['agentStatus'], { en: string; de: string }> = {
@@ -729,73 +950,14 @@ const taskStatusLabel = (status: Task['agentStatus']) => {
 
 const projectSidebarText = (project: Project) => project.description?.trim() || t.value.openBoard;
 
-const formatActivityEvent = (event: TaskEvent): ActivityItem | null => {
-  const metadata = parseMetadata(event.metadata);
-  const codexEvent = metadataString(metadata.event);
-  const message = metadataString(metadata.message);
-  const command = extractCommand(message);
-  const label = (en: string, de: string) => locale.value === 'de' ? de : en;
-
-  if (event.action === 'codex_event') {
-    if (isLowSignalCodexEvent(codexEvent)) return null;
-    if (codexEvent === 'item/started' && command) {
-      return activityItem(event, label('Step started', 'Schritt gestartet'), label('A work step has started.', 'Ein Arbeitsschritt wurde gestartet.'), label('Step', 'Schritt'), 'info');
-    }
-    if (codexEvent === 'item/completed' && command) {
-      return activityItem(event, label('Step finished', 'Schritt abgeschlossen'), label('A work step was completed.', 'Ein Arbeitsschritt wurde abgeschlossen.'), label('Step', 'Schritt'), 'success');
-    }
-    if (codexEvent === 'item/started' || codexEvent === 'item/completed') return null;
-    if (codexEvent === 'turn/diff/updated') {
-      return activityItem(event, label('Files updated', 'Dateien aktualisiert'), label('Changes were prepared for this task.', 'Änderungen wurden für diese Aufgabe vorbereitet.'), label('Change', 'Änderung'), 'warning');
-    }
-    if (codexEvent === 'turn/started' || codexEvent === 'session_started') {
-      return activityItem(event, label('Work started', 'Bearbeitung gestartet'), friendlyDetail(message), label('Start', 'Start'), 'info');
-    }
-    if (codexEvent === 'turn/completed') {
-      return activityItem(event, label('Work step finished', 'Bearbeitungsschritt abgeschlossen'), friendlyDetail(message), label('Step', 'Schritt'), 'success');
-    }
-    if (codexEvent === 'app_server_started') {
-      return activityItem(event, label('Preparation started', 'Vorbereitung gestartet'), null, label('Start', 'Start'), 'neutral');
-    }
-    if (codexEvent?.includes('approval')) {
-      return activityItem(event, label('Rule checked', 'Regel geprüft'), friendlyDetail(message), label('Check', 'Prüfung'), 'warning');
-    }
-    return activityItem(event, label('Progress update', 'Fortschritt aktualisiert'), friendlyDetail(message), label('Update', 'Aktualisierung'), 'neutral');
+const latestTextUpdate = (events: TaskEvent[]) => {
+  for (const event of [...events].reverse()) {
+    if (event.action !== 'codex_text_update') continue;
+    const body = metadataString(parseMetadata(event.metadata).body);
+    if (body) return { body, createdAt: event.createdAt };
   }
-
-  if (event.action === 'codex_started') {
-    return activityItem(event, label('Work started', 'Bearbeitung gestartet'), label('The task is locked while work is in progress.', 'Die Aufgabe ist gesperrt, solange sie bearbeitet wird.'), label('Start', 'Start'), 'info');
-  }
-  if (event.action === 'codex_completed') {
-    return activityItem(event, label('Ready for review', 'Bereit zur Prüfung'), label('The task was moved to review.', 'Die Aufgabe wurde in Prüfung verschoben.'), label('Done', 'Fertig'), 'success');
-  }
-  if (event.action === 'codex_failed') {
-    return activityItem(event, label('Work needs review', 'Bearbeitung prüfen'), label('The task could not be completed automatically. Review the history or add a new note.', 'Die Aufgabe konnte nicht automatisch abgeschlossen werden. Prüfe den Verlauf oder ergänze einen neuen Hinweis.'), label('Review', 'Prüfen'), 'error');
-  }
-  if (event.action === 'codex_queued') {
-    return activityItem(event, label('Ready to start', 'Zur Bearbeitung vorgemerkt'), label('The task will be handled in board order.', 'Die Aufgabe wird gemäß Board-Reihenfolge bearbeitet.'), label('Ready', 'Bereit'), 'warning');
-  }
-  if (event.action === 'steering_message') {
-    return activityItem(event, label('Guidance sent', 'Hinweis gesendet'), metadataString(metadata.body), label('Input', 'Hinweis'), 'info');
-  }
-  if (event.action === 'task_created') {
-    return activityItem(event, label('Task created', 'Aufgabe erstellt'), null, label('Task', 'Aufgabe'), 'neutral');
-  }
-  if (event.action === 'task_updated') {
-    return activityItem(event, label('Task updated', 'Aufgabe aktualisiert'), metadata.columnChanged ? label('The board area or order changed.', 'Board-Bereich oder Reihenfolge wurde geändert.') : null, label('Task', 'Aufgabe'), 'neutral');
-  }
-
-  return activityItem(event, label('Progress update', 'Fortschritt aktualisiert'), friendlyDetail(message), label('Update', 'Aktualisierung'), 'neutral');
+  return null;
 };
-
-const activityItem = (event: TaskEvent, title: string, detail: string | null | undefined, badge: string, tone: ActivityTone): ActivityItem => ({
-  id: event.id,
-  title,
-  detail: detail ? shorten(detail, 280) : null,
-  badge,
-  tone,
-  createdAt: event.createdAt,
-});
 
 const parseMetadata = (metadata: string | null): Record<string, unknown> => {
   if (!metadata) return {};
@@ -809,73 +971,249 @@ const parseMetadata = (metadata: string | null): Record<string, unknown> => {
 
 const metadataString = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
 
-const isLowSignalCodexEvent = (event?: string | null) => {
-  return !event
-    || event === 'item/agentMessage/delta'
-    || event === 'thread/tokenUsage/updated'
-    || event === 'account/rateLimits/updated'
-    || event === 'thread/status/changed'
-    || event === 'mcpServer/startupStatus/updated';
-};
-
-const extractCommand = (message: string | null) => {
-  const match = message?.match(/^item\/(?:started|completed):\s*(.+)$/);
-  if (!match) return null;
-  return cleanupCommand(match[1] ?? '');
-};
-
-const cleanupCommand = (command: string) => {
-  let cleaned = command.trim().replace(/^\/bin\/bash -lc\s+/, '').trim();
-  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) || (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
-    cleaned = cleaned.slice(1, -1);
+const parseAnnotationData = (value?: string | null): AnnotationData => {
+  if (!value) return { version: 1, strokes: [] };
+  try {
+    const parsed = JSON.parse(value) as Partial<AnnotationData>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.strokes)) return { version: 1, strokes: [] };
+    const strokes = parsed.strokes
+      .map((stroke) => ({
+        color: typeof stroke.color === 'string' ? stroke.color : '#ef4444',
+        width: typeof stroke.width === 'number' && Number.isFinite(stroke.width) ? Math.min(Math.max(stroke.width, 1), 24) : 5,
+        points: Array.isArray(stroke.points)
+          ? stroke.points
+            .map((point) => ({
+              x: typeof point.x === 'number' && Number.isFinite(point.x) ? Math.min(Math.max(point.x, 0), 1) : 0,
+              y: typeof point.y === 'number' && Number.isFinite(point.y) ? Math.min(Math.max(point.y, 0), 1) : 0,
+            }))
+            .filter((point) => point.x >= 0 && point.y >= 0)
+          : [],
+      }))
+      .filter((stroke) => stroke.points.length > 0);
+    return { version: 1, strokes };
+  } catch {
+    return { version: 1, strokes: [] };
   }
-  return cleaned.replace(/\\"/g, '"').replace(/\\'/g, "'");
 };
 
-const friendlyDetail = (message: string | null) => {
-  if (!message || ['item/started', 'item/completed', 'turn/started', 'turn/completed', 'turn/diff/updated'].includes(message)) return null;
-  const detail = message.includes(': ') ? message.split(': ').slice(1).join(': ') : message;
-  return isInternalDetail(detail) ? null : detail;
+const openAnnotationEditor = async (attachment: Attachment) => {
+  selectedAnnotationAttachment.value = attachment;
+  selectedAnnotationPendingFile.value = null;
+  annotationData.value = parseAnnotationData(attachment.annotation?.data);
+  drawingStroke.value = null;
+  annotationModalOpen.value = true;
+  await nextTick();
+  if (annotationImageEl.value?.complete) onAnnotationImageLoad();
 };
 
-const isInternalDetail = (value: string) => {
-  const normalized = value.trim().toLowerCase();
-  return !normalized
-    || normalized.startsWith('item/')
-    || normalized.startsWith('turn/')
-    || normalized.startsWith('thread/')
-    || normalized.startsWith('account/')
-    || normalized.startsWith('mcpserver/')
-    || normalized.includes('/bin/bash')
-    || normalized.includes('codex')
-    || normalized.includes('nuxt')
-    || normalized.includes('sqlite')
-    || normalized.includes('drizzle')
-    || normalized.includes('agent-browser')
-    || normalized.includes('app-server')
-    || normalized.includes('completion_gate')
-    || normalized.includes('session_')
-    || normalized.includes('approval_')
-    || /^(bun|git|gh|node|npm|npx|pnpm|curl|rg)\s/.test(normalized);
+const openPendingAnnotationEditor = async (item: PendingTaskFile) => {
+  if (!isPendingImageFile(item)) return;
+  selectedAnnotationAttachment.value = null;
+  selectedAnnotationPendingFile.value = item;
+  annotationData.value = cloneAnnotationData(item.annotation);
+  drawingStroke.value = null;
+  annotationModalOpen.value = true;
+  await nextTick();
+  if (annotationImageEl.value?.complete) onAnnotationImageLoad();
 };
 
-const shorten = (value: string, maxLength: number) => value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+const onAnnotationImageLoad = () => {
+  resizeAnnotationCanvas();
+  redrawAnnotationCanvas();
+};
 
-const activityToneClass = (tone: ActivityTone) => ({
-  success: 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900/60 dark:bg-emerald-950/35 dark:text-emerald-100',
-  warning: 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-100',
-  error: 'border-red-200 bg-red-50 text-red-950 dark:border-red-900/60 dark:bg-red-950/35 dark:text-red-100',
-  info: 'border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900/60 dark:bg-sky-950/35 dark:text-sky-100',
-  neutral: 'border-zinc-200 bg-white text-zinc-800 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100',
-}[tone]);
+const resizeAnnotationCanvas = () => {
+  const canvas = annotationCanvas.value;
+  const image = annotationImageEl.value;
+  if (!canvas || !image) return;
+  const rect = image.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+};
 
-const activityDotClass = (tone: ActivityTone) => ({
-  success: 'bg-emerald-500',
-  warning: 'bg-amber-500',
-  error: 'bg-red-500',
-  info: 'bg-sky-500',
-  neutral: 'bg-zinc-400',
-}[tone]);
+const redrawAnnotationCanvas = () => {
+  const canvas = annotationCanvas.value;
+  const image = annotationImageEl.value;
+  if (!canvas || !image) return;
+  const rect = image.getBoundingClientRect();
+  const context = canvas.getContext('2d');
+  if (!context) return;
+  const dpr = window.devicePixelRatio || 1;
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, rect.width, rect.height);
+  for (const stroke of [...annotationData.value.strokes, ...(drawingStroke.value ? [drawingStroke.value] : [])]) {
+    drawStroke(context, stroke, rect.width, rect.height, 1);
+  }
+};
+
+const drawStroke = (
+  context: CanvasRenderingContext2D,
+  stroke: AnnotationStroke,
+  width: number,
+  height: number,
+  lineScale: number,
+) => {
+  if (!stroke.points.length) return;
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.strokeStyle = stroke.color;
+  context.lineWidth = stroke.width * lineScale;
+  context.beginPath();
+  const firstPoint = stroke.points[0];
+  if (!firstPoint) return;
+  context.moveTo(firstPoint.x * width, firstPoint.y * height);
+  for (const point of stroke.points.slice(1)) {
+    context.lineTo(point.x * width, point.y * height);
+  }
+  context.stroke();
+};
+
+const annotationPointerPosition = (event: PointerEvent): AnnotationPoint | null => {
+  const canvas = annotationCanvas.value;
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  return {
+    x: Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1),
+    y: Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1),
+  };
+};
+
+const startAnnotationStroke = (event: PointerEvent) => {
+  const point = annotationPointerPosition(event);
+  if (!point) return;
+  try {
+    (event.currentTarget as HTMLCanvasElement).setPointerCapture(event.pointerId);
+  } catch {
+    // Synthetic tests and some touch handoffs can start without capturable pointers.
+  }
+  drawingStroke.value = {
+    color: annotationColor.value,
+    width: annotationWidth.value,
+    points: [point],
+  };
+  redrawAnnotationCanvas();
+};
+
+const moveAnnotationStroke = (event: PointerEvent) => {
+  const point = annotationPointerPosition(event);
+  if (!point || !drawingStroke.value) return;
+  drawingStroke.value.points = [...drawingStroke.value.points, point];
+  redrawAnnotationCanvas();
+};
+
+const finishAnnotationStroke = (event: PointerEvent) => {
+  if (!drawingStroke.value) return;
+  try {
+    (event.currentTarget as HTMLCanvasElement).releasePointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture can already be released if the pointer leaves the canvas.
+  }
+  if (drawingStroke.value.points.length > 1) {
+    annotationData.value = {
+      version: 1,
+      strokes: [...annotationData.value.strokes, drawingStroke.value],
+    };
+  }
+  drawingStroke.value = null;
+  redrawAnnotationCanvas();
+};
+
+const undoAnnotationStroke = () => {
+  annotationData.value = {
+    version: 1,
+    strokes: annotationData.value.strokes.slice(0, -1),
+  };
+  redrawAnnotationCanvas();
+};
+
+const clearAnnotationStrokes = () => {
+  annotationData.value = { version: 1, strokes: [] };
+  drawingStroke.value = null;
+  redrawAnnotationCanvas();
+};
+
+const saveAnnotationAction = async () => {
+  if (annotationSubmitting.value) return;
+  const image = annotationImageEl.value;
+  if (!image) return;
+  annotationSubmitting.value = true;
+  errorMessage.value = null;
+  try {
+    const renderedImage = renderAnnotatedImage(image);
+    if (selectedAnnotationPendingFile.value) {
+      const pendingId = selectedAnnotationPendingFile.value.id;
+      const renderedFile = await dataUrlToFile(renderedImage, annotatedFileName(selectedAnnotationPendingFile.value.file.name));
+      taskFiles.value = taskFiles.value.map((item) => {
+        if (item.id !== pendingId) return item;
+        if (item.annotatedUrl) URL.revokeObjectURL(item.annotatedUrl);
+        return {
+          ...item,
+          annotation: cloneAnnotationData(annotationData.value),
+          annotatedUrl: URL.createObjectURL(renderedFile),
+          renderedFile,
+        };
+      });
+      selectedAnnotationPendingFile.value = taskFiles.value.find((item) => item.id === pendingId) ?? null;
+      annotationModalOpen.value = false;
+      return;
+    }
+    if (!selectedTaskId.value || !selectedProjectId.value || !selectedAnnotationAttachment.value) return;
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/attachments/${selectedAnnotationAttachment.value.id}/annotation`, {
+      method: 'POST',
+      body: {
+        annotationData: annotationData.value,
+        renderedImage,
+      },
+    });
+    await loadBoard(selectedProjectId.value);
+    const updatedAttachment = selectedTaskDetail.value.task.attachments.find((attachment) => attachment.id === selectedAnnotationAttachment.value?.id);
+    selectedAnnotationAttachment.value = updatedAttachment ?? null;
+    annotationModalOpen.value = false;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    annotationSubmitting.value = false;
+  }
+};
+
+const renderAnnotatedImage = (image: HTMLImageElement) => {
+  const canvas = document.createElement('canvas');
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('annotation_canvas_unavailable');
+  context.drawImage(image, 0, 0, width, height);
+  const displayed = annotationImageEl.value?.getBoundingClientRect();
+  const displayScale = displayed?.width ? width / displayed.width : 1;
+  for (const stroke of annotationData.value.strokes) {
+    drawStroke(context, stroke, width, height, Math.max(displayScale, 1));
+  }
+  return canvas.toDataURL('image/png');
+};
+
+const cloneAnnotationData = (data: AnnotationData): AnnotationData => ({
+  version: 1,
+  strokes: data.strokes.map((stroke) => ({
+    color: stroke.color,
+    width: stroke.width,
+    points: stroke.points.map((point) => ({ ...point })),
+  })),
+});
+
+const dataUrlToFile = async (dataUrl: string, fileName: string) => {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  return new File([blob], fileName, { type: 'image/png' });
+};
+
+const annotatedFileName = (fileName: string) => {
+  const baseName = fileName.replace(/\.[^.]+$/, '') || 'image';
+  return `${baseName}-annotated.png`;
+};
 
 const formatActivityTime = (value: string) => new Date(value).toLocaleTimeString([], {
   hour: '2-digit',
@@ -909,6 +1247,7 @@ const humanError = (error: unknown) => {
     task_not_accepting_steering: { en: 'This task is not accepting new guidance right now.', de: 'Diese Aufgabe nimmt im Moment keine neuen Hinweise an.' },
     empty_message: { en: 'Please enter a message.', de: 'Bitte gib eine Nachricht ein.' },
     missing_backlog_column: { en: 'The board is missing its first task area.', de: 'Dem Board fehlt der erste Aufgabenbereich.' },
+    missing_todo_column: { en: 'The board is missing its work queue.', de: 'Dem Board fehlt die Bearbeitungs-Warteschlange.' },
     invalid_column: { en: 'Please choose a valid board area.', de: 'Bitte wähle einen gültigen Board-Bereich.' },
     invalid_project_key: { en: 'Please use a short project key with letters and numbers.', de: 'Bitte verwende ein kurzes Projektkürzel mit Buchstaben und Zahlen.' },
   };
@@ -1244,13 +1583,21 @@ const humanError = (error: unknown) => {
                         @dragend="clearDragState"
                         @drop.stop.prevent="draggedTaskId && moveTask(draggedTaskId, column.id, task.id)"
                       >
-                        <div class="mb-2 flex items-start justify-between gap-2">
+                        <div class="mb-2 flex items-start gap-2">
                           <UBadge variant="subtle" color="neutral">{{ task.key }}</UBadge>
-                          <UBadge :color="agentColor(task.agentStatus)" variant="subtle">{{ taskStatusLabel(task.agentStatus) }}</UBadge>
                         </div>
                         <h3 class="text-sm font-semibold leading-snug">{{ task.title }}</h3>
                         <p v-if="task.description" class="mt-2 line-clamp-3 text-xs text-zinc-500 dark:text-zinc-400">{{ task.description }}</p>
                         <div class="mt-3 flex flex-wrap gap-1.5">
+                          <UBadge
+                            v-for="tag in task.tags"
+                            :key="tag"
+                            color="primary"
+                            variant="soft"
+                            class="max-w-full"
+                          >
+                            #{{ tag }}
+                          </UBadge>
                           <UBadge v-if="task.attachments.length" color="neutral" variant="outline">{{ task.attachments.length }} {{ t.attachments }}</UBadge>
                         </div>
                       </UCard>
@@ -1311,6 +1658,10 @@ const humanError = (error: unknown) => {
 
               <UFormField :label="t.description" size="lg">
                 <UTextarea v-model="projectForm.description" class="w-full" :rows="4" size="xl" />
+              </UFormField>
+
+              <UFormField :label="t.projectTags" :description="t.projectTagsHelp" size="lg">
+                <UTextarea v-model="projectForm.tags" class="w-full" :rows="3" size="lg" />
               </UFormField>
 
               <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
@@ -1404,7 +1755,52 @@ const humanError = (error: unknown) => {
               </UFormField>
             </div>
 
-            <div v-if="hasAgentActivity" class="grid gap-5 p-6">
+            <div v-if="selectedTaskId" class="grid gap-5 p-6">
+              <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold">{{ t.tags }}</p>
+                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.tagsHelp }}</p>
+                  </div>
+                  <div class="relative">
+                    <UButton
+                      type="button"
+                      color="neutral"
+                      variant="outline"
+                      icon="i-lucide-tags"
+                      @click="tagDropdownOpen = !tagDropdownOpen"
+                    >
+                      {{ taskForm.tags.length ? `${taskForm.tags.length} ${t.tags}` : t.chooseTags }}
+                    </UButton>
+                    <div
+                      v-if="tagDropdownOpen"
+                      class="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-2 shadow-xl shadow-zinc-950/10 dark:border-zinc-800 dark:bg-zinc-950"
+                    >
+                      <label
+                        v-for="tag in currentProjectTags"
+                        :key="tag"
+                        class="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                      >
+                        <input
+                          type="checkbox"
+                          class="size-4 accent-teal-600"
+                          :checked="taskForm.tags.includes(tag)"
+                          @change="toggleTaskTag(tag)"
+                        >
+                        <span class="min-w-0 truncate">#{{ tag }}</span>
+                      </label>
+                      <p v-if="!currentProjectTags.length" class="rounded-lg border border-dashed border-zinc-300 p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                        {{ t.noProjectTags }}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <UBadge v-for="tag in taskTagPreview" :key="tag" color="primary" variant="soft">#{{ tag }}</UBadge>
+                  <span v-if="!taskTagPreview.length" class="text-sm text-zinc-500 dark:text-zinc-400">-</span>
+                </div>
+              </div>
+
               <div class="inline-flex rounded-lg border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950">
                 <button
                   v-for="tab in taskTabs"
@@ -1419,14 +1815,17 @@ const humanError = (error: unknown) => {
               </div>
 
               <section v-if="activeTaskTab === 'activity'" class="grid gap-4">
-                <UAlert v-if="taskLocked" color="warning" variant="soft" icon="i-lucide-lock" :description="t.lockedTask" />
-                <UAlert v-else color="neutral" variant="soft" icon="i-lucide-lock" :description="t.noGuidanceAfterFinish" />
+                <UAlert color="neutral" variant="soft" icon="i-lucide-route" :description="t.steeringHelp" />
 
                 <div v-if="canSendGuidance" class="grid gap-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
                   <UFormField :label="t.guidance" size="lg">
                     <UTextarea v-model="taskMessage" class="w-full" :rows="3" size="lg" @paste="handlePaste" />
                   </UFormField>
-                  <div class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                  <div
+                    class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900"
+                    @dragover.prevent
+                    @drop.prevent="handleFileDrop"
+                  >
                     <div class="mb-3 flex items-center justify-between gap-3">
                       <div class="min-w-0">
                         <p class="text-sm font-semibold">{{ t.evidence }}</p>
@@ -1439,63 +1838,269 @@ const humanError = (error: unknown) => {
                       </label>
                     </div>
                     <div class="min-h-12 rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-                      {{ taskFiles.length ? taskFiles.map((file) => file.name).join(', ') : t.pasteHint }}
+                      <div v-if="taskFiles.length" class="grid gap-2 sm:grid-cols-2">
+                        <button
+                          v-for="item in taskFiles"
+                          :key="item.id"
+                          type="button"
+                          class="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 text-left transition dark:border-zinc-800 dark:bg-zinc-900"
+                          :class="isPendingImageFile(item) ? 'hover:border-teal-400' : 'cursor-default'"
+                          :aria-disabled="!isPendingImageFile(item)"
+                          @click="isPendingImageFile(item) && openPendingAnnotationEditor(item)"
+                        >
+                          <img v-if="isPendingImageFile(item)" :src="item.annotatedUrl || item.url" :alt="item.file.name" class="h-24 w-full object-contain bg-white dark:bg-zinc-950">
+                          <div class="flex items-center justify-between gap-3 p-2">
+                            <span class="flex min-w-0 items-center gap-2">
+                              <UIcon :name="isPendingImageFile(item) ? 'i-lucide-image' : 'i-lucide-file'" class="size-4 shrink-0 text-zinc-400" />
+                              <span class="truncate">{{ item.file.name }}</span>
+                            </span>
+                            <span v-if="isPendingImageFile(item)" class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-300">
+                              <UIcon name="i-lucide-paintbrush" class="size-3.5" />
+                              {{ t.editImage }}
+                            </span>
+                          </div>
+                        </button>
+                      </div>
+                      <span v-else>{{ t.pasteHint }}</span>
                     </div>
+                  </div>
+                  <div class="flex justify-end">
+                    <UButton
+                      type="button"
+                      icon="i-lucide-send"
+                      :loading="taskSubmitting"
+                      :disabled="!taskMessage.trim() && !taskFiles.length"
+                      @click="saveTaskAction"
+                    >
+                      {{ t.sendMessage }}
+                    </UButton>
+                  </div>
+                </div>
+                <UAlert v-else-if="!canRequestFollowUp" color="neutral" variant="soft" icon="i-lucide-lock" :description="t.steeringUnavailable" />
+
+                <div v-if="canRequestFollowUp" class="grid gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+                  <UFormField :label="t.followUp" :description="t.followUpHelp" size="lg">
+                    <UTextarea v-model="followUpMessage" class="w-full" :rows="3" size="lg" :placeholder="t.followUpPlaceholder" @paste="handlePaste" />
+                  </UFormField>
+                  <div
+                    class="rounded-xl border border-dashed border-amber-300 bg-white/70 p-4 dark:border-amber-900/70 dark:bg-zinc-950/70"
+                    @dragover.prevent
+                    @drop.prevent="handleFileDrop"
+                  >
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                      <div class="min-w-0">
+                        <p class="text-sm font-semibold">{{ t.evidence }}</p>
+                        <p class="truncate text-xs text-amber-800/70 dark:text-amber-100/70">{{ t.pasteHint }}</p>
+                      </div>
+                      <label class="inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-medium text-white dark:bg-amber-500 dark:text-amber-950">
+                        <UIcon name="i-lucide-paperclip" class="size-4" />
+                        <span>{{ t.files }}</span>
+                        <input type="file" multiple class="hidden" @change="handleFileInput">
+                      </label>
+                    </div>
+                    <div class="min-h-12 rounded-lg border border-amber-200 bg-white p-3 text-sm text-zinc-500 dark:border-amber-900/60 dark:bg-zinc-950 dark:text-zinc-400">
+                      <div v-if="taskFiles.length" class="grid gap-2 sm:grid-cols-2">
+                        <button
+                          v-for="item in taskFiles"
+                          :key="item.id"
+                          type="button"
+                          class="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 text-left transition dark:border-zinc-800 dark:bg-zinc-900"
+                          :class="isPendingImageFile(item) ? 'hover:border-amber-400' : 'cursor-default'"
+                          :aria-disabled="!isPendingImageFile(item)"
+                          @click="isPendingImageFile(item) && openPendingAnnotationEditor(item)"
+                        >
+                          <img v-if="isPendingImageFile(item)" :src="item.annotatedUrl || item.url" :alt="item.file.name" class="h-24 w-full object-contain bg-white dark:bg-zinc-950">
+                          <div class="flex items-center justify-between gap-3 p-2">
+                            <span class="flex min-w-0 items-center gap-2">
+                              <UIcon :name="isPendingImageFile(item) ? 'i-lucide-image' : 'i-lucide-file'" class="size-4 shrink-0 text-zinc-400" />
+                              <span class="truncate">{{ item.file.name }}</span>
+                            </span>
+                            <span v-if="isPendingImageFile(item)" class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                              <UIcon name="i-lucide-paintbrush" class="size-3.5" />
+                              {{ t.editImage }}
+                            </span>
+                          </div>
+                        </button>
+                      </div>
+                      <span v-else>{{ t.pasteHint }}</span>
+                    </div>
+                  </div>
+                  <div class="flex justify-end">
+                    <UButton
+                      type="button"
+                      color="warning"
+                      icon="i-lucide-rotate-ccw"
+                      :loading="taskSubmitting"
+                      :disabled="!followUpMessage.trim() && !taskFiles.length"
+                      @click="requestFollowUpAction"
+                    >
+                      {{ t.requestFollowUp }}
+                    </UButton>
                   </div>
                 </div>
 
                 <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
                   <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <p class="text-sm font-semibold">{{ t.activity }}</p>
+                      <p class="text-sm font-semibold">{{ t.latestUpdate }}</p>
                       <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.activityReadableHint }}</p>
                     </div>
-                    <div class="flex flex-wrap items-center gap-2">
-                      <UBadge color="primary" variant="soft">{{ readableActivityItems.length }}</UBadge>
-                      <UBadge v-if="hiddenActivityCount" color="neutral" variant="soft">{{ hiddenActivityCount }} {{ t.hiddenActivityEvents }}</UBadge>
+                  </div>
+                  <div v-if="latestAgentUpdate" class="rounded-xl border border-teal-200 bg-teal-50 p-4 text-teal-950 dark:border-teal-900/60 dark:bg-teal-950/30 dark:text-teal-100">
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div class="flex items-center gap-2 text-sm font-semibold">
+                        <UIcon name="i-lucide-sparkles" class="size-4" />
+                        {{ t.latestUpdate }}
+                      </div>
+                      <time class="text-xs opacity-70">{{ formatActivityTime(latestAgentUpdate.createdAt) }}</time>
+                    </div>
+                    <p class="whitespace-pre-wrap break-words text-sm leading-6">{{ latestAgentUpdate.body }}</p>
+                  </div>
+                  <p v-else class="rounded-xl border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                    {{ t.noAgentUpdate }}
+                  </p>
+                </div>
+              </section>
+
+              <section v-else-if="activeTaskTab === 'task'" class="grid gap-4">
+                <template v-if="hasAgentActivity">
+                  <UAlert color="neutral" variant="soft" icon="i-lucide-file-text" :description="t.readonlyTask" />
+                  <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                    <div>
+                      <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.title }}</p>
+                      <p class="mt-1 text-base font-semibold">{{ taskForm.title }}</p>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.description }}</p>
+                      <p class="mt-1 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-300">{{ taskForm.description || '-' }}</p>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.files }}</p>
+                      <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ editingTask?.attachments.length ?? 0 }} {{ t.attachments }}</p>
                     </div>
                   </div>
-                  <div class="pr-1">
-                    <ol class="relative space-y-3 border-l border-zinc-200 pl-4 dark:border-zinc-800">
-                      <li
-                        v-for="item in readableActivityItems"
-                        :key="item.id"
-                        class="relative"
-                      >
-                        <span
-                          class="absolute -left-[21px] top-3 size-2.5 rounded-full ring-4 ring-white dark:ring-zinc-950"
-                          :class="activityDotClass(item.tone)"
-                        />
-                        <div class="rounded-xl border p-3 shadow-sm" :class="activityToneClass(item.tone)">
-                          <div class="flex flex-wrap items-center justify-between gap-2">
-                            <div class="flex min-w-0 items-center gap-2">
-                              <UBadge color="neutral" variant="subtle">{{ item.badge }}</UBadge>
-                              <p class="min-w-0 truncate text-sm font-semibold">{{ item.title }}</p>
-                            </div>
-                            <time class="shrink-0 text-xs opacity-65">{{ formatActivityTime(item.createdAt) }}</time>
+                </template>
+                <template v-else>
+                  <UFormField :label="t.title" required size="lg">
+                    <UInput v-model="taskForm.title" class="w-full" size="xl" required />
+                  </UFormField>
+
+                  <UFormField :label="t.description" size="lg">
+                    <UTextarea v-model="taskForm.description" class="w-full" :rows="7" size="xl" @paste="handlePaste" />
+                  </UFormField>
+
+                  <div
+                    class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900"
+                    @dragover.prevent
+                    @drop.prevent="handleFileDrop"
+                  >
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                      <div class="min-w-0">
+                        <p class="text-sm font-semibold">{{ t.evidence }}</p>
+                        <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">{{ t.pasteHint }}</p>
+                      </div>
+                      <label class="inline-flex shrink-0 cursor-pointer items-center gap-2 rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white dark:bg-white dark:text-zinc-950">
+                        <UIcon name="i-lucide-paperclip" class="size-4" />
+                        <span>{{ t.files }}</span>
+                        <input type="file" multiple class="hidden" @change="handleFileInput">
+                      </label>
+                    </div>
+                    <div class="min-h-12 rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
+                      <div v-if="taskFiles.length" class="grid gap-2 sm:grid-cols-2">
+                        <button
+                          v-for="item in taskFiles"
+                          :key="item.id"
+                          type="button"
+                          class="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 text-left transition dark:border-zinc-800 dark:bg-zinc-900"
+                          :class="isPendingImageFile(item) ? 'hover:border-teal-400' : 'cursor-default'"
+                          :aria-disabled="!isPendingImageFile(item)"
+                          @click="isPendingImageFile(item) && openPendingAnnotationEditor(item)"
+                        >
+                          <img v-if="isPendingImageFile(item)" :src="item.annotatedUrl || item.url" :alt="item.file.name" class="h-24 w-full object-contain bg-white dark:bg-zinc-950">
+                          <div class="flex items-center justify-between gap-3 p-2">
+                            <span class="flex min-w-0 items-center gap-2">
+                              <UIcon :name="isPendingImageFile(item) ? 'i-lucide-image' : 'i-lucide-file'" class="size-4 shrink-0 text-zinc-400" />
+                              <span class="truncate">{{ item.file.name }}</span>
+                            </span>
+                            <span v-if="isPendingImageFile(item)" class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-300">
+                              <UIcon name="i-lucide-paintbrush" class="size-3.5" />
+                              {{ t.editImage }}
+                            </span>
                           </div>
-                          <p v-if="item.detail" class="mt-2 whitespace-pre-wrap break-words text-sm leading-6 opacity-80">{{ item.detail }}</p>
-                        </div>
-                      </li>
-                    </ol>
+                        </button>
+                      </div>
+                      <span v-else>{{ t.pasteHint }}</span>
+                    </div>
+                  </div>
+                </template>
+
+                <div v-if="taskImageAttachments.length" class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                  <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p class="text-sm font-semibold">{{ t.images }}</p>
+                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.annotationHelp }}</p>
+                    </div>
+                    <UBadge color="neutral" variant="soft">{{ taskImageAttachments.length }}</UBadge>
+                  </div>
+                  <div class="grid gap-3 sm:grid-cols-2">
+                    <button
+                      v-for="attachment in taskImageAttachments"
+                      :key="attachment.id"
+                      type="button"
+                      class="group overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 text-left transition hover:border-teal-400 dark:border-zinc-800 dark:bg-zinc-900"
+                      @click="openAnnotationEditor(attachment)"
+                    >
+                      <img :src="attachment.annotatedUrl || attachment.url" :alt="attachment.fileName" class="h-36 w-full object-contain bg-white dark:bg-zinc-950">
+                      <div class="flex items-center justify-between gap-3 p-3">
+                        <span class="min-w-0 truncate text-sm font-medium">{{ attachment.fileName }}</span>
+                        <span class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-zinc-500 group-hover:text-teal-700 dark:text-zinc-400 dark:group-hover:text-teal-300">
+                          <UIcon name="i-lucide-paintbrush" class="size-3.5" />
+                          {{ t.editImage }}
+                        </span>
+                      </div>
+                    </button>
                   </div>
                 </div>
               </section>
 
               <section v-else class="grid gap-4">
-                <UAlert color="neutral" variant="soft" icon="i-lucide-file-text" :description="t.readonlyTask" />
-                <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                  <div>
-                    <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.title }}</p>
-                    <p class="mt-1 text-base font-semibold">{{ taskForm.title }}</p>
+                <div class="grid gap-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p class="text-sm font-semibold">{{ t.comments }}</p>
+                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ commentCount }} {{ t.total }}</p>
+                    </div>
+                    <UIcon name="i-lucide-messages-square" class="size-5 text-zinc-400" />
                   </div>
-                  <div>
-                    <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.description }}</p>
-                    <p class="mt-1 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-300">{{ taskForm.description || '-' }}</p>
+                  <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                    <UFormField :label="t.comments" size="lg">
+                      <UTextarea v-model="commentMessage" class="w-full" :rows="2" size="lg" :placeholder="t.commentPlaceholder" />
+                    </UFormField>
+                    <UButton
+                      type="button"
+                      icon="i-lucide-send"
+                      :loading="taskSubmitting"
+                      :disabled="!commentMessage.trim()"
+                      @click="sendCommentAction"
+                    >
+                      {{ t.sendComment }}
+                    </UButton>
                   </div>
-                  <div>
-                    <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.files }}</p>
-                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ editingTask?.attachments.length ?? 0 }} {{ t.attachments }}</p>
+                  <div class="grid max-h-72 gap-3 overflow-y-auto pr-1">
+                    <div
+                      v-for="comment in teamComments"
+                      :key="comment.id"
+                      class="rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/70"
+                    >
+                      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p class="text-sm font-semibold">{{ comment.userName }}</p>
+                        <time class="text-xs text-zinc-500 dark:text-zinc-400">{{ formatActivityTime(comment.createdAt) }}</time>
+                      </div>
+                      <p class="whitespace-pre-wrap break-words text-sm leading-6 text-zinc-700 dark:text-zinc-200">{{ comment.body }}</p>
+                    </div>
+                    <p v-if="!teamComments.length" class="rounded-xl border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-400 dark:border-zinc-800">
+                      {{ t.noComments }}
+                    </p>
                   </div>
                 </div>
               </section>
@@ -1510,7 +2115,56 @@ const humanError = (error: unknown) => {
                 <UTextarea v-model="taskForm.description" class="w-full" :rows="7" size="xl" @paste="handlePaste" />
               </UFormField>
 
-              <div class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p class="text-sm font-semibold">{{ t.tags }}</p>
+                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.tagsHelp }}</p>
+                  </div>
+                  <div class="relative">
+                    <UButton
+                      type="button"
+                      color="neutral"
+                      variant="outline"
+                      icon="i-lucide-tags"
+                      @click="tagDropdownOpen = !tagDropdownOpen"
+                    >
+                      {{ taskForm.tags.length ? `${taskForm.tags.length} ${t.tags}` : t.chooseTags }}
+                    </UButton>
+                    <div
+                      v-if="tagDropdownOpen"
+                      class="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-2 shadow-xl shadow-zinc-950/10 dark:border-zinc-800 dark:bg-zinc-950"
+                    >
+                      <label
+                        v-for="tag in currentProjectTags"
+                        :key="tag"
+                        class="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                      >
+                        <input
+                          type="checkbox"
+                          class="size-4 accent-teal-600"
+                          :checked="taskForm.tags.includes(tag)"
+                          @change="toggleTaskTag(tag)"
+                        >
+                        <span class="min-w-0 truncate">#{{ tag }}</span>
+                      </label>
+                      <p v-if="!currentProjectTags.length" class="rounded-lg border border-dashed border-zinc-300 p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                        {{ t.noProjectTags }}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <UBadge v-for="tag in taskTagPreview" :key="tag" color="primary" variant="soft">#{{ tag }}</UBadge>
+                  <span v-if="!taskTagPreview.length" class="text-sm text-zinc-500 dark:text-zinc-400">-</span>
+                </div>
+              </div>
+
+              <div
+                class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900"
+                @dragover.prevent
+                @drop.prevent="handleFileDrop"
+              >
                 <div class="mb-3 flex items-center justify-between gap-3">
                   <div class="min-w-0">
                     <p class="text-sm font-semibold">{{ t.evidence }}</p>
@@ -1523,7 +2177,30 @@ const humanError = (error: unknown) => {
                   </label>
                 </div>
                 <div class="min-h-12 rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-                  {{ taskFiles.length ? taskFiles.map((file) => file.name).join(', ') : t.pasteHint }}
+                  <div v-if="taskFiles.length" class="grid gap-2 sm:grid-cols-2">
+                    <button
+                      v-for="item in taskFiles"
+                      :key="item.id"
+                      type="button"
+                      class="overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 text-left transition dark:border-zinc-800 dark:bg-zinc-900"
+                      :class="isPendingImageFile(item) ? 'hover:border-teal-400' : 'cursor-default'"
+                      :aria-disabled="!isPendingImageFile(item)"
+                      @click="isPendingImageFile(item) && openPendingAnnotationEditor(item)"
+                    >
+                      <img v-if="isPendingImageFile(item)" :src="item.annotatedUrl || item.url" :alt="item.file.name" class="h-24 w-full object-contain bg-white dark:bg-zinc-950">
+                      <div class="flex items-center justify-between gap-3 p-2">
+                        <span class="flex min-w-0 items-center gap-2">
+                          <UIcon :name="isPendingImageFile(item) ? 'i-lucide-image' : 'i-lucide-file'" class="size-4 shrink-0 text-zinc-400" />
+                          <span class="truncate">{{ item.file.name }}</span>
+                        </span>
+                        <span v-if="isPendingImageFile(item)" class="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-300">
+                          <UIcon name="i-lucide-paintbrush" class="size-3.5" />
+                          {{ t.editImage }}
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                  <span v-else>{{ t.pasteHint }}</span>
                 </div>
               </div>
             </div>
@@ -1544,13 +2221,12 @@ const humanError = (error: unknown) => {
           </UButton>
           <UButton color="neutral" variant="ghost" type="button" @click="taskModalOpen = false">{{ t.cancel }}</UButton>
           <UButton
-            v-if="!hasAgentActivity || canSendGuidance"
             icon="i-lucide-clipboard-plus"
             type="submit"
             form="task-form"
             :loading="taskSubmitting"
           >
-            {{ canSendGuidance ? t.sendMessage : selectedTaskId ? t.updateTask : t.createTask }}
+            {{ !selectedTaskId ? t.createTask : canSendGuidance && taskMessage.trim() ? t.sendMessage : t.save }}
           </UButton>
         </template>
       </UModal>
@@ -1578,6 +2254,94 @@ const humanError = (error: unknown) => {
               </UButton>
             </div>
           </div>
+        </template>
+      </UModal>
+
+      <UModal
+        v-if="annotationModalOpen"
+        v-model:open="annotationModalOpen"
+        :title="t.annotateImage"
+        :description="selectedAnnotationName"
+        :ui="{ content: 'max-w-5xl', body: 'p-0 sm:p-0', footer: 'justify-between border-t border-zinc-200 bg-zinc-50/95 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/90' }"
+      >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
+        <template #body>
+          <div class="grid gap-4 p-5">
+            <UAlert color="neutral" variant="soft" icon="i-lucide-paintbrush" :description="t.annotationHelp" />
+            <div class="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
+              <div class="flex items-center gap-2">
+                <button
+                  v-for="color in annotationColors"
+                  :key="color"
+                  type="button"
+                  class="size-8 rounded-full border-2 transition"
+                  :class="annotationColor === color ? 'border-zinc-950 ring-2 ring-teal-500 dark:border-white' : 'border-white dark:border-zinc-900'"
+                  :style="{ backgroundColor: color }"
+                  @click="annotationColor = color"
+                />
+              </div>
+              <div class="flex min-w-48 items-center gap-3">
+                <UIcon name="i-lucide-pencil-line" class="size-4 text-zinc-400" />
+                <input v-model.number="annotationWidth" type="range" min="2" max="18" class="w-36 accent-teal-600">
+                <span class="w-8 text-sm text-zinc-500 dark:text-zinc-400">{{ annotationWidth }}</span>
+              </div>
+              <div class="ml-auto flex items-center gap-2">
+                <UButton
+                  type="button"
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-undo-2"
+                  :disabled="!annotationData.strokes.length"
+                  @click="undoAnnotationStroke"
+                >
+                  {{ t.undo }}
+                </UButton>
+                <UButton
+                  type="button"
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-eraser"
+                  :disabled="!annotationData.strokes.length"
+                  @click="clearAnnotationStrokes"
+                >
+                  {{ t.clear }}
+                </UButton>
+              </div>
+            </div>
+            <div class="overflow-auto rounded-xl border border-zinc-200 bg-zinc-100 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+              <div class="relative mx-auto inline-block max-w-full">
+                <img
+                  ref="annotationImageEl"
+                  :src="selectedAnnotationImageUrl"
+                  :alt="selectedAnnotationName"
+                  class="block max-h-[62vh] max-w-full select-none"
+                  draggable="false"
+                  @load="onAnnotationImageLoad"
+                >
+                <canvas
+                  ref="annotationCanvas"
+                  class="absolute inset-0 size-full touch-none cursor-crosshair"
+                  @pointerdown.prevent="startAnnotationStroke"
+                  @pointermove.prevent="moveAnnotationStroke"
+                  @pointerup.prevent="finishAnnotationStroke"
+                  @pointercancel.prevent="finishAnnotationStroke"
+                />
+              </div>
+            </div>
+          </div>
+        </template>
+        <template #footer>
+          <UButton color="neutral" variant="ghost" type="button" @click="annotationModalOpen = false">{{ t.cancel }}</UButton>
+          <UButton
+            type="button"
+            icon="i-lucide-save"
+            :loading="annotationSubmitting"
+            @click="saveAnnotationAction"
+          >
+            {{ t.saveAnnotation }}
+          </UButton>
         </template>
       </UModal>
     </div>

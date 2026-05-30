@@ -24,6 +24,16 @@ interface CompletionCheckResult {
   metadata?: unknown;
 }
 
+export type CodexUserInput =
+  | { type: 'text'; text: string; text_elements?: unknown[] }
+  | { type: 'localImage'; path: string; detail?: 'high' | 'original' };
+
+export interface CodexSteeringBatch {
+  input: CodexUserInput[];
+  description?: string | null;
+  markDelivered?: () => void;
+}
+
 interface RunCodexSessionOptions {
   config: CodexConfig;
   workspacePath: string;
@@ -36,6 +46,8 @@ interface RunCodexSessionOptions {
   onEvent: (event: CodexRuntimeEvent) => void;
   refreshIssue: () => Promise<Issue | null>;
   shouldContinue: (issue: Issue) => boolean;
+  loadSteering?: (context: { threadId: string; turnId: string; turnNumber: number }) => Promise<CodexSteeringBatch | null>;
+  steeringPollMs?: number;
   completionCheck?: (issue: Issue) => Promise<CompletionCheckResult | null>;
 }
 
@@ -96,7 +108,7 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
         cwd: options.workspacePath,
         approvalPolicy: options.config.approvalPolicy,
         sandboxPolicy: options.config.turnSandboxPolicy,
-        input: [{ type: 'text', text: prompt }],
+        input: [textInput(prompt)],
       }));
 
       const turnId = readPath<string>(turnResponse, ['turn', 'id']);
@@ -114,7 +126,22 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
         message: `turn ${turnNumber} started`,
       });
 
-      await peer.waitForTurn(threadId, turnId, options.config.turnTimeoutMs, options.onEvent);
+      const stopSteeringPump = options.loadSteering
+        ? startSteeringPump(peer, {
+            threadId,
+            turnId,
+            turnNumber,
+            pollMs: options.steeringPollMs ?? 2000,
+            loadSteering: options.loadSteering,
+            onEvent: options.onEvent,
+          })
+        : async () => {};
+
+      try {
+        await peer.waitForTurn(threadId, turnId, options.config.turnTimeoutMs, options.onEvent);
+      } finally {
+        await stopSteeringPump();
+      }
 
       const refreshedIssue = await options.refreshIssue();
       if (refreshedIssue) currentIssue = refreshedIssue;
@@ -149,6 +176,8 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
         });
       }
       if (!options.shouldContinue(currentIssue)) break;
+      const continuationIssue = await options.refreshIssue();
+      if (continuationIssue) currentIssue = continuationIssue;
     }
   } finally {
     peer.stop('SIGTERM');
@@ -418,6 +447,7 @@ function eventFromNotification(
     thread_id: threadId,
     turn_id: turnId,
     message: summarizeNotification(method, params),
+    raw: params,
   };
 }
 
@@ -425,16 +455,130 @@ function continuationPrompt(issue: Issue, turnNumber: number, maxTurns: number):
   return [
     `Continue working on ${issue.identifier}: ${issue.title}.`,
     `This is continuation turn ${turnNumber} of ${maxTurns}.`,
-    'Do not resend or restate the original task. Continue from the existing thread context, validate progress, and use the tracker workflow when appropriate.',
+    'New steering, attachments, or task metadata may have been added while you were working. Apply the current task context below before continuing.',
+    '',
+    issue.description?.trim() || '(No additional task context is currently attached.)',
+    '',
+    'Continue from the existing thread context, validate progress, and use the tracker workflow when appropriate.',
   ].join('\n');
 }
 
+function startSteeringPump(
+  peer: JsonRpcPeer,
+  options: {
+    threadId: string;
+    turnId: string;
+    turnNumber: number;
+    pollMs: number;
+    loadSteering: NonNullable<RunCodexSessionOptions['loadSteering']>;
+    onEvent: RunCodexSessionOptions['onEvent'];
+  },
+): () => Promise<void> {
+  let stopped = false;
+  let inFlight: Promise<void> | null = null;
+  let lastFailure: string | null = null;
+
+  const pump = () => {
+    if (stopped || inFlight) return;
+    inFlight = (async () => {
+      try {
+        const batch = await options.loadSteering({
+          threadId: options.threadId,
+          turnId: options.turnId,
+          turnNumber: options.turnNumber,
+        });
+        if (stopped || !batch?.input.length) return;
+
+        const response = await peer.request('turn/steer', {
+          threadId: options.threadId,
+          expectedTurnId: options.turnId,
+          input: batch.input,
+        });
+        batch.markDelivered?.();
+        lastFailure = null;
+        options.onEvent({
+          event: 'turn_steered',
+          timestamp: now(),
+          codex_app_server_pid: peer.pid(),
+          session_id: `${options.threadId}-${options.turnId}`,
+          thread_id: options.threadId,
+          turn_id: options.turnId,
+          message: batch.description ?? 'steering delivered to active turn',
+          raw: { inputCount: batch.input.length, response },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== lastFailure) {
+          lastFailure = message;
+          options.onEvent({
+            event: 'turn_steer_failed',
+            timestamp: now(),
+            codex_app_server_pid: peer.pid(),
+            session_id: `${options.threadId}-${options.turnId}`,
+            thread_id: options.threadId,
+            turn_id: options.turnId,
+            message,
+          });
+        }
+      }
+    })().finally(() => {
+      inFlight = null;
+    });
+  };
+
+  const timer = setInterval(pump, Math.max(options.pollMs, 250));
+  pump();
+
+  return async () => {
+    stopped = true;
+    clearInterval(timer);
+    await inFlight?.catch(() => {});
+  };
+}
+
+function textInput(text: string): CodexUserInput {
+  return { type: 'text', text, text_elements: [] };
+}
+
 function summarizeNotification(method: string, params: Record<string, unknown>): string {
+  const agentMessage = naturalTextFromParams(params);
+  if (method === 'item/agentMessage/delta' && agentMessage) return agentMessage;
+
   const title = readPath<string>(params, ['item', 'title'])
     ?? readPath<string>(params, ['item', 'command'])
     ?? readPath<string>(params, ['message'])
     ?? readPath<string>(params, ['error', 'message']);
   return title ? `${method}: ${title}` : method;
+}
+
+function naturalTextFromParams(params: Record<string, unknown>): string | null {
+  const candidates = [
+    params.delta,
+    params.text,
+    params.message,
+    readPath(params, ['delta', 'text']),
+    readPath(params, ['item', 'text']),
+    readPath(params, ['item', 'message']),
+    readPath(params, ['item', 'content']),
+  ];
+
+  for (const candidate of candidates) {
+    const text = extractText(candidate);
+    if (text) return text;
+  }
+  return null;
+}
+
+function extractText(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (Array.isArray(value)) {
+    const text = value.map(extractText).filter(Boolean).join('');
+    return text.trim() ? text : null;
+  }
+  const record = asRecord(value);
+  if (typeof record.text === 'string' && record.text.trim()) return record.text;
+  if (typeof record.content === 'string' && record.content.trim()) return record.content;
+  return null;
 }
 
 function readPath<T>(value: unknown, keys: string[]): T | undefined {
