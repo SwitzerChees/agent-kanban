@@ -709,6 +709,25 @@ export function getTaskAttachment(taskId: string, attachmentId: string, user: Us
   return { task, attachment, annotation };
 }
 
+export async function deleteTaskAttachment(taskId: string, attachmentId: string, user: User) {
+  const { task, attachment, annotation } = getTaskAttachment(taskId, attachmentId, user);
+  if (task.agentStatus === 'running') {
+    throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_delete_attachment' });
+  }
+
+  await Promise.all([
+    fs.rm(attachment.storagePath, { force: true }),
+    ...(annotation ? [fs.rm(annotation.renderedStoragePath, { force: true })] : []),
+  ]);
+  db.delete(schema.attachments).where(eq(schema.attachments.id, attachmentId)).run();
+  logTaskActivity(task.projectId, taskId, user.id, 'attachment_deleted', {
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+  });
+  return getTaskDetail(taskId, user);
+}
+
 export async function saveAttachmentAnnotation(taskId: string, attachmentId: string, input: {
   annotationData: unknown;
   renderedImage: Buffer;
@@ -841,7 +860,12 @@ function decorateAttachment(
 ) {
   const url = `/api/tasks/${attachment.taskId}/attachments/${attachment.id}`;
   return {
-    ...attachment,
+    id: attachment.id,
+    taskId: attachment.taskId,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    createdAt: attachment.createdAt,
     url,
     annotatedUrl: annotation ? `${url}?variant=annotated` : null,
     annotation: annotation

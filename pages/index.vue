@@ -194,6 +194,12 @@ const dictionary = {
     deleteTask: 'Delete task',
     deleteTaskConfirm: 'Delete this task permanently?',
     deleteTaskWarning: 'This cannot be undone. Attachments and activity for this task will be removed with it.',
+    deleteAttachment: 'Delete file',
+    deleteAttachmentConfirm: 'Delete this attached file?',
+    deleteAttachmentWarning: 'The file will be removed permanently and will no longer be available to people or the AI agent.',
+    openAttachment: 'Open file',
+    downloadAttachment: 'Download file',
+    attachedFiles: 'Attached files',
     unsavedTaskChanges: 'Discard unsaved changes?',
     unsavedTaskChangesDescription: 'Your current changes will be lost if you close this task.',
     keepEditing: 'Keep editing',
@@ -372,6 +378,12 @@ const dictionary = {
     deleteTask: 'Aufgabe löschen',
     deleteTaskConfirm: 'Diese Aufgabe dauerhaft löschen?',
     deleteTaskWarning: 'Das kann nicht rückgängig gemacht werden. Anhänge und Aktivitäten dieser Aufgabe werden mitgelöscht.',
+    deleteAttachment: 'Datei löschen',
+    deleteAttachmentConfirm: 'Diese angehängte Datei löschen?',
+    deleteAttachmentWarning: 'Die Datei wird dauerhaft entfernt und steht danach weder Personen noch dem KI-Agenten zur Verfügung.',
+    openAttachment: 'Datei öffnen',
+    downloadAttachment: 'Datei herunterladen',
+    attachedFiles: 'Angehängte Dateien',
     unsavedTaskChanges: 'Ungespeicherte Änderungen verwerfen?',
     unsavedTaskChangesDescription: 'Wenn du die Aufgabe schließt, gehen deine aktuellen Änderungen verloren.',
     keepEditing: 'Weiter bearbeiten',
@@ -539,10 +551,12 @@ const discardTaskModalOpen = ref(false);
 const oberthemaModalOpen = ref(false);
 const unterthemaModalOpen = ref(false);
 const deleteTaskModalOpen = ref(false);
+const deleteAttachmentModalOpen = ref(false);
 const annotationModalOpen = ref(false);
 const taskSubmitting = ref(false);
 const hierarchySubmitting = ref(false);
 const annotationSubmitting = ref(false);
+const attachmentSubmitting = ref(false);
 const sidebarCollapsed = ref(false);
 const editingProjectId = ref<string | null>(null);
 const editingOberthemaId = ref<string | null>(null);
@@ -555,6 +569,7 @@ const followUpMessage = ref('');
 const activeTaskTab = ref<'activity' | 'task' | 'comments'>('activity');
 const tagDropdownOpen = ref(false);
 const selectedAnnotationAttachment = ref<Attachment | null>(null);
+const selectedAttachmentForDeletion = ref<Attachment | null>(null);
 const selectedAnnotationPendingFile = ref<PendingTaskFile | null>(null);
 const annotationImageEl = ref<HTMLImageElement | null>(null);
 const annotationCanvas = ref<HTMLCanvasElement | null>(null);
@@ -632,6 +647,8 @@ function closeTaskModalImmediately() {
   taskModalBaselineVersion += 1;
   taskModalBaseline.value = '';
   discardTaskModalOpen.value = false;
+  deleteAttachmentModalOpen.value = false;
+  selectedAttachmentForDeletion.value = null;
   tagDropdownOpen.value = false;
   taskModalOpen.value = false;
   closeTaskEventStream();
@@ -736,6 +753,7 @@ const taskTabs = computed(() => [
   { key: 'comments' as const, label: `${t.value.commentsTab} (${commentCount.value})` },
 ]);
 const latestAgentUpdate = computed(() => latestTextUpdate(selectedTaskDetail.value?.events ?? []));
+const taskAttachments = computed(() => editingTask.value?.attachments ?? []);
 const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? []).filter(isImageAttachment));
 const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
 const selectedAnnotationImageUrl = computed(() => selectedAnnotationAttachment.value?.url ?? selectedAnnotationPendingFile.value?.url ?? '');
@@ -1377,6 +1395,35 @@ const confirmDeleteTaskAction = async () => {
   }
 };
 
+const requestDeleteAttachment = (attachment: Attachment) => {
+  if (!selectedTaskId.value || attachmentSubmitting.value) return;
+  selectedAttachmentForDeletion.value = attachment;
+  deleteAttachmentModalOpen.value = true;
+};
+
+const confirmDeleteAttachmentAction = async () => {
+  const attachment = selectedAttachmentForDeletion.value;
+  if (!selectedTaskId.value || !selectedProjectId.value || !attachment || attachmentSubmitting.value) return;
+  errorMessage.value = null;
+  attachmentSubmitting.value = true;
+  try {
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/attachments/${attachment.id}`, {
+      method: 'DELETE',
+    });
+    if (selectedAnnotationAttachment.value?.id === attachment.id) {
+      selectedAnnotationAttachment.value = null;
+      annotationModalOpen.value = false;
+    }
+    deleteAttachmentModalOpen.value = false;
+    selectedAttachmentForDeletion.value = null;
+    await loadBoard(selectedProjectId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    attachmentSubmitting.value = false;
+  }
+};
+
 const moveTask = async (taskId: string, columnId: string, placement: TaskPlacement, beforeTaskId?: string) => {
   if (!selectedProjectId.value) return;
   if (beforeTaskId === taskId) {
@@ -1625,6 +1672,26 @@ const taskAssigneeIdForRequest = () => taskForm.assigneeId === UNASSIGNED_ID ? n
 
 const isImageAttachment = (attachment: Attachment) => attachment.mimeType.startsWith('image/');
 const isPendingImageFile = (item: PendingTaskFile) => item.file.type.startsWith('image/');
+const attachmentIcon = (attachment: Attachment) => {
+  if (isImageAttachment(attachment)) return 'i-lucide-image';
+  if (attachment.mimeType === 'application/pdf') return 'i-lucide-file-text';
+  if (attachment.mimeType.startsWith('audio/')) return 'i-lucide-file-audio';
+  if (attachment.mimeType.startsWith('video/')) return 'i-lucide-file-video';
+  if (attachment.mimeType.includes('zip') || attachment.mimeType.includes('compressed')) return 'i-lucide-file-archive';
+  return 'i-lucide-file';
+};
+const attachmentDownloadUrl = (attachment: Attachment) => `${attachment.url}?download=1`;
+const formatFileSize = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; value >= 1024 && index < units.length; index += 1) {
+    value /= 1024;
+    unit = units[index];
+  }
+  return `${new Intl.NumberFormat(locale.value === 'de' ? 'de-CH' : 'en', { maximumFractionDigits: value >= 10 ? 0 : 1 }).format(value)} ${unit}`;
+};
 
 const columnName = (column: BoardColumn) => locale.value === 'de' ? column.nameDe : column.nameEn;
 const oberthemaFor = (subtopic: Unterthema | null | undefined) => subtopic
@@ -2035,6 +2102,8 @@ const humanError = (error: unknown) => {
     task_not_found: { en: 'The task could not be found.', de: 'Die Aufgabe wurde nicht gefunden.' },
     task_locked_after_agent_start: { en: 'This task is already being worked on. Title and description cannot be changed anymore.', de: 'Diese Aufgabe wird bereits bearbeitet. Titel und Beschreibung können nicht mehr geändert werden.' },
     task_running_cannot_delete: { en: 'This task is in progress and cannot be deleted.', de: 'Diese Aufgabe wird gerade bearbeitet und kann nicht gelöscht werden.' },
+    task_running_cannot_delete_attachment: { en: 'Files cannot be deleted while the AI agent is working on this task.', de: 'Während der KI-Agent an dieser Aufgabe arbeitet, können Dateien nicht gelöscht werden.' },
+    attachment_not_found: { en: 'The attached file could not be found.', de: 'Die angehängte Datei wurde nicht gefunden.' },
     task_closed_for_attachments: { en: 'Files can no longer be added to this task.', de: 'Zu dieser Aufgabe können keine Dateien mehr hinzugefügt werden.' },
     task_not_accepting_steering: { en: 'This task is not accepting new guidance right now.', de: 'Diese Aufgabe nimmt im Moment keine neuen Hinweise an.' },
     empty_message: { en: 'Please enter a message.', de: 'Bitte gib eine Nachricht ein.' },
@@ -3243,31 +3312,79 @@ const humanError = (error: unknown) => {
                   </div>
                 </template>
 
-                <div v-if="taskImageAttachments.length" class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div v-if="taskAttachments.length" class="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
                   <div class="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p class="text-sm font-semibold">{{ t.images }}</p>
-                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.annotationHelp }}</p>
+                    <div class="min-w-0 px-4 py-3">
+                      <p class="text-sm font-semibold">{{ t.attachedFiles }}</p>
+                      <p v-if="taskImageAttachments.length" class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{{ t.annotationHelp }}</p>
                     </div>
-                    <UBadge color="neutral" variant="soft">{{ taskImageAttachments.length }}</UBadge>
+                    <UBadge class="mr-4" color="neutral" variant="soft">{{ taskAttachments.length }}</UBadge>
                   </div>
-                  <div class="grid gap-3 sm:grid-cols-2">
-                    <button
-                      v-for="attachment in taskImageAttachments"
+                  <div class="divide-y divide-zinc-200 border-t border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                    <div
+                      v-for="attachment in taskAttachments"
                       :key="attachment.id"
-                      type="button"
-                      class="group overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 text-left transition hover:border-teal-400 dark:border-zinc-800 dark:bg-zinc-900"
-                      @click="openAnnotationEditor(attachment)"
+                      class="flex min-w-0 items-center gap-3 bg-zinc-50/70 px-3 py-2.5 transition hover:bg-zinc-100/80 dark:bg-zinc-900/45 dark:hover:bg-zinc-900"
                     >
-                      <img :src="attachment.annotatedUrl || attachment.url" :alt="attachment.fileName" class="h-36 w-full object-contain bg-white dark:bg-zinc-950">
-                      <div class="flex items-center justify-between gap-3 p-3">
-                        <span class="min-w-0 truncate text-sm font-medium">{{ attachment.fileName }}</span>
-                        <span class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-zinc-500 group-hover:text-teal-700 dark:text-zinc-400 dark:group-hover:text-teal-300">
-                          <UIcon name="i-lucide-paintbrush" class="size-3.5" />
-                          {{ t.editImage }}
-                        </span>
+                      <button
+                        v-if="isImageAttachment(attachment)"
+                        type="button"
+                        class="grid size-11 shrink-0 place-items-center overflow-hidden rounded-lg border border-zinc-200 bg-white transition hover:border-teal-400 dark:border-zinc-700 dark:bg-zinc-950"
+                        :aria-label="`${t.editImage}: ${attachment.fileName}`"
+                        @click="openAnnotationEditor(attachment)"
+                      >
+                        <img :src="attachment.annotatedUrl || attachment.url" alt="" class="size-full object-cover">
+                      </button>
+                      <span v-else class="grid size-11 shrink-0 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400">
+                        <UIcon :name="attachmentIcon(attachment)" class="size-5" />
+                      </span>
+                      <div class="min-w-0 flex-1">
+                        <a
+                          :href="attachment.url"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          :aria-label="`${t.openAttachment}: ${attachment.fileName}`"
+                          class="block truncate text-sm font-semibold text-zinc-800 underline-offset-4 hover:text-teal-700 hover:underline dark:text-zinc-100 dark:hover:text-teal-300"
+                        >
+                          {{ attachment.fileName }}
+                        </a>
+                        <p class="mt-0.5 truncate text-xs text-zinc-500 dark:text-zinc-400">{{ formatFileSize(attachment.size) }} · {{ attachment.mimeType }}</p>
                       </div>
-                    </button>
+                      <div class="flex shrink-0 items-center gap-1">
+                        <UButton
+                          v-if="isImageAttachment(attachment)"
+                          type="button"
+                          color="neutral"
+                          variant="ghost"
+                          size="sm"
+                          icon="i-lucide-paintbrush"
+                          :aria-label="`${t.editImage}: ${attachment.fileName}`"
+                          :title="t.editImage"
+                          @click="openAnnotationEditor(attachment)"
+                        />
+                        <UButton
+                          :href="attachmentDownloadUrl(attachment)"
+                          download
+                          color="neutral"
+                          variant="ghost"
+                          size="sm"
+                          icon="i-lucide-download"
+                          :aria-label="`${t.downloadAttachment}: ${attachment.fileName}`"
+                          :title="t.downloadAttachment"
+                        />
+                        <UButton
+                          type="button"
+                          color="error"
+                          variant="ghost"
+                          size="sm"
+                          icon="i-lucide-trash-2"
+                          :disabled="editingTask?.agentStatus === 'running'"
+                          :aria-label="`${t.deleteAttachment}: ${attachment.fileName}`"
+                          :title="t.deleteAttachment"
+                          @click="requestDeleteAttachment(attachment)"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </section>
@@ -3502,6 +3619,35 @@ const humanError = (error: unknown) => {
               <UButton color="neutral" variant="ghost" type="button" @click="deleteTaskModalOpen = false">{{ t.cancel }}</UButton>
               <UButton color="error" icon="i-lucide-trash-2" type="button" :loading="taskSubmitting" @click="confirmDeleteTaskAction">
                 {{ t.deleteTask }}
+              </UButton>
+            </div>
+          </div>
+        </template>
+      </UModal>
+
+      <UModal
+        v-if="deleteAttachmentModalOpen"
+        v-model:open="deleteAttachmentModalOpen"
+        :title="t.deleteAttachment"
+        :description="t.deleteAttachmentConfirm"
+        :ui="{ content: 'max-w-md' }"
+      >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
+        <template #body>
+          <div class="grid gap-5">
+            <div class="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-900 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-100">
+              <UIcon name="i-lucide-file-x-2" class="mt-0.5 size-5 shrink-0" />
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold">{{ selectedAttachmentForDeletion?.fileName }}</p>
+                <p class="mt-1 text-sm leading-6">{{ t.deleteAttachmentWarning }}</p>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3">
+              <UButton color="neutral" variant="ghost" type="button" @click="deleteAttachmentModalOpen = false">{{ t.cancel }}</UButton>
+              <UButton color="error" icon="i-lucide-trash-2" type="button" :loading="attachmentSubmitting" @click="confirmDeleteAttachmentAction">
+                {{ t.deleteAttachment }}
               </UButton>
             </div>
           </div>

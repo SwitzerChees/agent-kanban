@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { eq } from 'drizzle-orm';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { User } from '../server/lib/db/schema';
@@ -195,6 +196,37 @@ describe('project topic hierarchy', () => {
       }, admin),
       'invalid_hierarchy_order',
     );
+  });
+
+  test('keeps uploaded files visible and removes their database record and stored file on deletion', async () => {
+    const project = await kanban.createProject({
+      name: 'Attachment Project',
+      key: 'FILES',
+      folderPath: path.join(testRoot, 'workspace-attachments'),
+    }, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Task with a persisted file',
+      files: [{
+        fileName: 'briefing.txt',
+        mimeType: 'text/plain',
+        data: Buffer.from('Persist me'),
+      }],
+    }, admin);
+    const attachment = kanban.getTaskDetail(task!.id, admin).task.attachments[0]!;
+    const stored = dbModule.db.select().from(dbModule.schema.attachments)
+      .where(eq(dbModule.schema.attachments.id, attachment.id))
+      .get()!;
+
+    expect(attachment).toMatchObject({ fileName: 'briefing.txt', mimeType: 'text/plain', size: 10 });
+    expect(attachment).not.toHaveProperty('storagePath');
+    expect(existsSync(stored.storagePath)).toBe(true);
+
+    const detail = await kanban.deleteTaskAttachment(task!.id, attachment.id, admin);
+
+    expect(detail.task.attachments).toEqual([]);
+    expect(dbModule.db.select().from(dbModule.schema.attachments)
+      .where(eq(dbModule.schema.attachments.id, attachment.id)).get()).toBeUndefined();
+    expect(existsSync(stored.storagePath)).toBe(false);
   });
 });
 

@@ -106,6 +106,8 @@ function resolveAgent(raw: Record<string, unknown>): AgentConfig {
 function resolveCodex(raw: Record<string, unknown>): CodexConfig {
   return {
     command: stringValue(raw.command, 'codex app-server'),
+    model: nullableString(raw.model),
+    reasoningEffort: nullableString(raw.reasoning_effort),
     approvalPolicy: raw.approval_policy ?? null,
     threadSandbox: raw.thread_sandbox ?? null,
     turnSandboxPolicy: raw.turn_sandbox_policy ?? null,

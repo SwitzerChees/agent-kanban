@@ -31,6 +31,10 @@ tracker:
         workspace: {
           root: './work',
         },
+        codex: {
+          model: 'gpt-5.6-sol',
+          reasoning_effort: 'xhigh',
+        },
       },
       prompt_template: 'Hello {{ issue.identifier }}',
     };
@@ -40,6 +44,8 @@ tracker:
     expect(config.tracker.apiKey).toBe('secret');
     expect(config.tracker.activeStates).toEqual(['Todo', 'In Progress']);
     expect(config.workspace.root).toBe(path.normalize('/repo/work'));
+    expect(config.codex.model).toBe('gpt-5.6-sol');
+    expect(config.codex.reasoningEffort).toBe('xhigh');
     expect(validateDispatchConfig(config).ok).toBe(true);
   });
 

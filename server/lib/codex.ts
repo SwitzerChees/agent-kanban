@@ -80,6 +80,7 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
 
     const threadResponse = await peer.request('thread/start', compactObject({
       cwd: options.workspacePath,
+      model: options.config.model,
       approvalPolicy: options.config.approvalPolicy,
       sandbox: options.config.threadSandbox,
       ephemeral: true,
@@ -106,6 +107,8 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
       const turnResponse = await peer.request('turn/start', compactObject({
         threadId,
         cwd: options.workspacePath,
+        model: options.config.model,
+        effort: options.config.reasoningEffort,
         approvalPolicy: options.config.approvalPolicy,
         sandboxPolicy: options.config.turnSandboxPolicy,
         input: [textInput(prompt)],

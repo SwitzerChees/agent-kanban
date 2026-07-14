@@ -9,6 +9,8 @@ agent:
   max_retry_backoff_ms: 300000
 codex:
   command: codex app-server
+  model: gpt-5.6-sol
+  reasoning_effort: xhigh
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:

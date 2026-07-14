@@ -18,6 +18,8 @@ describe('Codex steering', () => {
     await runCodexSession({
       config: {
         command: `${process.execPath} ${JSON.stringify(fakeServer)}`,
+        model: 'gpt-5.6-sol',
+        reasoningEffort: 'xhigh',
         approvalPolicy: null,
         threadSandbox: null,
         turnSandboxPolicy: null,
@@ -48,7 +50,12 @@ describe('Codex steering', () => {
       },
     });
 
-    const steered = (await readFile(steerLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const messages = (await readFile(steerLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const threadStart = messages.find((message) => message.method === 'thread/start');
+    const turnStart = messages.find((message) => message.method === 'turn/start');
+    const steered = messages.filter((message) => message.method === 'turn/steer');
+    expect(threadStart.params.model).toBe('gpt-5.6-sol');
+    expect(turnStart.params).toMatchObject({ model: 'gpt-5.6-sol', effort: 'xhigh' });
     expect(markedDelivered).toBe(true);
     expect(steered).toHaveLength(1);
     expect(steered[0].method).toBe('turn/steer');
@@ -93,10 +100,12 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'thread/start') {
+    appendFileSync(steerLog, JSON.stringify({ method: message.method, params: message.params }) + '\\n');
     send({ id: message.id, result: { thread: { id: 'thread-1' } } });
     return;
   }
   if (message.method === 'turn/start') {
+    appendFileSync(steerLog, JSON.stringify({ method: message.method, params: message.params }) + '\\n');
     send({ id: message.id, result: { turn: { id: 'turn-1' } } });
     setTimeout(() => {
       send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: { type: 'completed' } } } });

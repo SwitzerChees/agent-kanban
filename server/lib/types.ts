@@ -71,6 +71,8 @@ export interface AgentConfig {
 
 export interface CodexConfig {
   command: string;
+  model: string | null;
+  reasoningEffort: string | null;
   approvalPolicy: unknown | null;
   threadSandbox: unknown | null;
   turnSandboxPolicy: unknown | null;
