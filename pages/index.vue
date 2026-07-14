@@ -586,11 +586,12 @@ const taskForm = reactive({
 });
 const taskFiles = ref<PendingTaskFile[]>([]);
 const taskModalBaseline = ref('');
+let taskModalBaselineVersion = 0;
 
 function taskDraftFingerprint() {
   return JSON.stringify({
     title: taskForm.title,
-    description: taskForm.description,
+    description: taskForm.description.replace(/\r\n/g, '\n').trimEnd(),
     columnId: taskForm.columnId,
     placementId: taskForm.placementId,
     swimlaneId: taskForm.swimlaneId,
@@ -615,7 +616,20 @@ function markTaskModalClean() {
   taskModalBaseline.value = taskDraftFingerprint();
 }
 
+async function establishTaskModalBaseline() {
+  const version = ++taskModalBaselineVersion;
+  taskModalBaseline.value = '';
+  await nextTick();
+  if (import.meta.client) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  } else {
+    await nextTick();
+  }
+  if (version === taskModalBaselineVersion && taskModalOpen.value) markTaskModalClean();
+}
+
 function closeTaskModalImmediately() {
+  taskModalBaselineVersion += 1;
   taskModalBaseline.value = '';
   discardTaskModalOpen.value = false;
   tagDropdownOpen.value = false;
@@ -626,7 +640,7 @@ function closeTaskModalImmediately() {
 
 function requestCloseTaskModal() {
   if (!taskModalOpen.value || taskSubmitting.value) return;
-  if (taskDraftFingerprint() === taskModalBaseline.value) {
+  if (!taskModalBaseline.value || taskDraftFingerprint() === taskModalBaseline.value) {
     closeTaskModalImmediately();
     return;
   }
@@ -1087,7 +1101,7 @@ const openUserModal = () => {
   userModalOpen.value = true;
 };
 
-const openTaskModal = (columnId?: string, placement?: TaskPlacement) => {
+const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   closeTaskEventStream();
   selectedTaskId.value = null;
   selectedTaskDetail.value = null;
@@ -1108,8 +1122,8 @@ const openTaskModal = (columnId?: string, placement?: TaskPlacement) => {
     tags: [],
   });
   clearTaskFiles();
-  markTaskModalClean();
   taskModalOpen.value = true;
+  await establishTaskModalBaseline();
 };
 
 const openTaskDetail = async (task: Task) => {
@@ -1134,9 +1148,9 @@ const openTaskDetail = async (task: Task) => {
     priority: 'normal',
     tags: detailTask.tags,
   });
-  markTaskModalClean();
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
+  await establishTaskModalBaseline();
 };
 
 const closeTaskEventStream = () => {
@@ -2047,44 +2061,49 @@ const humanError = (error: unknown) => {
   <div class="min-h-screen bg-zinc-100 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50 ak-grid-bg">
     <section v-if="!user" class="relative grid min-h-screen place-items-center overflow-hidden px-4 py-10 sm:px-6">
       <div class="absolute inset-0 ak-login-surface" />
-      <div class="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/80 bg-white/92 shadow-2xl shadow-zinc-950/12 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/92 lg:grid-cols-[1.05fr_0.95fr]">
-        <div class="relative hidden min-h-[620px] overflow-hidden bg-zinc-950 p-10 text-white lg:flex lg:flex-col lg:justify-between">
+      <div class="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-teal-100 bg-white/95 shadow-2xl shadow-teal-950/12 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/95 lg:grid-cols-[1.05fr_0.95fr]">
+        <div class="relative hidden min-h-[620px] overflow-hidden bg-teal-50/90 p-10 text-zinc-950 dark:bg-zinc-950 dark:text-white lg:flex lg:flex-col lg:justify-between">
           <div class="absolute inset-0 ak-login-panel" />
           <div class="relative">
-            <div class="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-xs font-medium text-teal-100">
-              <span class="size-2 rounded-full bg-teal-300 shadow-[0_0_18px_rgba(94,234,212,0.9)]" />
-              {{ t.loginStatus }}
+            <div class="mb-8 flex items-center gap-3">
+              <div class="grid size-11 place-items-center rounded-xl bg-teal-600 text-white shadow-lg shadow-teal-700/20">
+                <UIcon name="i-lucide-kanban-square" class="size-5" />
+              </div>
+              <div class="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-white/80 px-3 py-1.5 text-xs font-medium text-teal-800 shadow-sm dark:border-white/10 dark:bg-white/8 dark:text-teal-100">
+                <span class="size-2 rounded-full bg-teal-500 dark:bg-teal-300" />
+                {{ t.loginStatus }}
+              </div>
             </div>
             <h1 class="max-w-md text-4xl font-semibold leading-tight tracking-tight">{{ t.app }}</h1>
-            <p class="mt-4 max-w-md text-sm leading-6 text-zinc-300">{{ t.loginCopy }}</p>
+            <p class="mt-4 max-w-md text-sm leading-6 text-zinc-600 dark:text-zinc-300">{{ t.loginCopy }}</p>
           </div>
-          <div class="relative grid gap-3 rounded-2xl border border-white/10 bg-white/8 p-4 shadow-2xl shadow-black/30">
+          <div class="ak-login-preview relative grid gap-3 rounded-2xl border border-teal-200/80 bg-white/75 p-4 shadow-xl shadow-teal-900/10 backdrop-blur-sm dark:border-white/10 dark:bg-white/8 dark:shadow-black/30">
             <div class="grid grid-cols-3 gap-2">
-              <div class="h-28 rounded-xl border border-white/10 bg-white/10 p-2">
-                <div class="mb-2 h-2 w-14 rounded-full bg-teal-300/80" />
+              <div class="h-28 rounded-xl border border-teal-100 bg-teal-50/80 p-2 dark:border-white/10 dark:bg-white/10">
+                <div class="mb-2 h-2 w-14 rounded-full bg-teal-500/75" />
                 <div class="space-y-1.5">
-                  <div class="h-8 rounded-lg bg-white/12" />
-                  <div class="h-8 rounded-lg bg-white/8" />
+                  <div class="h-8 rounded-lg border border-zinc-200/80 bg-white shadow-sm dark:border-white/10 dark:bg-white/12" />
+                  <div class="h-8 rounded-lg border border-zinc-200/70 bg-white/80 dark:border-white/10 dark:bg-white/8" />
                 </div>
               </div>
-              <div class="h-28 rounded-xl border border-white/10 bg-white/10 p-2">
-                <div class="mb-2 h-2 w-16 rounded-full bg-amber-300/80" />
+              <div class="h-28 rounded-xl border border-amber-100 bg-amber-50/70 p-2 dark:border-white/10 dark:bg-white/10">
+                <div class="mb-2 h-2 w-16 rounded-full bg-amber-400/85" />
                 <div class="space-y-1.5">
-                  <div class="h-8 rounded-lg bg-white/14" />
-                  <div class="h-8 rounded-lg bg-white/8" />
+                  <div class="h-8 rounded-lg border border-zinc-200/80 bg-white shadow-sm dark:border-white/10 dark:bg-white/14" />
+                  <div class="h-8 rounded-lg border border-zinc-200/70 bg-white/80 dark:border-white/10 dark:bg-white/8" />
                 </div>
               </div>
-              <div class="h-28 rounded-xl border border-white/10 bg-white/10 p-2">
-                <div class="mb-2 h-2 w-12 rounded-full bg-emerald-300/80" />
+              <div class="h-28 rounded-xl border border-emerald-100 bg-emerald-50/70 p-2 dark:border-white/10 dark:bg-white/10">
+                <div class="mb-2 h-2 w-12 rounded-full bg-emerald-500/70" />
                 <div class="space-y-1.5">
-                  <div class="h-8 rounded-lg bg-white/12" />
-                  <div class="h-8 rounded-lg bg-white/8" />
+                  <div class="h-8 rounded-lg border border-zinc-200/80 bg-white shadow-sm dark:border-white/10 dark:bg-white/12" />
+                  <div class="h-8 rounded-lg border border-zinc-200/70 bg-white/80 dark:border-white/10 dark:bg-white/8" />
                 </div>
               </div>
             </div>
-            <div class="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
-              <UIcon name="i-lucide-shield-check" class="size-5 text-teal-200" />
-              <p class="text-sm leading-5 text-zinc-200">{{ t.loginStatusDetail }}</p>
+            <div class="flex items-center gap-3 rounded-xl border border-teal-200/80 bg-teal-50/80 p-3 dark:border-white/10 dark:bg-black/20">
+              <UIcon name="i-lucide-shield-check" class="size-5 text-teal-700 dark:text-teal-200" />
+              <p class="text-sm leading-5 text-teal-950/75 dark:text-zinc-200">{{ t.loginStatusDetail }}</p>
             </div>
           </div>
         </div>
@@ -2108,7 +2127,7 @@ const humanError = (error: unknown) => {
           </div>
 
           <UAlert v-if="errorMessage" color="error" variant="soft" icon="i-lucide-alert-circle" :description="errorMessage" />
-          <UButton block size="xl" type="submit" icon="i-lucide-log-in">{{ t.login }}</UButton>
+          <UButton block class="shadow-lg shadow-teal-700/15" size="xl" type="submit" icon="i-lucide-log-in">{{ t.login }}</UButton>
         </form>
       </div>
     </section>
