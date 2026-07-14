@@ -199,6 +199,7 @@ const dictionary = {
     deleteAttachmentWarning: 'The file will be removed permanently and will no longer be available to people or the AI agent.',
     openAttachment: 'Open file',
     downloadAttachment: 'Download file',
+    downloadAttachmentError: 'The file could not be downloaded.',
     attachedFiles: 'Attached files',
     unsavedTaskChanges: 'Discard unsaved changes?',
     unsavedTaskChangesDescription: 'Your current changes will be lost if you close this task.',
@@ -383,6 +384,7 @@ const dictionary = {
     deleteAttachmentWarning: 'Die Datei wird dauerhaft entfernt und steht danach weder Personen noch dem KI-Agenten zur Verfügung.',
     openAttachment: 'Datei öffnen',
     downloadAttachment: 'Datei herunterladen',
+    downloadAttachmentError: 'Die Datei konnte nicht heruntergeladen werden.',
     attachedFiles: 'Angehängte Dateien',
     unsavedTaskChanges: 'Ungespeicherte Änderungen verwerfen?',
     unsavedTaskChangesDescription: 'Wenn du die Aufgabe schließt, gehen deine aktuellen Änderungen verloren.',
@@ -557,6 +559,7 @@ const taskSubmitting = ref(false);
 const hierarchySubmitting = ref(false);
 const annotationSubmitting = ref(false);
 const attachmentSubmitting = ref(false);
+const downloadingAttachmentId = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
 const editingProjectId = ref<string | null>(null);
 const editingOberthemaId = ref<string | null>(null);
@@ -1399,6 +1402,29 @@ const requestDeleteAttachment = (attachment: Attachment) => {
   if (!selectedTaskId.value || attachmentSubmitting.value) return;
   selectedAttachmentForDeletion.value = attachment;
   deleteAttachmentModalOpen.value = true;
+};
+
+const downloadTaskAttachment = async (attachment: Attachment) => {
+  if (downloadingAttachmentId.value || !import.meta.client) return;
+  downloadingAttachmentId.value = attachment.id;
+  errorMessage.value = null;
+  try {
+    const response = await fetch(attachmentDownloadUrl(attachment), { credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`attachment_download_failed:${response.status}`);
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = attachment.fileName;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch {
+    errorMessage.value = t.value.downloadAttachmentError;
+  } finally {
+    downloadingAttachmentId.value = null;
+  }
 };
 
 const confirmDeleteAttachmentAction = async () => {
@@ -3363,14 +3389,15 @@ const humanError = (error: unknown) => {
                           @click="openAnnotationEditor(attachment)"
                         />
                         <UButton
-                          :href="attachmentDownloadUrl(attachment)"
-                          download
+                          type="button"
                           color="neutral"
                           variant="ghost"
                           size="sm"
                           icon="i-lucide-download"
+                          :loading="downloadingAttachmentId === attachment.id"
                           :aria-label="`${t.downloadAttachment}: ${attachment.fileName}`"
                           :title="t.downloadAttachment"
+                          @click="downloadTaskAttachment(attachment)"
                         />
                         <UButton
                           type="button"
