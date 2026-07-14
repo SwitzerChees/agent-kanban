@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, max, notInArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, max, notInArray, sql } from 'drizzle-orm';
 import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
 import type { User } from './db/schema';
@@ -27,6 +27,8 @@ export async function createProject(input: {
   await fs.mkdir(folderPath, { recursive: true });
 
   const projectId = randomUUID();
+  const oberthemaId = randomUUID();
+  const unterthemaId = randomUUID();
   db.transaction((tx) => {
     tx.insert(schema.projects).values({
       id: projectId,
@@ -71,6 +73,27 @@ export async function createProject(input: {
         createdAt: now,
       }).run();
     }
+
+    tx.insert(schema.oberthemen).values({
+      id: oberthemaId,
+      projectId,
+      name: 'Allgemein',
+      description: 'Übergreifende Projektarbeit',
+      color: 'teal',
+      position: 0,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+
+    tx.insert(schema.unterthemen).values({
+      id: unterthemaId,
+      oberthemaId,
+      name: 'Allgemeine Aufgaben',
+      description: 'Neue Aufgaben ohne spezifisches Unterthema',
+      position: 0,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
 
     tx.insert(schema.swimlanes).values({
       id: randomUUID(),
@@ -120,6 +143,9 @@ export async function updateProject(projectId: string, input: {
           createdAt: new Date().toISOString(),
         }).onConflictDoNothing().run();
       }
+      tx.update(schema.tasks).set({ assigneeId: null, updatedAt: updates.updatedAt! })
+        .where(and(eq(schema.tasks.projectId, projectId), notInArray(schema.tasks.assigneeId, memberIds)))
+        .run();
     }
   });
   if (input.tags) {
@@ -165,6 +191,17 @@ export function getBoard(projectId: string, user: User) {
     .where(eq(schema.swimlanes.projectId, projectId))
     .orderBy(asc(schema.swimlanes.position))
     .all();
+  const topics = db.select().from(schema.oberthemen)
+    .where(eq(schema.oberthemen.projectId, projectId))
+    .orderBy(asc(schema.oberthemen.position), asc(schema.oberthemen.createdAt))
+    .all();
+  const topicIds = topics.map((topic) => topic.id);
+  const subtopics = topicIds.length
+    ? db.select().from(schema.unterthemen)
+      .where(inArray(schema.unterthemen.oberthemaId, topicIds))
+      .orderBy(asc(schema.unterthemen.position), asc(schema.unterthemen.createdAt))
+      .all()
+    : [];
   const taskRows = db.select().from(schema.tasks)
     .where(eq(schema.tasks.projectId, projectId))
     .orderBy(asc(schema.tasks.position), desc(schema.tasks.createdAt))
@@ -193,6 +230,8 @@ export function getBoard(projectId: string, user: User) {
     project,
     projectTags,
     columns: projectColumns,
+    oberthemen: topics,
+    unterthemen: subtopics,
     swimlanes: lanes,
     members,
     tasks: taskRows.map((task) => ({
@@ -243,6 +282,7 @@ export function getTaskDetail(taskId: string, user: User) {
   return {
     project,
     projectTags: getProjectTags(project.id),
+    hierarchy: getTaskHierarchy(task.oberthemaId, task.unterthemaId),
     task: {
       ...task,
       attachments: attachments.map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
@@ -271,27 +311,215 @@ export async function createSwimlane(projectId: string, input: { nameEn: string;
   return lane;
 }
 
+export function createOberthema(projectId: string, input: TopicInput, user: User) {
+  getProject(projectId, user);
+  const name = input.name.trim();
+  ensureOberthemaNameAvailable(projectId, name);
+  const now = new Date().toISOString();
+  const currentMax = db.select({ value: max(schema.oberthemen.position) }).from(schema.oberthemen)
+    .where(eq(schema.oberthemen.projectId, projectId))
+    .get()?.value ?? -1;
+  const topic = {
+    id: randomUUID(),
+    projectId,
+    name,
+    description: input.description?.trim() || null,
+    color: input.color ?? 'teal',
+    position: input.position ?? currentMax + 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.insert(schema.oberthemen).values(topic).run();
+  logTaskActivity(projectId, null, user.id, 'oberthema_created', { oberthemaId: topic.id, name: topic.name });
+  return topic;
+}
+
+export function updateOberthema(oberthemaId: string, input: Partial<TopicInput>, user: User) {
+  const topic = requireOberthema(oberthemaId, user);
+  const name = input.name?.trim();
+  if (name) ensureOberthemaNameAvailable(topic.projectId, name, topic.id);
+  db.update(schema.oberthemen).set({
+    name: name || undefined,
+    description: input.description === undefined ? undefined : input.description?.trim() || null,
+    color: input.color,
+    position: input.position,
+    updatedAt: new Date().toISOString(),
+  }).where(eq(schema.oberthemen.id, oberthemaId)).run();
+  const updated = db.select().from(schema.oberthemen).where(eq(schema.oberthemen.id, topic.id)).get();
+  logTaskActivity(topic.projectId, null, user.id, 'oberthema_updated', { oberthemaId, name: updated?.name });
+  return updated;
+}
+
+export function deleteOberthema(oberthemaId: string, user: User) {
+  const topic = requireOberthema(oberthemaId, user);
+  const taskCount = db.select({ value: count() }).from(schema.tasks)
+    .where(eq(schema.tasks.oberthemaId, oberthemaId)).get()?.value ?? 0;
+  if (taskCount > 0) throw createError({ statusCode: 409, statusMessage: 'oberthema_not_empty' });
+  logTaskActivity(topic.projectId, null, user.id, 'oberthema_deleted', { oberthemaId, name: topic.name });
+  db.delete(schema.oberthemen).where(eq(schema.oberthemen.id, oberthemaId)).run();
+  return { ok: true, projectId: topic.projectId };
+}
+
+export function createUnterthema(oberthemaId: string, input: SubtopicInput, user: User) {
+  const topic = requireOberthema(oberthemaId, user);
+  const name = input.name.trim();
+  ensureUnterthemaNameAvailable(oberthemaId, name);
+  const now = new Date().toISOString();
+  const currentMax = db.select({ value: max(schema.unterthemen.position) }).from(schema.unterthemen)
+    .where(eq(schema.unterthemen.oberthemaId, oberthemaId))
+    .get()?.value ?? -1;
+  const subtopic = {
+    id: randomUUID(),
+    oberthemaId,
+    name,
+    description: input.description?.trim() || null,
+    position: input.position ?? currentMax + 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.insert(schema.unterthemen).values(subtopic).run();
+  logTaskActivity(topic.projectId, null, user.id, 'unterthema_created', {
+    oberthemaId,
+    unterthemaId: subtopic.id,
+    name: subtopic.name,
+  });
+  return subtopic;
+}
+
+export function updateUnterthema(unterthemaId: string, input: Partial<SubtopicInput> & { oberthemaId?: string }, user: User) {
+  const { subtopic, topic } = requireUnterthema(unterthemaId, user);
+  const targetTopic = input.oberthemaId ? requireOberthema(input.oberthemaId, user) : topic;
+  if (targetTopic.projectId !== topic.projectId) {
+    throw createError({ statusCode: 400, statusMessage: 'invalid_oberthema' });
+  }
+  const name = input.name?.trim() || subtopic.name;
+  ensureUnterthemaNameAvailable(targetTopic.id, name, subtopic.id);
+  db.transaction((tx) => {
+    tx.update(schema.unterthemen).set({
+      oberthemaId: targetTopic.id,
+      name,
+      description: input.description === undefined ? undefined : input.description?.trim() || null,
+      position: input.position,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(schema.unterthemen.id, unterthemaId)).run();
+    if (targetTopic.id !== topic.id) {
+      tx.update(schema.tasks).set({
+        oberthemaId: targetTopic.id,
+      }).where(eq(schema.tasks.unterthemaId, unterthemaId)).run();
+    }
+  });
+  const updated = db.select().from(schema.unterthemen).where(eq(schema.unterthemen.id, subtopic.id)).get();
+  logTaskActivity(topic.projectId, null, user.id, 'unterthema_updated', {
+    oberthemaId: targetTopic.id,
+    unterthemaId,
+    name: updated?.name,
+  });
+  return updated;
+}
+
+export function deleteUnterthema(unterthemaId: string, user: User) {
+  const { subtopic, topic } = requireUnterthema(unterthemaId, user);
+  const taskCount = db.select({ value: count() }).from(schema.tasks)
+    .where(eq(schema.tasks.unterthemaId, unterthemaId)).get()?.value ?? 0;
+  if (taskCount > 0) throw createError({ statusCode: 409, statusMessage: 'unterthema_not_empty' });
+  logTaskActivity(topic.projectId, null, user.id, 'unterthema_deleted', {
+    oberthemaId: subtopic.oberthemaId,
+    unterthemaId,
+    name: subtopic.name,
+  });
+  db.delete(schema.unterthemen).where(eq(schema.unterthemen.id, unterthemaId)).run();
+  return { ok: true, projectId: topic.projectId, oberthemaId: subtopic.oberthemaId };
+}
+
+export function reorderHierarchy(projectId: string, input: {
+  oberthemaIds: string[];
+  unterthemen: Array<{ oberthemaId: string; ids: string[] }>;
+}, user: User) {
+  getProject(projectId, user);
+  const topics = db.select().from(schema.oberthemen)
+    .where(eq(schema.oberthemen.projectId, projectId))
+    .all();
+  const topicIds = new Set(topics.map((topic) => topic.id));
+  const subtopics = topics.length
+    ? db.select().from(schema.unterthemen)
+      .where(inArray(schema.unterthemen.oberthemaId, [...topicIds]))
+      .all()
+    : [];
+  const subtopicIds = new Set(subtopics.map((subtopic) => subtopic.id));
+  const orderedTopicIds = new Set(input.oberthemaIds);
+  const groupTopicIds = new Set(input.unterthemen.map((group) => group.oberthemaId));
+  const orderedSubtopicIds = input.unterthemen.flatMap((group) => group.ids);
+  const uniqueOrderedSubtopicIds = new Set(orderedSubtopicIds);
+
+  const validTopics = input.oberthemaIds.length === topics.length
+    && orderedTopicIds.size === topics.length
+    && [...orderedTopicIds].every((id) => topicIds.has(id));
+  const validGroups = input.unterthemen.length === topics.length
+    && groupTopicIds.size === topics.length
+    && [...groupTopicIds].every((id) => topicIds.has(id));
+  const validSubtopics = orderedSubtopicIds.length === subtopics.length
+    && uniqueOrderedSubtopicIds.size === subtopics.length
+    && [...uniqueOrderedSubtopicIds].every((id) => subtopicIds.has(id));
+  if (!validTopics || !validGroups || !validSubtopics) {
+    throw createError({ statusCode: 400, statusMessage: 'invalid_hierarchy_order' });
+  }
+
+  const currentParents = new Map(subtopics.map((subtopic) => [subtopic.id, subtopic.oberthemaId]));
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    input.oberthemaIds.forEach((id, index) => {
+      tx.update(schema.oberthemen).set({ position: index * 1000, updatedAt: now })
+        .where(eq(schema.oberthemen.id, id)).run();
+    });
+    input.unterthemen.forEach((group) => {
+      group.ids.forEach((id, index) => {
+        tx.update(schema.unterthemen).set({
+          oberthemaId: group.oberthemaId,
+          position: index * 1000,
+          updatedAt: now,
+        }).where(eq(schema.unterthemen.id, id)).run();
+        if (currentParents.get(id) !== group.oberthemaId) {
+          tx.update(schema.tasks).set({ oberthemaId: group.oberthemaId })
+            .where(eq(schema.tasks.unterthemaId, id)).run();
+        }
+      });
+    });
+  });
+  logTaskActivity(projectId, null, user.id, 'hierarchy_reordered', {
+    oberthemaIds: input.oberthemaIds,
+    unterthemen: input.unterthemen,
+  });
+  return getBoard(projectId, user);
+}
+
 export async function createTask(projectId: string, input: {
   title: string;
   description?: string | null;
   columnId?: string | null;
   swimlaneId?: string | null;
+  oberthemaId?: string | null;
+  unterthemaId?: string | null;
   assigneeId?: string | null;
+  agentEnabled?: boolean;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
   files?: UploadedTaskFile[];
 }, user: User) {
   const project = getProject(projectId, user);
+  const assigneeId = resolveTaskAssignee(projectId, input.assigneeId, user.id);
   const now = new Date().toISOString();
   const columnId = defaultBacklogColumn(projectId);
   const column = getProjectColumn(projectId, columnId);
-  const position = nextTaskPosition(projectId, columnId, input.swimlaneId ?? null);
+  const placement = resolveTaskPlacement(projectId, input.oberthemaId, input.unterthemaId, user);
+  const position = nextTaskPosition(projectId, columnId, placement.oberthemaId, placement.unterthemaId);
   const taskId = randomUUID();
   const taskKey = nextTaskKey(project.key);
 
   db.insert(schema.tasks).values({
     id: taskId,
     projectId,
+    oberthemaId: placement.oberthemaId,
+    unterthemaId: placement.unterthemaId,
     columnId,
     swimlaneId: input.swimlaneId || null,
     key: taskKey,
@@ -300,7 +528,8 @@ export async function createTask(projectId: string, input: {
     priority: input.priority ?? 'normal',
     position,
     createdBy: user.id,
-    assigneeId: input.assigneeId || null,
+    assigneeId,
+    agentEnabled: input.agentEnabled ?? false,
     agentStatus: 'idle',
     createdAt: now,
     updatedAt: now,
@@ -323,7 +552,10 @@ export function updateTask(taskId: string, input: {
   description?: string | null;
   columnId?: string;
   swimlaneId?: string | null;
+  oberthemaId?: string;
+  unterthemaId?: string | null;
   assigneeId?: string | null;
+  agentEnabled?: boolean;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
   position?: number;
@@ -335,25 +567,63 @@ export function updateTask(taskId: string, input: {
   if ((task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed') && (input.title !== undefined || input.description !== undefined)) {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
+  if (task.agentStatus === 'running' && input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled) {
+    throw createError({ statusCode: 409, statusMessage: 'task_running_agent_mode_locked' });
+  }
+  const nextAssigneeId = input.assigneeId === undefined
+    ? undefined
+    : resolveTaskAssignee(task.projectId, input.assigneeId, user.id, false);
 
   let nextAgentStatus = input.agentStatus;
+  const nextAgentEnabled = input.agentEnabled ?? task.agentEnabled;
+  const placementRequested = input.oberthemaId !== undefined || input.unterthemaId !== undefined;
+  const nextPlacement = placementRequested
+    ? resolveTaskPlacement(
+      task.projectId,
+      input.oberthemaId !== undefined
+        ? input.oberthemaId
+        : input.unterthemaId
+          ? undefined
+          : task.oberthemaId,
+      input.unterthemaId === undefined ? task.unterthemaId : input.unterthemaId,
+      user,
+    )
+    : { oberthemaId: task.oberthemaId, unterthemaId: task.unterthemaId };
+  const placementChanged = nextPlacement.oberthemaId !== task.oberthemaId
+    || nextPlacement.unterthemaId !== task.unterthemaId;
   if (input.columnId) {
     const targetColumn = getProjectColumn(task.projectId, input.columnId);
-    if (targetColumn.key === 'todo' && task.agentStatus !== 'running') {
+    if (targetColumn.key === 'todo' && nextAgentEnabled && task.agentStatus !== 'running') {
       nextAgentStatus = 'queued';
     } else if (task.agentStatus === 'queued' && targetColumn.key !== 'todo') {
       nextAgentStatus = 'idle';
     }
   }
+  if (input.agentEnabled !== undefined) {
+    const currentColumn = getProjectColumn(task.projectId, input.columnId ?? task.columnId);
+    if (!nextAgentEnabled && task.agentStatus === 'queued') nextAgentStatus = 'idle';
+    if (nextAgentEnabled && currentColumn.key === 'todo' && task.agentStatus !== 'running') nextAgentStatus = 'queued';
+  }
+  if (!nextAgentEnabled && nextAgentStatus === 'queued') nextAgentStatus = 'idle';
 
   db.update(schema.tasks).set({
     title: input.title?.trim() || undefined,
     description: input.description === undefined ? undefined : input.description?.trim() || null,
     columnId: input.columnId,
+    oberthemaId: placementRequested ? nextPlacement.oberthemaId : undefined,
+    unterthemaId: placementRequested ? nextPlacement.unterthemaId : undefined,
     swimlaneId: input.swimlaneId === undefined ? undefined : input.swimlaneId,
-    assigneeId: input.assigneeId === undefined ? undefined : input.assigneeId,
+    assigneeId: nextAssigneeId,
+    agentEnabled: input.agentEnabled,
     priority: input.priority,
-    position: input.position,
+    position: input.position ?? (placementChanged
+      ? nextTaskPosition(
+        task.projectId,
+        input.columnId ?? task.columnId,
+        nextPlacement.oberthemaId,
+        nextPlacement.unterthemaId,
+      )
+      : undefined),
     agentStatus: nextAgentStatus,
     updatedAt: new Date().toISOString(),
   }).where(eq(schema.tasks.id, taskId)).run();
@@ -365,7 +635,10 @@ export function updateTask(taskId: string, input: {
   const updated = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   logTaskActivity(task.projectId, taskId, user.id, 'task_updated', {
     columnChanged: input.columnId !== undefined,
+    hierarchyChanged: placementChanged,
     tagsChanged: input.tags !== undefined,
+    agentModeChanged: input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled,
+    assigneeChanged: input.assigneeId !== undefined && nextAssigneeId !== task.assigneeId,
     agentStatus: nextAgentStatus,
   });
   if (nextAgentStatus === 'queued' && task.agentStatus !== 'queued') {
@@ -553,8 +826,9 @@ function requeueTaskForFollowUp(task: typeof schema.tasks.$inferSelect, userId: 
   const now = new Date().toISOString();
   db.update(schema.tasks).set({
     columnId: todoColumn.id,
+    agentEnabled: true,
     agentStatus: 'queued',
-    position: nextTaskPosition(task.projectId, todoColumn.id, task.swimlaneId),
+    position: nextTaskPosition(task.projectId, todoColumn.id, task.oberthemaId, task.unterthemaId),
     updatedAt: now,
   }).where(eq(schema.tasks.id, task.id)).run();
   logTaskActivity(task.projectId, task.id, userId, 'followup_requested', { body });
@@ -577,6 +851,24 @@ function decorateAttachment(
         }
       : null,
   };
+}
+
+function resolveTaskAssignee(
+  projectId: string,
+  requestedAssigneeId: string | null | undefined,
+  currentUserId: string,
+  defaultToCurrentUser = true,
+) {
+  const assigneeId = requestedAssigneeId === undefined && defaultToCurrentUser
+    ? currentUserId
+    : requestedAssigneeId || null;
+  if (!assigneeId) return null;
+  const membership = db.select({ userId: schema.projectUsers.userId })
+    .from(schema.projectUsers)
+    .where(and(eq(schema.projectUsers.projectId, projectId), eq(schema.projectUsers.userId, assigneeId)))
+    .get();
+  if (!membership) throw createError({ statusCode: 400, statusMessage: 'invalid_assignee' });
+  return assigneeId;
 }
 
 function getProjectTags(projectId: string) {
@@ -661,11 +953,108 @@ function getProjectColumn(projectId: string, columnId: string) {
   return column;
 }
 
-function nextTaskPosition(projectId: string, columnId: string, swimlaneId: string | null) {
-  const condition = swimlaneId
-    ? and(eq(schema.tasks.projectId, projectId), eq(schema.tasks.columnId, columnId), eq(schema.tasks.swimlaneId, swimlaneId))
-    : and(eq(schema.tasks.projectId, projectId), eq(schema.tasks.columnId, columnId), sql`${schema.tasks.swimlaneId} IS NULL`);
+function nextTaskPosition(projectId: string, columnId: string, oberthemaId: string, unterthemaId: string | null) {
+  const baseCondition = and(
+    eq(schema.tasks.projectId, projectId),
+    eq(schema.tasks.columnId, columnId),
+    eq(schema.tasks.oberthemaId, oberthemaId),
+  );
+  const condition = unterthemaId
+    ? and(baseCondition, eq(schema.tasks.unterthemaId, unterthemaId))
+    : and(baseCondition, isNull(schema.tasks.unterthemaId));
   return (db.select({ value: max(schema.tasks.position) }).from(schema.tasks).where(condition).get()?.value ?? 0) + 1000;
+}
+
+type TopicColor = 'teal' | 'coral' | 'amber' | 'indigo' | 'emerald';
+
+interface TopicInput {
+  name: string;
+  description?: string | null;
+  color?: TopicColor;
+  position?: number;
+}
+
+interface SubtopicInput {
+  name: string;
+  description?: string | null;
+  position?: number;
+}
+
+function requireOberthema(oberthemaId: string, user: User) {
+  const topic = db.select().from(schema.oberthemen).where(eq(schema.oberthemen.id, oberthemaId)).get();
+  if (!topic) throw createError({ statusCode: 404, statusMessage: 'oberthema_not_found' });
+  getProject(topic.projectId, user);
+  return topic;
+}
+
+function requireUnterthema(unterthemaId: string, user: User) {
+  const subtopic = db.select().from(schema.unterthemen).where(eq(schema.unterthemen.id, unterthemaId)).get();
+  if (!subtopic) throw createError({ statusCode: 404, statusMessage: 'unterthema_not_found' });
+  const topic = requireOberthema(subtopic.oberthemaId, user);
+  return { subtopic, topic };
+}
+
+function ensureOberthemaNameAvailable(projectId: string, name: string, excludeId?: string) {
+  const existing = db.select({ id: schema.oberthemen.id })
+    .from(schema.oberthemen)
+    .where(and(
+      eq(schema.oberthemen.projectId, projectId),
+      sql`lower(${schema.oberthemen.name}) = lower(${name})`,
+    ))
+    .get();
+  if (existing && existing.id !== excludeId) {
+    throw createError({ statusCode: 409, statusMessage: 'oberthema_name_exists' });
+  }
+}
+
+function ensureUnterthemaNameAvailable(oberthemaId: string, name: string, excludeId?: string) {
+  const existing = db.select({ id: schema.unterthemen.id })
+    .from(schema.unterthemen)
+    .where(and(
+      eq(schema.unterthemen.oberthemaId, oberthemaId),
+      sql`lower(${schema.unterthemen.name}) = lower(${name})`,
+    ))
+    .get();
+  if (existing && existing.id !== excludeId) {
+    throw createError({ statusCode: 409, statusMessage: 'unterthema_name_exists' });
+  }
+}
+
+function resolveTaskPlacement(
+  projectId: string,
+  requestedOberthemaId: string | null | undefined,
+  requestedUnterthemaId: string | null | undefined,
+  user: User,
+) {
+  if (requestedUnterthemaId) {
+    const { subtopic, topic } = requireUnterthema(requestedUnterthemaId, user);
+    if (topic.projectId !== projectId || (requestedOberthemaId && requestedOberthemaId !== topic.id)) {
+      throw createError({ statusCode: 400, statusMessage: 'invalid_unterthema' });
+    }
+    return { oberthemaId: topic.id, unterthemaId: subtopic.id };
+  }
+  if (requestedOberthemaId) {
+    const topic = requireOberthema(requestedOberthemaId, user);
+    if (topic.projectId !== projectId) throw createError({ statusCode: 400, statusMessage: 'invalid_oberthema' });
+    return { oberthemaId: topic.id, unterthemaId: null };
+  }
+  const fallback = db.select({ unterthemaId: schema.unterthemen.id, oberthemaId: schema.oberthemen.id })
+    .from(schema.unterthemen)
+    .innerJoin(schema.oberthemen, eq(schema.unterthemen.oberthemaId, schema.oberthemen.id))
+    .where(eq(schema.oberthemen.projectId, projectId))
+    .orderBy(asc(schema.oberthemen.position), asc(schema.unterthemen.position))
+    .get();
+  if (!fallback) throw createError({ statusCode: 400, statusMessage: 'missing_unterthema' });
+  return fallback;
+}
+
+function getTaskHierarchy(oberthemaId: string, unterthemaId: string | null) {
+  const oberthema = db.select().from(schema.oberthemen).where(eq(schema.oberthemen.id, oberthemaId)).get();
+  if (!oberthema) return null;
+  const unterthema = unterthemaId
+    ? db.select().from(schema.unterthemen).where(eq(schema.unterthemen.id, unterthemaId)).get() ?? null
+    : null;
+  return { oberthema, unterthema };
 }
 
 function nextTaskKey(projectKey: string) {

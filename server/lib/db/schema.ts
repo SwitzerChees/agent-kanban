@@ -57,6 +57,27 @@ export const columns = sqliteTable('columns', {
   createdAt: text('created_at').notNull(),
 });
 
+export const oberthemen = sqliteTable('oberthemen', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  color: text('color').notNull().default('teal'),
+  position: integer('position').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const unterthemen = sqliteTable('unterthemen', {
+  id: text('id').primaryKey(),
+  oberthemaId: text('oberthema_id').notNull().references(() => oberthemen.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  position: integer('position').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const swimlanes = sqliteTable('swimlanes', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -69,6 +90,8 @@ export const swimlanes = sqliteTable('swimlanes', {
 export const tasks = sqliteTable('tasks', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  oberthemaId: text('oberthema_id').notNull().references(() => oberthemen.id),
+  unterthemaId: text('unterthema_id').references(() => unterthemen.id),
   columnId: text('column_id').notNull().references(() => columns.id),
   swimlaneId: text('swimlane_id').references(() => swimlanes.id),
   key: text('key').notNull().unique(),
@@ -78,6 +101,7 @@ export const tasks = sqliteTable('tasks', {
   position: integer('position').notNull().default(0),
   createdBy: text('created_by').notNull().references(() => users.id),
   assigneeId: text('assignee_id').references(() => users.id),
+  agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
   agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'failed', 'done'] }).notNull().default('idle'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -133,6 +157,8 @@ export type User = typeof users.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type ProjectTag = typeof projectTags.$inferSelect;
 export type Column = typeof columns.$inferSelect;
+export type Oberthema = typeof oberthemen.$inferSelect;
+export type Unterthema = typeof unterthemen.$inferSelect;
 export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;

@@ -8,7 +8,10 @@ const jsonTaskSchema = z.object({
   description: z.string().optional().nullable(),
   columnId: z.string().optional().nullable(),
   swimlaneId: z.string().optional().nullable(),
+  oberthemaId: z.string().optional().nullable(),
+  unterthemaId: z.string().optional().nullable(),
   assigneeId: z.string().optional().nullable(),
+  agentEnabled: z.boolean().optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   tags: z.array(z.string()).optional(),
 });
@@ -39,7 +42,10 @@ export default defineEventHandler(async (event) => {
       description: fields.get('description') || null,
       columnId: fields.get('columnId') || null,
       swimlaneId: fields.get('swimlaneId') || null,
-      assigneeId: fields.get('assigneeId') || null,
+      oberthemaId: fields.get('oberthemaId') || null,
+      unterthemaId: fields.get('unterthemaId') || null,
+      assigneeId: fields.has('assigneeId') ? fields.get('assigneeId') || null : undefined,
+      agentEnabled: fields.get('agentEnabled') === 'true',
       priority: fields.get('priority') || undefined,
       tags: parseTagsField(fields.get('tags')),
     });

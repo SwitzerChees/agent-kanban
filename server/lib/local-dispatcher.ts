@@ -42,7 +42,7 @@ class LocalTaskDispatcher {
     const queuedRows = db.select({ task: schema.tasks, column: schema.columns })
       .from(schema.tasks)
       .innerJoin(schema.columns, eq(schema.tasks.columnId, schema.columns.id))
-      .where(and(eq(schema.tasks.agentStatus, 'queued'), eq(schema.columns.key, 'todo')))
+      .where(and(eq(schema.tasks.agentEnabled, true), eq(schema.tasks.agentStatus, 'queued'), eq(schema.columns.key, 'todo')))
       .orderBy(asc(schema.tasks.projectId), asc(schema.tasks.position), asc(schema.tasks.updatedAt))
       .all();
 
@@ -70,14 +70,16 @@ class LocalTaskDispatcher {
         .where(and(eq(schema.columns.projectId, row.task.projectId), eq(schema.columns.key, 'todo')))
         .get();
       db.update(schema.tasks).set({
-        agentStatus: 'queued',
-        columnId: todoColumn?.id ?? row.task.columnId,
+        agentStatus: row.task.agentEnabled ? 'queued' : 'idle',
+        columnId: row.task.agentEnabled ? todoColumn?.id ?? row.task.columnId : row.task.columnId,
         updatedAt: now,
       }).where(eq(schema.tasks.id, row.task.id)).run();
-      logTaskActivity(row.task.projectId, row.task.id, null, 'codex_requeued', {
-        reason: 'dispatcher_startup_recovery',
-      });
-      runtimeLogger.warn('requeued interrupted local codex task', { task_id: row.task.id, task_key: row.task.key });
+      if (row.task.agentEnabled) {
+        logTaskActivity(row.task.projectId, row.task.id, null, 'codex_requeued', {
+          reason: 'dispatcher_startup_recovery',
+        });
+        runtimeLogger.warn('requeued interrupted local codex task', { task_id: row.task.id, task_key: row.task.key });
+      }
     }
   }
 
@@ -259,6 +261,12 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
     .orderBy(asc(schema.taskTags.name))
     .all()
     .map((tag) => tag.name);
+  const oberthema = db.select().from(schema.oberthemen)
+    .where(eq(schema.oberthemen.id, task.oberthemaId))
+    .get();
+  const unterthema = task.unterthemaId
+    ? db.select().from(schema.unterthemen).where(eq(schema.unterthemen.id, task.unterthemaId)).get()
+    : null;
   const steering = db.select({
     body: schema.comments.body,
     createdAt: schema.comments.createdAt,
@@ -272,6 +280,7 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
   const agentUpdates = latestAgentUpdates(task.id);
   const detailBlocks = [
     task.description,
+    oberthema ? `Hierarchy: ${oberthema.name}${unterthema ? ` > ${unterthema.name}` : ''}` : null,
     tags.length ? `Tags: ${tags.map((tag) => `#${tag}`).join(', ')}` : null,
     attachments.length
       ? ['Attachments available to inspect:', ...attachments.map((file) => {

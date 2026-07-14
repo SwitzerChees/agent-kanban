@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TableColumn } from '@nuxt/ui';
+import type { EditorToolbarItem, TableColumn } from '@nuxt/ui';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
@@ -36,6 +36,23 @@ interface Swimlane {
   position: number;
 }
 
+interface Oberthema {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  color: string;
+  position: number;
+}
+
+interface Unterthema {
+  id: string;
+  oberthemaId: string;
+  name: string;
+  description: string | null;
+  position: number;
+}
+
 interface Attachment {
   id: string;
   fileName: string;
@@ -57,11 +74,15 @@ interface Task {
   priority: 'low' | 'normal' | 'high' | 'urgent';
   position: number;
   columnId: string;
+  oberthemaId: string;
+  unterthemaId: string | null;
   swimlaneId: string | null;
   assigneeId: string | null;
+  agentEnabled: boolean;
   agentStatus: 'idle' | 'queued' | 'running' | 'failed' | 'done';
   attachments: Attachment[];
   tags: string[];
+  updatedAt: string;
 }
 
 interface TaskComment {
@@ -81,6 +102,7 @@ interface TaskEvent {
 
 interface TaskDetail {
   projectTags: string[];
+  hierarchy: { oberthema: Oberthema; unterthema: Unterthema | null } | null;
   task: Task;
   comments: TaskComment[];
   events: TaskEvent[];
@@ -90,9 +112,16 @@ interface Board {
   project: Project;
   projectTags: string[];
   columns: BoardColumn[];
+  oberthemen: Oberthema[];
+  unterthemen: Unterthema[];
   swimlanes: Swimlane[];
   members: User[];
   tasks: Task[];
+}
+
+interface TaskPlacement {
+  oberthemaId: string;
+  unterthemaId: string | null;
 }
 
 interface AnnotationPoint {
@@ -122,8 +151,8 @@ interface PendingTaskFile {
 
 const dictionary = {
   en: {
-    app: 'Work Board',
-    subtitle: 'Projects, tasks, and reviews in one place',
+    app: 'Agent Kanban',
+    subtitle: 'From strategic topics to focused tasks',
     loginEyebrow: 'Private work board',
     loginHeadline: 'Sign in to your work board',
     loginCopy: 'Plan work, share context, and follow progress without switching tools.',
@@ -153,7 +182,9 @@ const dictionary = {
     newTask: 'New task',
     title: 'Title',
     area: 'Board area',
-    assignee: 'Assignee',
+    assignee: 'Responsible',
+    unassigned: 'Nobody',
+    you: 'You',
     priority: 'Priority',
     files: 'Files',
     pasteHint: 'Paste screenshots into description or attach files.',
@@ -163,6 +194,10 @@ const dictionary = {
     deleteTask: 'Delete task',
     deleteTaskConfirm: 'Delete this task permanently?',
     deleteTaskWarning: 'This cannot be undone. Attachments and activity for this task will be removed with it.',
+    unsavedTaskChanges: 'Discard unsaved changes?',
+    unsavedTaskChangesDescription: 'Your current changes will be lost if you close this task.',
+    keepEditing: 'Keep editing',
+    discardChanges: 'Discard changes',
     editProject: 'Edit project',
     updateProject: 'Save project',
     role: 'Role',
@@ -177,7 +212,8 @@ const dictionary = {
     guidance: 'Guidance',
     sendMessage: 'Send message',
     lockedTask: 'Work is in progress. Title and description are locked.',
-    todoAutomationHint: 'Tasks moved here are processed from top to bottom.',
+    todoAutomationHint: 'Tasks marked for AI are processed here from top to bottom. Human tasks stay untouched.',
+    todoAutomationShort: 'AI tasks start automatically',
     activityTab: 'Progress',
     taskTab: 'Task brief',
     commentsTab: 'Comments',
@@ -186,6 +222,49 @@ const dictionary = {
     noGuidanceAfterFinish: 'Work is finished. New guidance is closed, but the progress history remains available.',
     refresh: 'Refresh',
     noProject: 'No project selected',
+    hierarchy: 'Topic structure',
+    hierarchyHint: 'Navigate from a parent topic into its sub-topics and shared workflow.',
+    hierarchyReorderHint: 'Drag topics by the handle to reorder them.',
+    projectOverview: 'All topics',
+    allTasks: 'All project tasks',
+    oberthema: 'Parent topic',
+    oberthemen: 'Parent topics',
+    unterthema: 'Sub-topic',
+    unterthemen: 'Sub-topics',
+    newOberthema: 'New parent topic',
+    editOberthema: 'Edit parent topic',
+    newUnterthema: 'New sub-topic',
+    editUnterthema: 'Edit sub-topic',
+    topicName: 'Topic name',
+    topicDescription: 'What belongs in this topic?',
+    topicColor: 'Accent color',
+    chooseUnterthema: 'Choose a topic assignment',
+    topicAssignment: 'Topic assignment',
+    directTasks: 'Direct tasks',
+    showCompleted: 'Show older completed',
+    hideCompleted: 'Hide older completed',
+    completedHidden: 'older completed hidden',
+    completedRetentionHint: 'Completed tasks stay visible for 30 minutes.',
+    expandSubtopic: 'Expand sub-topic',
+    collapseSubtopic: 'Collapse sub-topic',
+    aiTask: 'AI task',
+    humanTask: 'Human task',
+    aiExecution: 'Let the AI agent execute this task',
+    aiExecutionHelp: 'Off by default. Only enabled tasks are started automatically in To Do.',
+    noOberthemen: 'No parent topics yet',
+    noUnterthemen: 'This parent topic has no sub-topics yet',
+    scopeTasks: 'tasks in this view',
+    openTopic: 'Open topic',
+    deleteOberthema: 'Delete parent topic',
+    deleteUnterthema: 'Delete sub-topic',
+    deleteTopicConfirm: 'Delete this empty topic?',
+    topicDialog: 'Build the hierarchy used to organize every status column.',
+    expandTopic: 'Expand parent topic',
+    collapseTopic: 'Collapse parent topic',
+    moveOberthema: 'Move parent topic',
+    moveUnterthema: 'Move sub-topic',
+    topicProgress: 'Topic progress',
+    completedTasks: 'completed',
     folder: 'Location',
     attachments: 'attachments',
     tags: 'Tags',
@@ -193,6 +272,8 @@ const dictionary = {
     projectTagsHelp: 'Define the fixed tags available for tasks in this project. Separate tags with commas.',
     tagsHelp: 'Choose one or more project tags.',
     chooseTags: 'Choose tags',
+    editTags: 'Edit tags',
+    noTags: 'No tags',
     noProjectTags: 'No project tags defined',
     comments: 'Comments',
     commentPlaceholder: 'Write a comment for the team.',
@@ -208,6 +289,19 @@ const dictionary = {
     annotateImage: 'Annotate image',
     annotationHelp: 'Mark the image for the agent. The drawing stays editable and an annotated copy is passed to the agent.',
     undo: 'Undo',
+    redo: 'Redo',
+    formatting: 'Formatting',
+    paragraph: 'Paragraph',
+    heading1: 'Heading 1',
+    heading2: 'Heading 2',
+    heading3: 'Heading 3',
+    bold: 'Bold',
+    italic: 'Italic',
+    bulletList: 'Bullet list',
+    orderedList: 'Numbered list',
+    quote: 'Quote',
+    link: 'Link',
+    markdownEditorHelp: 'Formatting is stored as Markdown.',
     clear: 'Clear',
     saveAnnotation: 'Save annotation',
     language: 'Language',
@@ -235,8 +329,8 @@ const dictionary = {
     priorities: { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' },
   },
   de: {
-    app: 'Arbeitsboard',
-    subtitle: 'Projekte, Aufgaben und Prüfungen an einem Ort',
+    app: 'Agent Kanban',
+    subtitle: 'Von strategischen Themen zu klaren Aufgaben',
     loginEyebrow: 'Privates Arbeitsboard',
     loginHeadline: 'Am Arbeitsboard anmelden',
     loginCopy: 'Plane Arbeit, teile Kontext und verfolge den Fortschritt ohne Werkzeugwechsel.',
@@ -266,7 +360,9 @@ const dictionary = {
     newTask: 'Neue Aufgabe',
     title: 'Titel',
     area: 'Board-Bereich',
-    assignee: 'Zuweisung',
+    assignee: 'Verantwortlich',
+    unassigned: 'Niemand',
+    you: 'Du',
     priority: 'Priorität',
     files: 'Dateien',
     pasteHint: 'Screenshots in die Beschreibung einfügen oder Dateien anhängen.',
@@ -276,6 +372,10 @@ const dictionary = {
     deleteTask: 'Aufgabe löschen',
     deleteTaskConfirm: 'Diese Aufgabe dauerhaft löschen?',
     deleteTaskWarning: 'Das kann nicht rückgängig gemacht werden. Anhänge und Aktivitäten dieser Aufgabe werden mitgelöscht.',
+    unsavedTaskChanges: 'Ungespeicherte Änderungen verwerfen?',
+    unsavedTaskChangesDescription: 'Wenn du die Aufgabe schließt, gehen deine aktuellen Änderungen verloren.',
+    keepEditing: 'Weiter bearbeiten',
+    discardChanges: 'Änderungen verwerfen',
     editProject: 'Projekt bearbeiten',
     updateProject: 'Projekt speichern',
     role: 'Rolle',
@@ -290,7 +390,8 @@ const dictionary = {
     guidance: 'Hinweis',
     sendMessage: 'Nachricht senden',
     lockedTask: 'Die Aufgabe wird bearbeitet. Titel und Beschreibung sind gesperrt.',
-    todoAutomationHint: 'Aufgaben, die hierher gezogen werden, werden von oben nach unten abgearbeitet.',
+    todoAutomationHint: 'Für KI markierte Aufgaben werden hier von oben nach unten bearbeitet. Menschliche Aufgaben bleiben unberührt.',
+    todoAutomationShort: 'KI-Aufgaben starten automatisch',
     activityTab: 'Fortschritt',
     taskTab: 'Auftrag',
     commentsTab: 'Kommentare',
@@ -299,6 +400,49 @@ const dictionary = {
     noGuidanceAfterFinish: 'Die Bearbeitung ist abgeschlossen. Neue Hinweise sind geschlossen, der Verlauf bleibt sichtbar.',
     refresh: 'Aktualisieren',
     noProject: 'Kein Projekt ausgewählt',
+    hierarchy: 'Themenstruktur',
+    hierarchyHint: 'Navigiere vom Oberthema in seine Unterthemen und den gemeinsamen Workflow.',
+    hierarchyReorderHint: 'Themen am Griff ziehen, um sie zu sortieren.',
+    projectOverview: 'Alle Themen',
+    allTasks: 'Alle Projektaufgaben',
+    oberthema: 'Oberthema',
+    oberthemen: 'Oberthemen',
+    unterthema: 'Unterthema',
+    unterthemen: 'Unterthemen',
+    newOberthema: 'Neues Oberthema',
+    editOberthema: 'Oberthema bearbeiten',
+    newUnterthema: 'Neues Unterthema',
+    editUnterthema: 'Unterthema bearbeiten',
+    topicName: 'Themenname',
+    topicDescription: 'Was gehört in dieses Thema?',
+    topicColor: 'Akzentfarbe',
+    chooseUnterthema: 'Themenzuordnung wählen',
+    topicAssignment: 'Themenzuordnung',
+    directTasks: 'Direkte Aufgaben',
+    showCompleted: 'Ältere Erledigte einblenden',
+    hideCompleted: 'Ältere Erledigte ausblenden',
+    completedHidden: 'ältere Erledigte ausgeblendet',
+    completedRetentionHint: 'Erledigte Aufgaben bleiben 30 Minuten sichtbar.',
+    expandSubtopic: 'Unterthema aufklappen',
+    collapseSubtopic: 'Unterthema zuklappen',
+    aiTask: 'KI-Aufgabe',
+    humanTask: 'Menschliche Aufgabe',
+    aiExecution: 'Diesen Task vom KI-Agenten bearbeiten lassen',
+    aiExecutionHelp: 'Standardmäßig aus. Nur aktivierte Tasks starten in „Zu erledigen“ automatisch.',
+    noOberthemen: 'Noch keine Oberthemen',
+    noUnterthemen: 'Dieses Oberthema hat noch keine Unterthemen',
+    scopeTasks: 'Aufgaben in dieser Ansicht',
+    openTopic: 'Thema öffnen',
+    deleteOberthema: 'Oberthema löschen',
+    deleteUnterthema: 'Unterthema löschen',
+    deleteTopicConfirm: 'Dieses leere Thema löschen?',
+    topicDialog: 'Baue die Hierarchie, die alle Statusspalten strukturiert.',
+    expandTopic: 'Oberthema aufklappen',
+    collapseTopic: 'Oberthema zuklappen',
+    moveOberthema: 'Oberthema verschieben',
+    moveUnterthema: 'Unterthema verschieben',
+    topicProgress: 'Themenfortschritt',
+    completedTasks: 'erledigt',
     folder: 'Ablage',
     attachments: 'Anhänge',
     tags: 'Tags',
@@ -306,6 +450,8 @@ const dictionary = {
     projectTagsHelp: 'Definiere die festen Tags, die in diesem Projekt für Aufgaben verfügbar sind. Tags mit Kommas trennen.',
     tagsHelp: 'Wähle ein oder mehrere Projekt-Tags.',
     chooseTags: 'Tags auswählen',
+    editTags: 'Tags bearbeiten',
+    noTags: 'Keine Tags',
     noProjectTags: 'Keine Projekt-Tags definiert',
     comments: 'Kommentare',
     commentPlaceholder: 'Kommentar für das Team schreiben.',
@@ -321,6 +467,19 @@ const dictionary = {
     annotateImage: 'Bild markieren',
     annotationHelp: 'Markiere das Bild für den Agenten. Die Zeichnung bleibt editierbar und eine markierte Kopie wird an den Agenten übergeben.',
     undo: 'Rückgängig',
+    redo: 'Wiederholen',
+    formatting: 'Formatierung',
+    paragraph: 'Absatz',
+    heading1: 'Überschrift 1',
+    heading2: 'Überschrift 2',
+    heading3: 'Überschrift 3',
+    bold: 'Fett',
+    italic: 'Kursiv',
+    bulletList: 'Aufzählung',
+    orderedList: 'Nummerierte Liste',
+    quote: 'Zitat',
+    link: 'Link',
+    markdownEditorHelp: 'Die Formatierung wird als Markdown gespeichert.',
     clear: 'Leeren',
     saveAnnotation: 'Markierung speichern',
     language: 'Sprache',
@@ -356,22 +515,38 @@ const user = ref<User | null>(null);
 const users = ref<User[]>([]);
 const projects = ref<Project[]>([]);
 const selectedProjectId = ref<string | null>(null);
+const selectedOberthemaId = ref<string | null>(null);
+const selectedUnterthemaId = ref<string | null>(null);
+const collapsedOberthemaIds = ref<string[]>([]);
+const collapsedUnterthemaIds = ref<string[]>([]);
+const showAllDone = ref(false);
+const boardClock = ref(Date.now());
 const board = ref<Board | null>(null);
 const busy = ref(false);
 const refreshingBoard = ref(false);
 const errorMessage = ref<string | null>(null);
 const draggedTaskId = ref<string | null>(null);
-const dragOverColumnId = ref<string | null>(null);
+const dragOverPlacementKey = ref<string | null>(null);
 const dragOverTaskId = ref<string | null>(null);
+const draggedOberthemaId = ref<string | null>(null);
+const draggedUnterthemaId = ref<string | null>(null);
+const hierarchyDragOverId = ref<string | null>(null);
+const hierarchyReordering = ref(false);
 const projectModalOpen = ref(false);
 const userModalOpen = ref(false);
 const taskModalOpen = ref(false);
+const discardTaskModalOpen = ref(false);
+const oberthemaModalOpen = ref(false);
+const unterthemaModalOpen = ref(false);
 const deleteTaskModalOpen = ref(false);
 const annotationModalOpen = ref(false);
 const taskSubmitting = ref(false);
+const hierarchySubmitting = ref(false);
 const annotationSubmitting = ref(false);
 const sidebarCollapsed = ref(false);
 const editingProjectId = ref<string | null>(null);
+const editingOberthemaId = ref<string | null>(null);
+const editingUnterthemaId = ref<string | null>(null);
 const selectedTaskId = ref<string | null>(null);
 const selectedTaskDetail = ref<TaskDetail | null>(null);
 const taskMessage = ref('');
@@ -390,20 +565,88 @@ const drawingStroke = ref<AnnotationStroke | null>(null);
 const annotationColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'];
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let taskEventSource: EventSource | null = null;
+const DONE_RETENTION_MS = 30 * 60 * 1000;
+const UNASSIGNED_ID = '__unassigned__';
 
 const loginForm = reactive({ email: '', password: '' });
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
 const projectForm = reactive({ name: '', key: '', folderPath: '', description: '', userIds: [] as string[], tags: '' });
+const oberthemaForm = reactive({ name: '', description: '', color: 'teal' });
+const unterthemaForm = reactive({ name: '', description: '', oberthemaId: '' });
 const taskForm = reactive({
   title: '',
   description: '',
   columnId: '',
+  placementId: '',
   swimlaneId: '',
-  assigneeId: '',
+  assigneeId: UNASSIGNED_ID,
+  agentEnabled: false,
   priority: 'normal' as Task['priority'],
   tags: [] as string[],
 });
 const taskFiles = ref<PendingTaskFile[]>([]);
+const taskModalBaseline = ref('');
+
+function taskDraftFingerprint() {
+  return JSON.stringify({
+    title: taskForm.title,
+    description: taskForm.description,
+    columnId: taskForm.columnId,
+    placementId: taskForm.placementId,
+    swimlaneId: taskForm.swimlaneId,
+    assigneeId: taskForm.assigneeId,
+    agentEnabled: taskForm.agentEnabled,
+    priority: taskForm.priority,
+    tags: [...taskForm.tags].sort((left, right) => left.localeCompare(right)),
+    files: taskFiles.value.map((item) => ({
+      name: item.file.name,
+      size: item.file.size,
+      type: item.file.type,
+      lastModified: item.file.lastModified,
+      annotated: Boolean(item.renderedFile),
+    })),
+    taskMessage: taskMessage.value,
+    commentMessage: commentMessage.value,
+    followUpMessage: followUpMessage.value,
+  });
+}
+
+function markTaskModalClean() {
+  taskModalBaseline.value = taskDraftFingerprint();
+}
+
+function closeTaskModalImmediately() {
+  taskModalBaseline.value = '';
+  discardTaskModalOpen.value = false;
+  tagDropdownOpen.value = false;
+  taskModalOpen.value = false;
+  closeTaskEventStream();
+  clearTaskFiles();
+}
+
+function requestCloseTaskModal() {
+  if (!taskModalOpen.value || taskSubmitting.value) return;
+  if (taskDraftFingerprint() === taskModalBaseline.value) {
+    closeTaskModalImmediately();
+    return;
+  }
+  discardTaskModalOpen.value = true;
+}
+
+function discardTaskChanges() {
+  closeTaskModalImmediately();
+}
+
+const taskModalModel = computed({
+  get: () => taskModalOpen.value,
+  set: (open: boolean) => {
+    if (open) {
+      taskModalOpen.value = true;
+      return;
+    }
+    requestCloseTaskModal();
+  },
+});
 
 const t = computed(() => dictionary[locale.value]);
 const isDarkMode = computed(() => colorMode.value === 'dark');
@@ -411,7 +654,19 @@ const themeToggleLabel = computed(() => isDarkMode.value ? t.value.lightMode : t
 const themeToggleIcon = computed(() => isDarkMode.value ? 'i-lucide-sun' : 'i-lucide-moon');
 const isAdmin = computed(() => user.value?.role === 'admin');
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
+const selectedOberthema = computed(() => board.value?.oberthemen.find((topic) => topic.id === selectedOberthemaId.value) ?? null);
+const selectedUnterthema = computed(() => board.value?.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value) ?? null);
+const selectedTopicUnterthemen = computed(() => board.value?.unterthemen.filter((topic) => topic.oberthemaId === selectedOberthemaId.value) ?? []);
+const scopeTitle = computed(() => selectedProject.value?.name ?? t.value.projectOverview);
+const scopeDescription = computed(() => selectedProject.value?.description ?? t.value.hierarchyHint);
 const defaultSwimlaneId = computed(() => board.value?.swimlanes[0]?.id ?? '');
+const defaultPlacementId = computed(() => selectedUnterthemaId.value
+  ? `unterthema:${selectedUnterthemaId.value}`
+  : selectedOberthemaId.value
+    ? `oberthema:${selectedOberthemaId.value}`
+    : board.value?.oberthemen[0]?.id
+      ? `oberthema:${board.value.oberthemen[0].id}`
+      : '');
 const editingTask = computed(() => selectedTaskDetail.value?.task ?? null);
 const backlogColumn = computed(() => board.value?.columns.find((column) => column.key === 'backlog') ?? board.value?.columns[0] ?? null);
 const hasAgentActivity = computed(() => {
@@ -429,6 +684,36 @@ const canRequestFollowUp = computed(() => {
 });
 const currentProjectTags = computed(() => selectedTaskDetail.value?.projectTags ?? board.value?.projectTags ?? []);
 const taskTagPreview = computed(() => taskForm.tags);
+const assigneeItems = computed(() => [
+  { label: t.value.unassigned, value: UNASSIGNED_ID, icon: 'i-lucide-user-round-x' },
+  ...(board.value?.members ?? []).map((member) => ({
+    label: member.id === user.value?.id ? `${member.name} (${t.value.you})` : member.name,
+    value: member.id,
+    icon: 'i-lucide-user-round',
+  })),
+]);
+const editorToolbarItems = computed<EditorToolbarItem[][]>(() => [
+  [
+    { kind: 'paragraph', icon: 'i-lucide-pilcrow', tooltip: { text: t.value.paragraph }, 'aria-label': t.value.paragraph },
+    { kind: 'heading', level: 1, icon: 'i-lucide-heading-1', tooltip: { text: t.value.heading1 }, 'aria-label': t.value.heading1 },
+    { kind: 'heading', level: 2, icon: 'i-lucide-heading-2', tooltip: { text: t.value.heading2 }, 'aria-label': t.value.heading2 },
+    { kind: 'heading', level: 3, icon: 'i-lucide-heading-3', tooltip: { text: t.value.heading3 }, 'aria-label': t.value.heading3 },
+  ],
+  [
+    { kind: 'mark', mark: 'bold', icon: 'i-lucide-bold', tooltip: { text: t.value.bold }, 'aria-label': t.value.bold },
+    { kind: 'mark', mark: 'italic', icon: 'i-lucide-italic', tooltip: { text: t.value.italic }, 'aria-label': t.value.italic },
+  ],
+  [
+    { kind: 'bulletList', icon: 'i-lucide-list', tooltip: { text: t.value.bulletList }, 'aria-label': t.value.bulletList },
+    { kind: 'orderedList', icon: 'i-lucide-list-ordered', tooltip: { text: t.value.orderedList }, 'aria-label': t.value.orderedList },
+    { kind: 'blockquote', icon: 'i-lucide-text-quote', tooltip: { text: t.value.quote }, 'aria-label': t.value.quote },
+    { kind: 'link', icon: 'i-lucide-link', tooltip: { text: t.value.link }, 'aria-label': t.value.link },
+  ],
+  [
+    { kind: 'undo', icon: 'i-lucide-undo-2', tooltip: { text: t.value.undo }, 'aria-label': t.value.undo },
+    { kind: 'redo', icon: 'i-lucide-redo-2', tooltip: { text: t.value.redo }, 'aria-label': t.value.redo },
+  ],
+]);
 const teamComments = computed(() => (selectedTaskDetail.value?.comments ?? []).filter((comment) => comment.kind === 'comment'));
 const commentCount = computed(() => teamComments.value.length);
 const taskTabs = computed(() => [
@@ -441,14 +726,31 @@ const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? [
 const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
 const selectedAnnotationImageUrl = computed(() => selectedAnnotationAttachment.value?.url ?? selectedAnnotationPendingFile.value?.url ?? '');
 const boardStats = computed(() => ({
-  tasks: board.value?.tasks.length ?? 0,
+  tasks: visibleTasks.value.length,
   columns: board.value?.columns.length ?? 0,
   members: board.value?.members.length ?? 0,
+  oberthemen: board.value?.oberthemen.length ?? 0,
+  unterthemen: board.value?.unterthemen.length ?? 0,
 }));
 const columnItems = computed(() => board.value?.columns.map((column) => ({
   label: columnName(column),
   value: column.id,
 })) ?? []);
+const placementItems = computed(() => board.value?.oberthemen.flatMap((topic) => [
+  { label: `${t.value.oberthema}: ${topic.name}`, value: `oberthema:${topic.id}` },
+  ...unterthemenFor(topic.id).map((subtopic) => ({
+    label: `↳ ${subtopic.name}`,
+    value: `unterthema:${subtopic.id}`,
+  })),
+]) ?? []);
+const oberthemaItems = computed(() => board.value?.oberthemen.map((topic) => ({ label: topic.name, value: topic.id })) ?? []);
+const topicColorItems = [
+  { label: 'Lagoon', value: 'teal' },
+  { label: 'Signal', value: 'coral' },
+  { label: 'Sun', value: 'amber' },
+  { label: 'Iris', value: 'indigo' },
+  { label: 'Moss', value: 'emerald' },
+];
 const roleItems = computed(() => [
   { label: t.value.memberRole, value: 'member' },
   { label: t.value.adminRole, value: 'admin' },
@@ -474,7 +776,8 @@ const userColumns = computed<TableColumn<User & { roleLabel: string }>[]>(() => 
 
 onMounted(async () => {
   locale.value = (localStorage.getItem('ak_locale') as Locale | null) ?? 'en';
-  sidebarCollapsed.value = localStorage.getItem('ak_sidebar_collapsed') === 'true';
+  sidebarCollapsed.value = window.matchMedia('(max-width: 767px)').matches
+    || localStorage.getItem('ak_sidebar_collapsed') === 'true';
   selectedProjectId.value = localStorage.getItem('ak_project');
   await loadSession();
   startBoardRefresh();
@@ -527,15 +830,30 @@ const loadAppData = async () => {
 
 const loadBoard = async (projectId: string) => {
   board.value = await $fetch<Board>(`/api/projects/${projectId}/board`);
+  restoreBoardViewState(projectId);
+  if (selectedOberthemaId.value && !board.value.oberthemen.some((topic) => topic.id === selectedOberthemaId.value)) {
+    selectedOberthemaId.value = null;
+  }
+  if (selectedUnterthemaId.value && !board.value.unterthemen.some((topic) => topic.id === selectedUnterthemaId.value)) {
+    selectedUnterthemaId.value = null;
+  }
+  if (selectedUnterthemaId.value) {
+    selectedOberthemaId.value = board.value.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value)?.oberthemaId ?? null;
+  }
   const firstColumnId = board.value.columns[0]?.id ?? '';
   if (!board.value.columns.some((column) => column.id === taskForm.columnId)) taskForm.columnId = firstColumnId;
   taskForm.swimlaneId = taskForm.swimlaneId || defaultSwimlaneId.value;
+  if (!placementItems.value.some((item) => item.value === taskForm.placementId)) {
+    taskForm.placementId = defaultPlacementId.value;
+  }
   taskForm.tags = taskForm.tags.filter((tag) => board.value?.projectTags.includes(tag));
+  boardClock.value = Date.now();
 };
 
 const refreshCurrentBoard = async () => {
-  if (!user.value || activeView.value !== 'board' || !selectedProjectId.value || refreshingBoard.value) return;
+  if (!user.value || activeView.value !== 'board' || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value) return;
   refreshingBoard.value = true;
+  boardClock.value = Date.now();
   try {
     await loadBoard(selectedProjectId.value);
   } finally {
@@ -549,8 +867,198 @@ const startBoardRefresh = () => {
 };
 
 const selectProject = async (projectId: string) => {
+  if (selectedProjectId.value !== projectId) {
+    selectedOberthemaId.value = null;
+    selectedUnterthemaId.value = null;
+  }
   selectedProjectId.value = projectId;
   activeView.value = 'board';
+};
+
+const selectProjectOverview = () => {
+  selectedOberthemaId.value = null;
+  selectedUnterthemaId.value = null;
+  activeView.value = 'board';
+};
+
+const selectOberthema = (oberthemaId: string) => {
+  selectedOberthemaId.value = oberthemaId;
+  selectedUnterthemaId.value = null;
+  activeView.value = 'board';
+  collapsedOberthemaIds.value = collapsedOberthemaIds.value.filter((id) => id !== oberthemaId);
+  persistBoardViewState();
+  scrollToHierarchyRow(`topic-${oberthemaId}`);
+};
+
+const selectUnterthema = (unterthemaId: string) => {
+  const subtopic = board.value?.unterthemen.find((topic) => topic.id === unterthemaId);
+  if (!subtopic) return;
+  selectedOberthemaId.value = subtopic.oberthemaId;
+  selectedUnterthemaId.value = unterthemaId;
+  activeView.value = 'board';
+  collapsedOberthemaIds.value = collapsedOberthemaIds.value.filter((id) => id !== subtopic.oberthemaId);
+  collapsedUnterthemaIds.value = collapsedUnterthemaIds.value.filter((id) => id !== unterthemaId);
+  persistBoardViewState();
+  scrollToHierarchyRow(`subtopic-${unterthemaId}`);
+};
+
+const toggleOberthemaExpanded = (oberthemaId: string) => {
+  collapsedOberthemaIds.value = collapsedOberthemaIds.value.includes(oberthemaId)
+    ? collapsedOberthemaIds.value.filter((id) => id !== oberthemaId)
+    : [...collapsedOberthemaIds.value, oberthemaId];
+  persistBoardViewState();
+};
+
+const toggleUnterthemaExpanded = (unterthemaId: string) => {
+  collapsedUnterthemaIds.value = collapsedUnterthemaIds.value.includes(unterthemaId)
+    ? collapsedUnterthemaIds.value.filter((id) => id !== unterthemaId)
+    : [...collapsedUnterthemaIds.value, unterthemaId];
+  persistBoardViewState();
+};
+
+const toggleCompletedVisibility = () => {
+  showAllDone.value = !showAllDone.value;
+  persistBoardViewState();
+};
+
+const boardViewStateKey = (projectId: string) => `ak_board_view:${projectId}`;
+
+const restoreBoardViewState = (projectId: string) => {
+  if (!import.meta.client || !board.value) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(boardViewStateKey(projectId)) ?? '{}') as {
+      collapsedOberthemaIds?: string[];
+      collapsedUnterthemaIds?: string[];
+      showAllDone?: boolean;
+    };
+    const topicIds = new Set(board.value.oberthemen.map((topic) => topic.id));
+    const subtopicIds = new Set(board.value.unterthemen.map((topic) => topic.id));
+    collapsedOberthemaIds.value = (saved.collapsedOberthemaIds ?? []).filter((id) => topicIds.has(id));
+    collapsedUnterthemaIds.value = (saved.collapsedUnterthemaIds ?? []).filter((id) => subtopicIds.has(id));
+    showAllDone.value = saved.showAllDone ?? false;
+  } catch {
+    collapsedOberthemaIds.value = [];
+    collapsedUnterthemaIds.value = [];
+    showAllDone.value = false;
+  }
+};
+
+const persistBoardViewState = () => {
+  if (!import.meta.client || !selectedProjectId.value) return;
+  localStorage.setItem(boardViewStateKey(selectedProjectId.value), JSON.stringify({
+    collapsedOberthemaIds: collapsedOberthemaIds.value,
+    collapsedUnterthemaIds: collapsedUnterthemaIds.value,
+    showAllDone: showAllDone.value,
+  }));
+};
+
+const scrollToHierarchyRow = (id: string) => nextTick(() => {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+
+const openOberthemaModal = (topic?: Oberthema) => {
+  errorMessage.value = null;
+  editingOberthemaId.value = topic?.id ?? null;
+  Object.assign(oberthemaForm, {
+    name: topic?.name ?? '',
+    description: topic?.description ?? '',
+    color: topic?.color ?? 'teal',
+  });
+  oberthemaModalOpen.value = true;
+};
+
+const openUnterthemaModal = (oberthemaId?: string, subtopic?: Unterthema) => {
+  errorMessage.value = null;
+  editingUnterthemaId.value = subtopic?.id ?? null;
+  Object.assign(unterthemaForm, {
+    name: subtopic?.name ?? '',
+    description: subtopic?.description ?? '',
+    oberthemaId: subtopic?.oberthemaId ?? oberthemaId ?? selectedOberthemaId.value ?? board.value?.oberthemen[0]?.id ?? '',
+  });
+  unterthemaModalOpen.value = true;
+};
+
+const saveOberthemaAction = async () => {
+  if (!selectedProjectId.value || !oberthemaForm.name.trim() || hierarchySubmitting.value) return;
+  errorMessage.value = null;
+  hierarchySubmitting.value = true;
+  try {
+    if (editingOberthemaId.value) {
+      await $fetch(`/api/oberthemen/${editingOberthemaId.value}`, { method: 'PATCH', body: oberthemaForm });
+      selectedOberthemaId.value = editingOberthemaId.value;
+    } else {
+      const response = await $fetch<{ oberthema: Oberthema }>(`/api/projects/${selectedProjectId.value}/oberthemen`, {
+        method: 'POST',
+        body: oberthemaForm,
+      });
+      selectedOberthemaId.value = response.oberthema.id;
+      selectedUnterthemaId.value = null;
+    }
+    await loadBoard(selectedProjectId.value);
+    oberthemaModalOpen.value = false;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    hierarchySubmitting.value = false;
+  }
+};
+
+const saveUnterthemaAction = async () => {
+  if (!selectedProjectId.value || !unterthemaForm.name.trim() || !unterthemaForm.oberthemaId || hierarchySubmitting.value) return;
+  errorMessage.value = null;
+  hierarchySubmitting.value = true;
+  try {
+    if (editingUnterthemaId.value) {
+      await $fetch(`/api/unterthemen/${editingUnterthemaId.value}`, { method: 'PATCH', body: unterthemaForm });
+      selectedUnterthemaId.value = editingUnterthemaId.value;
+    } else {
+      const response = await $fetch<{ unterthema: Unterthema }>(`/api/oberthemen/${unterthemaForm.oberthemaId}/unterthemen`, {
+        method: 'POST',
+        body: { name: unterthemaForm.name, description: unterthemaForm.description },
+      });
+      selectedUnterthemaId.value = response.unterthema.id;
+    }
+    selectedOberthemaId.value = unterthemaForm.oberthemaId;
+    await loadBoard(selectedProjectId.value);
+    unterthemaModalOpen.value = false;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    hierarchySubmitting.value = false;
+  }
+};
+
+const deleteOberthemaAction = async () => {
+  if (!editingOberthemaId.value || !selectedProjectId.value || hierarchySubmitting.value || !confirm(t.value.deleteTopicConfirm)) return;
+  errorMessage.value = null;
+  hierarchySubmitting.value = true;
+  try {
+    await $fetch(`/api/oberthemen/${editingOberthemaId.value}`, { method: 'DELETE' });
+    selectedOberthemaId.value = null;
+    selectedUnterthemaId.value = null;
+    oberthemaModalOpen.value = false;
+    await loadBoard(selectedProjectId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    hierarchySubmitting.value = false;
+  }
+};
+
+const deleteUnterthemaAction = async () => {
+  if (!editingUnterthemaId.value || !selectedProjectId.value || hierarchySubmitting.value || !confirm(t.value.deleteTopicConfirm)) return;
+  errorMessage.value = null;
+  hierarchySubmitting.value = true;
+  try {
+    await $fetch(`/api/unterthemen/${editingUnterthemaId.value}`, { method: 'DELETE' });
+    selectedUnterthemaId.value = null;
+    unterthemaModalOpen.value = false;
+    await loadBoard(selectedProjectId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    hierarchySubmitting.value = false;
+  }
 };
 
 const openProjectModal = async (project?: Project) => {
@@ -579,7 +1087,7 @@ const openUserModal = () => {
   userModalOpen.value = true;
 };
 
-const openTaskModal = (columnId?: string) => {
+const openTaskModal = (columnId?: string, placement?: TaskPlacement) => {
   closeTaskEventStream();
   selectedTaskId.value = null;
   selectedTaskDetail.value = null;
@@ -592,12 +1100,15 @@ const openTaskModal = (columnId?: string) => {
     title: '',
     description: '',
     columnId: columnId ?? backlogColumn.value?.id ?? '',
+    placementId: placement ? placementIdFor(placement) : defaultPlacementId.value,
     swimlaneId: defaultSwimlaneId.value,
-    assigneeId: '',
+    assigneeId: user.value?.id ?? UNASSIGNED_ID,
+    agentEnabled: false,
     priority: 'normal',
     tags: [],
   });
   clearTaskFiles();
+  markTaskModalClean();
   taskModalOpen.value = true;
 };
 
@@ -616,11 +1127,14 @@ const openTaskDetail = async (task: Task) => {
     title: detailTask.title,
     description: detailTask.description ?? '',
     columnId: detailTask.columnId,
+    placementId: placementIdFor(detailTask),
     swimlaneId: detailTask.swimlaneId ?? defaultSwimlaneId.value,
-    assigneeId: '',
+    assigneeId: detailTask.assigneeId ?? UNASSIGNED_ID,
+    agentEnabled: detailTask.agentEnabled,
     priority: 'normal',
     tags: detailTask.tags,
   });
+  markTaskModalClean();
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
 };
@@ -701,8 +1215,10 @@ const saveTaskAction = async () => {
   errorMessage.value = null;
   taskSubmitting.value = true;
   try {
+    const placement = parsePlacementId(taskForm.placementId);
     if (selectedTaskId.value) {
       const tags = taskForm.tags;
+      const assigneeId = taskAssigneeIdForRequest();
       if (!hasAgentActivity.value) {
         await $fetch(`/api/tasks/${selectedTaskId.value}`, {
           method: 'PATCH',
@@ -710,13 +1226,16 @@ const saveTaskAction = async () => {
             title: taskForm.title,
             description: taskForm.description,
             columnId: taskForm.columnId,
+            ...placement,
+            assigneeId,
+            agentEnabled: taskForm.agentEnabled,
             tags,
           },
         });
       } else {
         await $fetch(`/api/tasks/${selectedTaskId.value}`, {
           method: 'PATCH',
-          body: { tags },
+          body: { tags, ...placement, assigneeId, agentEnabled: taskForm.agentEnabled },
         });
       }
       if (taskFiles.value.length && (!hasAgentActivity.value || canSendGuidance.value)) {
@@ -729,26 +1248,33 @@ const saveTaskAction = async () => {
       }
       clearTaskFiles();
       taskMessage.value = '';
-      selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}`);
+      closeTaskModalImmediately();
       await loadBoard(selectedProjectId.value);
     } else {
       taskForm.swimlaneId = taskForm.swimlaneId || defaultSwimlaneId.value;
+      taskForm.placementId = taskForm.placementId || defaultPlacementId.value;
       const form = new FormData();
       form.append('title', taskForm.title);
       if (taskForm.description) form.append('description', taskForm.description);
       if (taskForm.columnId) form.append('columnId', taskForm.columnId);
       if (taskForm.swimlaneId) form.append('swimlaneId', taskForm.swimlaneId);
+      form.append('oberthemaId', placement.oberthemaId);
+      if (placement.unterthemaId) form.append('unterthemaId', placement.unterthemaId);
+      form.append('assigneeId', taskAssigneeIdForRequest() ?? '');
+      form.append('agentEnabled', String(taskForm.agentEnabled));
       form.append('tags', JSON.stringify(taskForm.tags));
       for (const file of taskUploadFiles()) form.append('files', file);
       await $fetch(`/api/projects/${selectedProjectId.value}/tasks`, { method: 'POST', body: form });
-      taskModalOpen.value = false;
+      closeTaskModalImmediately();
       await nextTick();
       Object.assign(taskForm, {
         title: '',
         description: '',
         columnId: backlogColumn.value?.id ?? '',
+        placementId: defaultPlacementId.value,
         swimlaneId: defaultSwimlaneId.value,
-        assigneeId: '',
+        assigneeId: user.value?.id ?? UNASSIGNED_ID,
+        agentEnabled: false,
         priority: 'normal',
         tags: [],
       });
@@ -787,7 +1313,7 @@ const requestFollowUpAction = async () => {
   try {
     await $fetch(`/api/tasks/${selectedTaskId.value}`, {
       method: 'PATCH',
-      body: { tags: taskForm.tags },
+      body: { tags: taskForm.tags, assigneeId: taskAssigneeIdForRequest() },
     });
     if (taskFiles.value.length) {
       const attachmentForm = new FormData();
@@ -837,35 +1363,187 @@ const confirmDeleteTaskAction = async () => {
   }
 };
 
-const moveTask = async (taskId: string, columnId: string, beforeTaskId?: string) => {
+const moveTask = async (taskId: string, columnId: string, placement: TaskPlacement, beforeTaskId?: string) => {
   if (!selectedProjectId.value) return;
-  const targetTasks = tasksForColumn(columnId).filter((task) => task.id !== taskId);
+  if (beforeTaskId === taskId) {
+    clearDragState();
+    return;
+  }
+  const targetTasks = tasksForPlacementColumn(placement.oberthemaId, placement.unterthemaId, columnId).filter((task) => task.id !== taskId);
   const beforeIndex = beforeTaskId ? targetTasks.findIndex((task) => task.id === beforeTaskId) : -1;
   const beforeTask = beforeIndex >= 0 ? targetTasks[beforeIndex] : undefined;
   const position = beforeTask
     ? Math.floor(((targetTasks[beforeIndex - 1]?.position ?? 0) + beforeTask.position) / 2)
     : ((targetTasks.at(-1)?.position ?? 0) + 1000);
-  await $fetch(`/api/tasks/${taskId}`, { method: 'PATCH', body: { columnId, position } });
+  await $fetch(`/api/tasks/${taskId}`, { method: 'PATCH', body: { columnId, position, ...placement } });
   clearDragState();
   await loadBoard(selectedProjectId.value);
 };
 
-const markColumnDropTarget = (columnId: string) => {
+const taskDropPlacementKey = (columnId: string, placement: TaskPlacement) =>
+  `${columnId}:${placement.oberthemaId}:${placement.unterthemaId ?? 'direct'}`;
+
+const markColumnDropTarget = (columnId: string, placement: TaskPlacement) => {
   if (!draggedTaskId.value) return;
-  dragOverColumnId.value = columnId;
+  dragOverPlacementKey.value = taskDropPlacementKey(columnId, placement);
   dragOverTaskId.value = null;
 };
 
-const markTaskDropTarget = (columnId: string, taskId: string) => {
-  if (!draggedTaskId.value || draggedTaskId.value === taskId) return;
-  dragOverColumnId.value = columnId;
-  dragOverTaskId.value = taskId;
+const markTaskDropTarget = (columnId: string, placement: TaskPlacement, taskId: string) => {
+  if (!draggedTaskId.value) return;
+  dragOverPlacementKey.value = taskDropPlacementKey(columnId, placement);
+  dragOverTaskId.value = draggedTaskId.value === taskId ? null : taskId;
+};
+
+const leaveTaskDropCell = (event: DragEvent, placementKey: string) => {
+  const cell = event.currentTarget as HTMLElement | null;
+  const nextTarget = event.relatedTarget as Node | null;
+  if (cell && nextTarget && cell.contains(nextTarget)) return;
+  if (dragOverPlacementKey.value !== placementKey) return;
+  dragOverPlacementKey.value = null;
+  dragOverTaskId.value = null;
 };
 
 const clearDragState = () => {
   draggedTaskId.value = null;
-  dragOverColumnId.value = null;
+  dragOverPlacementKey.value = null;
   dragOverTaskId.value = null;
+};
+
+const startTaskDrag = (taskId: string) => {
+  clearHierarchyDragState();
+  draggedTaskId.value = taskId;
+};
+
+const clearHierarchyDragState = () => {
+  draggedOberthemaId.value = null;
+  draggedUnterthemaId.value = null;
+  hierarchyDragOverId.value = null;
+};
+
+const hierarchyDropAfter = (event: DragEvent) => {
+  const target = event.currentTarget as HTMLElement | null;
+  if (!target) return false;
+  const bounds = target.getBoundingClientRect();
+  return event.clientY > bounds.top + bounds.height / 2;
+};
+
+const startOberthemaDrag = (event: DragEvent, oberthemaId: string) => {
+  clearDragState();
+  draggedOberthemaId.value = oberthemaId;
+  draggedUnterthemaId.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', `oberthema:${oberthemaId}`);
+  }
+};
+
+const startUnterthemaDrag = (event: DragEvent, unterthemaId: string) => {
+  clearDragState();
+  draggedUnterthemaId.value = unterthemaId;
+  draggedOberthemaId.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', `unterthema:${unterthemaId}`);
+  }
+};
+
+const markHierarchyDropTarget = (event: DragEvent, targetId: string) => {
+  if (!draggedOberthemaId.value && !draggedUnterthemaId.value) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  hierarchyDragOverId.value = targetId;
+};
+
+const hierarchyDragIdFromEvent = (event: DragEvent, kind: 'oberthema' | 'unterthema') => {
+  const value = event.dataTransfer?.getData('text/plain') ?? '';
+  return value.startsWith(`${kind}:`) ? value.slice(kind.length + 1) : null;
+};
+
+const persistHierarchyOrder = async () => {
+  if (!selectedProjectId.value || !board.value || hierarchyReordering.value) return;
+  hierarchyReordering.value = true;
+  errorMessage.value = null;
+  try {
+    board.value = await $fetch<Board>(`/api/projects/${selectedProjectId.value}/hierarchy-order`, {
+      method: 'PATCH',
+      body: {
+        oberthemaIds: board.value.oberthemen.map((topic) => topic.id),
+        unterthemen: board.value.oberthemen.map((topic) => ({
+          oberthemaId: topic.id,
+          ids: unterthemenFor(topic.id).map((subtopic) => subtopic.id),
+        })),
+      },
+    });
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    await loadBoard(selectedProjectId.value);
+  } finally {
+    hierarchyReordering.value = false;
+    clearHierarchyDragState();
+  }
+};
+
+const dropOnOberthema = async (event: DragEvent, targetOberthemaId: string) => {
+  if (!board.value) return;
+  const draggedTopicId = draggedOberthemaId.value ?? hierarchyDragIdFromEvent(event, 'oberthema');
+  if (draggedTopicId) {
+    const sourceId = draggedTopicId;
+    if (sourceId === targetOberthemaId) {
+      clearHierarchyDragState();
+      return;
+    }
+    const reordered = board.value.oberthemen.filter((topic) => topic.id !== sourceId);
+    const targetIndex = reordered.findIndex((topic) => topic.id === targetOberthemaId);
+    const source = board.value.oberthemen.find((topic) => topic.id === sourceId);
+    if (!source || targetIndex < 0) return;
+    reordered.splice(targetIndex + (hierarchyDropAfter(event) ? 1 : 0), 0, source);
+    board.value = { ...board.value, oberthemen: reordered };
+    await persistHierarchyOrder();
+    return;
+  }
+
+  const sourceId = draggedUnterthemaId.value ?? hierarchyDragIdFromEvent(event, 'unterthema');
+  if (!sourceId) return;
+  const source = board.value.unterthemen.find((subtopic) => subtopic.id === sourceId);
+  if (!source) return;
+  const remaining = board.value.unterthemen.filter((subtopic) => subtopic.id !== sourceId);
+  const moved = { ...source, oberthemaId: targetOberthemaId };
+  const nextSubtopics = board.value.oberthemen.flatMap((topic) => {
+    const children = remaining.filter((subtopic) => subtopic.oberthemaId === topic.id);
+    return topic.id === targetOberthemaId ? [...children, moved] : children;
+  });
+  board.value = {
+    ...board.value,
+    unterthemen: nextSubtopics,
+    tasks: board.value.tasks.map((task) => task.unterthemaId === sourceId ? { ...task, oberthemaId: targetOberthemaId } : task),
+  };
+  await persistHierarchyOrder();
+};
+
+const dropOnUnterthema = async (event: DragEvent, targetOberthemaId: string, targetUnterthemaId: string) => {
+  const draggedSubtopicId = draggedUnterthemaId.value ?? hierarchyDragIdFromEvent(event, 'unterthema');
+  if (!board.value || !draggedSubtopicId || draggedSubtopicId === targetUnterthemaId) {
+    clearHierarchyDragState();
+    return;
+  }
+  const sourceId = draggedSubtopicId;
+  const source = board.value.unterthemen.find((subtopic) => subtopic.id === sourceId);
+  if (!source) return;
+  const remaining = board.value.unterthemen.filter((subtopic) => subtopic.id !== sourceId);
+  const moved = { ...source, oberthemaId: targetOberthemaId };
+  const nextSubtopics = board.value.oberthemen.flatMap((topic) => {
+    const children = remaining.filter((subtopic) => subtopic.oberthemaId === topic.id);
+    if (topic.id !== targetOberthemaId) return children;
+    const targetIndex = children.findIndex((subtopic) => subtopic.id === targetUnterthemaId);
+    children.splice(targetIndex + (hierarchyDropAfter(event) ? 1 : 0), 0, moved);
+    return children;
+  });
+  board.value = {
+    ...board.value,
+    unterthemen: nextSubtopics,
+    tasks: board.value.tasks.map((task) => task.unterthemaId === sourceId ? { ...task, oberthemaId: targetOberthemaId } : task),
+  };
+  await persistHierarchyOrder();
 };
 
 const handlePaste = (event: ClipboardEvent) => {
@@ -929,13 +1607,113 @@ const toggleTaskTag = (tag: string) => {
     ? taskForm.tags.filter((item) => item !== tag)
     : [...taskForm.tags, tag];
 };
+const taskAssigneeIdForRequest = () => taskForm.assigneeId === UNASSIGNED_ID ? null : taskForm.assigneeId;
 
 const isImageAttachment = (attachment: Attachment) => attachment.mimeType.startsWith('image/');
 const isPendingImageFile = (item: PendingTaskFile) => item.file.type.startsWith('image/');
 
 const columnName = (column: BoardColumn) => locale.value === 'de' ? column.nameDe : column.nameEn;
+const oberthemaFor = (subtopic: Unterthema | null | undefined) => subtopic
+  ? board.value?.oberthemen.find((topic) => topic.id === subtopic.oberthemaId) ?? null
+  : null;
+const unterthemaForTask = (task: Task) => board.value?.unterthemen.find((topic) => topic.id === task.unterthemaId) ?? null;
+const oberthemaForTask = (task: Task) => board.value?.oberthemen.find((topic) => topic.id === task.oberthemaId) ?? null;
+const taskHierarchyLabel = (task: Task) => {
+  const topic = oberthemaForTask(task);
+  const subtopic = unterthemaForTask(task);
+  return [topic?.name, subtopic?.name ?? t.value.directTasks].filter(Boolean).join(' › ');
+};
+const unterthemenFor = (oberthemaId: string) => board.value?.unterthemen.filter((topic) => topic.oberthemaId === oberthemaId) ?? [];
+const isRecentDoneTask = (task: Task) => boardClock.value - new Date(task.updatedAt).getTime() < DONE_RETENTION_MS;
+const isTaskVisible = (task: Task) => {
+  const column = board.value?.columns.find((item) => item.id === task.columnId);
+  return !column?.done || showAllDone.value || isRecentDoneTask(task);
+};
+const visibleTasks = computed(() => (board.value?.tasks ?? []).filter(isTaskVisible));
+const hiddenDoneCount = computed(() => (board.value?.tasks ?? []).filter((task) => {
+  const column = board.value?.columns.find((item) => item.id === task.columnId);
+  return column?.done && !isRecentDoneTask(task);
+}).length);
+const placementIdFor = (placement: Pick<TaskPlacement, 'oberthemaId' | 'unterthemaId'>) => placement.unterthemaId
+  ? `unterthema:${placement.unterthemaId}`
+  : `oberthema:${placement.oberthemaId}`;
+const parsePlacementId = (value: string): TaskPlacement => {
+  const [kind, id] = value.split(':', 2);
+  if (kind === 'unterthema') {
+    const subtopic = board.value?.unterthemen.find((topic) => topic.id === id);
+    if (subtopic) return { oberthemaId: subtopic.oberthemaId, unterthemaId: subtopic.id };
+  }
+  const topic = board.value?.oberthemen.find((item) => item.id === id);
+  if (kind === 'oberthema' && topic) return { oberthemaId: topic.id, unterthemaId: null };
+  const fallback = board.value?.oberthemen[0];
+  if (!fallback) throw new Error('missing_oberthema');
+  return { oberthemaId: fallback.id, unterthemaId: null };
+};
+const taskCountForUnterthema = (unterthemaId: string) => visibleTasks.value.filter((task) => task.unterthemaId === unterthemaId).length;
+const taskCountForOberthema = (oberthemaId: string) => visibleTasks.value.filter((task) => task.oberthemaId === oberthemaId).length;
+const doneCountForOberthema = (oberthemaId: string) => {
+  const doneColumnId = board.value?.columns.find((column) => column.done)?.id;
+  return visibleTasks.value.filter((task) => task.oberthemaId === oberthemaId && task.columnId === doneColumnId).length;
+};
+const doneCountForUnterthema = (unterthemaId: string) => {
+  const doneColumnId = board.value?.columns.find((column) => column.done)?.id;
+  return visibleTasks.value.filter((task) => task.unterthemaId === unterthemaId && task.columnId === doneColumnId).length;
+};
+const completionPercent = (done: number, total: number) => total ? Math.round((done / total) * 100) : 0;
+const topicAccent = (topic: Oberthema | null) => ({
+  teal: '#0f9f92',
+  coral: '#ef6a55',
+  amber: '#d99518',
+  indigo: '#6470d9',
+  emerald: '#29936f',
+}[topic?.color ?? 'teal'] ?? '#0f9f92');
 const tasksForColumn = (columnId: string) =>
-  [...(board.value?.tasks.filter((task) => task.columnId === columnId) ?? [])].sort((a, b) => a.position - b.position);
+  [...visibleTasks.value.filter((task) => task.columnId === columnId)].sort((a, b) => a.position - b.position);
+const tasksForPlacementColumn = (oberthemaId: string, unterthemaId: string | null, columnId: string) =>
+  tasksForColumn(columnId).filter((task) => task.oberthemaId === oberthemaId && task.unterthemaId === unterthemaId);
+const tasksForOberthemaColumn = (oberthemaId: string, columnId: string) =>
+  tasksForColumn(columnId).filter((task) => task.oberthemaId === oberthemaId);
+const hierarchyRowsFor = (oberthemaId: string) => [
+  {
+    key: `direct-${oberthemaId}`,
+    label: t.value.directTasks,
+    description: t.value.oberthema,
+    oberthemaId,
+    unterthemaId: null as string | null,
+    subtopic: null as Unterthema | null,
+    collapsed: false,
+  },
+  ...unterthemenFor(oberthemaId).map((subtopic) => ({
+    key: subtopic.id,
+    label: subtopic.name,
+    description: subtopic.description ?? t.value.unterthema,
+    oberthemaId,
+    unterthemaId: subtopic.id as string | null,
+    subtopic,
+    collapsed: collapsedUnterthemaIds.value.includes(subtopic.id),
+  })),
+];
+
+const columnIcon = (column: BoardColumn) => ({
+  backlog: 'i-lucide-inbox',
+  todo: 'i-lucide-list-todo',
+  in_progress: 'i-lucide-loader-circle',
+  in_review: 'i-lucide-scan-search',
+  done: 'i-lucide-circle-check',
+}[column.key] ?? 'i-lucide-columns-3');
+
+const assigneeForTask = (task: Task) => board.value?.members.find((member) => member.id === task.assigneeId) ?? null;
+const taskAssigneeLabel = (task: Task) => assigneeForTask(task)?.name ?? t.value.unassigned;
+const taskCardLabel = (task: Task) => [task.key, task.title, taskHierarchyLabel(task), `${t.value.assignee}: ${taskAssigneeLabel(task)}`].filter(Boolean).join(' · ');
+const plainTextDescription = (value: string | null) => (value ?? '')
+  .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+  .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+  .replace(/^#{1,6}\s+/gm, '')
+  .replace(/^>\s?/gm, '')
+  .replace(/^\s*(?:[-*+] |\d+\. )/gm, '')
+  .replace(/[*_~`]/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
 
 const taskStatusLabel = (status: Task['agentStatus']) => {
   const labels: Record<Task['agentStatus'], { en: string; de: string }> = {
@@ -1249,7 +2027,17 @@ const humanError = (error: unknown) => {
     missing_backlog_column: { en: 'The board is missing its first task area.', de: 'Dem Board fehlt der erste Aufgabenbereich.' },
     missing_todo_column: { en: 'The board is missing its work queue.', de: 'Dem Board fehlt die Bearbeitungs-Warteschlange.' },
     invalid_column: { en: 'Please choose a valid board area.', de: 'Bitte wähle einen gültigen Board-Bereich.' },
+    invalid_assignee: { en: 'Choose a responsible person from this project or nobody.', de: 'Wähle eine verantwortliche Person aus diesem Projekt oder niemanden.' },
     invalid_project_key: { en: 'Please use a short project key with letters and numbers.', de: 'Bitte verwende ein kurzes Projektkürzel mit Buchstaben und Zahlen.' },
+    oberthema_not_found: { en: 'The parent topic could not be found.', de: 'Das Oberthema wurde nicht gefunden.' },
+    unterthema_not_found: { en: 'The sub-topic could not be found.', de: 'Das Unterthema wurde nicht gefunden.' },
+    invalid_unterthema: { en: 'Please choose a sub-topic from this project.', de: 'Bitte wähle ein Unterthema dieses Projekts.' },
+    invalid_oberthema: { en: 'A sub-topic can only be moved inside its project.', de: 'Ein Unterthema kann nur innerhalb seines Projekts verschoben werden.' },
+    missing_unterthema: { en: 'Create a sub-topic before adding tasks.', de: 'Erstelle ein Unterthema, bevor du Aufgaben hinzufügst.' },
+    oberthema_name_exists: { en: 'A parent topic with this name already exists.', de: 'Ein Oberthema mit diesem Namen existiert bereits.' },
+    unterthema_name_exists: { en: 'A sub-topic with this name already exists in this parent topic.', de: 'Ein Unterthema mit diesem Namen existiert in diesem Oberthema bereits.' },
+    oberthema_not_empty: { en: 'Move or delete its tasks before deleting this parent topic.', de: 'Verschiebe oder lösche die Aufgaben, bevor du dieses Oberthema löschst.' },
+    unterthema_not_empty: { en: 'Move or delete its tasks before deleting this sub-topic.', de: 'Verschiebe oder lösche die Aufgaben, bevor du dieses Unterthema löschst.' },
   };
   return messages[key]?.[locale.value] ?? label('The action could not be completed.', 'Die Aktion konnte nicht abgeschlossen werden.');
 };
@@ -1326,9 +2114,15 @@ const humanError = (error: unknown) => {
     </section>
 
     <div v-else class="flex min-h-screen">
+      <button
+        v-if="!sidebarCollapsed"
+        class="fixed inset-0 z-30 bg-zinc-950/35 backdrop-blur-[1px] md:hidden"
+        :aria-label="t.closeSidebar"
+        @click="sidebarCollapsed = true"
+      />
       <aside
-        class="sticky top-0 flex h-screen shrink-0 flex-col border-r border-zinc-200/80 bg-white/90 shadow-xl shadow-zinc-950/5 backdrop-blur-xl transition-[width,padding] duration-200 dark:border-zinc-800 dark:bg-zinc-950/90"
-        :class="sidebarCollapsed ? 'w-[76px] p-3' : 'w-[320px] p-4'"
+        class="ak-sidebar sticky top-0 z-40 flex h-screen shrink-0 flex-col border-r border-zinc-200/80 bg-white/95 shadow-xl shadow-zinc-950/5 transition-[width,padding] duration-200 max-md:fixed max-md:inset-y-0 max-md:left-0 dark:border-zinc-800 dark:bg-zinc-950/95"
+        :class="sidebarCollapsed ? 'w-[76px] p-3 max-md:w-[72px]' : 'w-[320px] p-4 max-md:w-[min(320px,86vw)]'"
       >
         <div class="mb-5 flex items-center gap-2">
           <div class="grid size-10 shrink-0 place-items-center rounded-lg bg-teal-600 text-white shadow-lg shadow-teal-600/25">
@@ -1378,29 +2172,87 @@ const humanError = (error: unknown) => {
             <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.workspace }}</p>
           </div>
           <div class="grid gap-2">
-            <button
+            <div
               v-for="project in projects"
               :key="project.id"
-              class="group rounded-xl border text-left transition"
-              :class="[
-                project.id === selectedProjectId && activeView === 'board'
-                  ? 'border-teal-500/50 bg-teal-50 shadow-lg shadow-teal-950/5 dark:bg-teal-950/30'
-                  : 'border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700',
-                sidebarCollapsed ? 'grid h-11 place-items-center p-0' : 'p-3'
-              ]"
-              :title="project.name"
-              @click="selectProject(project.id)"
+              class="overflow-hidden rounded-xl border transition"
+              :class="project.id === selectedProjectId && activeView === 'board'
+                ? 'border-teal-500/40 bg-white shadow-lg shadow-teal-950/5 dark:bg-zinc-900'
+                : 'border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900'"
             >
-              <span v-if="sidebarCollapsed" class="text-xs font-bold text-teal-700 dark:text-teal-300">{{ project.key.slice(0, 2) }}</span>
-              <template v-else>
-                <div class="mb-2 flex items-center justify-between gap-3">
-                  <UBadge color="primary" variant="subtle">{{ project.key }}</UBadge>
-                  <UIcon name="i-lucide-chevron-right" class="size-4 text-zinc-400 transition group-hover:translate-x-0.5" />
+              <button
+                class="group w-full text-left transition hover:bg-zinc-50 dark:hover:bg-zinc-800/70"
+                :class="sidebarCollapsed ? 'grid h-11 place-items-center p-0' : 'p-3'"
+                :title="project.name"
+                @click="selectProject(project.id)"
+              >
+                <span v-if="sidebarCollapsed" class="text-xs font-bold text-teal-700 dark:text-teal-300">{{ project.key.slice(0, 2) }}</span>
+                <template v-else>
+                  <div class="mb-2 flex items-center justify-between gap-3">
+                    <UBadge color="primary" variant="subtle">{{ project.key }}</UBadge>
+                    <UIcon name="i-lucide-chevron-right" class="size-4 text-zinc-400 transition group-hover:translate-x-0.5" />
+                  </div>
+                  <p class="font-medium leading-tight">{{ project.name }}</p>
+                  <p class="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">{{ projectSidebarText(project) }}</p>
+                </template>
+              </button>
+
+              <div v-if="!sidebarCollapsed && project.id === selectedProjectId && board" class="border-t border-zinc-200 p-2 dark:border-zinc-800">
+                <div class="mb-1 flex items-center justify-between px-2 py-1.5">
+                  <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ t.hierarchy }}</p>
+                  <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newOberthema" @click.stop="openOberthemaModal()" />
                 </div>
-                <p class="font-medium leading-tight">{{ project.name }}</p>
-                <p class="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">{{ projectSidebarText(project) }}</p>
-              </template>
-            </button>
+                <button
+                  class="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium transition"
+                  :class="!selectedOberthemaId ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-950' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'"
+                  @click="selectProjectOverview"
+                >
+                  <UIcon name="i-lucide-layout-dashboard" class="size-3.5" />
+                  <span class="min-w-0 flex-1 truncate">{{ t.allTasks }}</span>
+                  <span class="text-[10px] opacity-70">{{ boardStats.tasks }}</span>
+                </button>
+
+                <div v-for="topic in board.oberthemen" :key="topic.id" class="mb-1">
+                  <div
+                    class="group flex items-center rounded-lg border pr-1 transition"
+                    :class="selectedOberthemaId === topic.id ? 'border-zinc-300 bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800' : 'border-transparent hover:bg-zinc-50 dark:hover:bg-zinc-800/60'"
+                  >
+                    <button
+                      class="grid size-8 shrink-0 place-items-center rounded-md"
+                      :aria-label="collapsedOberthemaIds.includes(topic.id) ? t.expandTopic : t.collapseTopic"
+                      :aria-expanded="!collapsedOberthemaIds.includes(topic.id)"
+                      @click="toggleOberthemaExpanded(topic.id)"
+                    >
+                      <UIcon :name="collapsedOberthemaIds.includes(topic.id) ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3.5 text-zinc-400" />
+                    </button>
+                    <button class="min-w-0 flex-1 rounded-md py-2 text-left" :aria-current="selectedOberthemaId === topic.id ? 'page' : undefined" @click="selectOberthema(topic.id)">
+                      <span class="flex items-center gap-2 truncate text-xs font-semibold">
+                        <span class="size-2 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
+                        <span class="truncate">{{ topic.name }}</span>
+                      </span>
+                      <span class="block text-[10px] text-zinc-400">{{ taskCountForOberthema(topic.id) }} {{ t.tasks }}</span>
+                    </button>
+                    <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newUnterthema" @click.stop="openUnterthemaModal(topic.id)" />
+                  </div>
+                  <div v-if="!collapsedOberthemaIds.includes(topic.id)" class="ml-4 border-l border-zinc-200 pl-2 dark:border-zinc-700">
+                    <button
+                      v-for="subtopic in unterthemenFor(topic.id)"
+                      :key="subtopic.id"
+                      class="my-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition"
+                      :class="selectedUnterthemaId === subtopic.id ? 'bg-teal-50 font-semibold text-teal-800 dark:bg-teal-950/50 dark:text-teal-200' : 'text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'"
+                      :aria-current="selectedUnterthemaId === subtopic.id ? 'page' : undefined"
+                      @click="selectUnterthema(subtopic.id)"
+                    >
+                      <span class="size-1.5 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
+                      <span class="min-w-0 flex-1 truncate">{{ subtopic.name }}</span>
+                      <span class="text-[10px] opacity-70">{{ taskCountForUnterthema(subtopic.id) }}</span>
+                    </button>
+                    <p v-if="!unterthemenFor(topic.id).length" class="px-2 py-2 text-[11px] leading-4 text-zinc-400">{{ t.noUnterthemen }}</p>
+                  </div>
+                </div>
+                <p v-if="!board.oberthemen.length" class="px-2 py-3 text-xs text-zinc-400">{{ t.noOberthemen }}</p>
+              </div>
+            </div>
             <p v-if="!projects.length && !sidebarCollapsed" class="rounded-xl border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               {{ t.noProject }}
             </p>
@@ -1436,23 +2288,24 @@ const humanError = (error: unknown) => {
         </div>
       </aside>
 
-      <main class="min-w-0 flex-1 p-4 lg:p-5">
+      <main class="ak-main min-w-0 flex-1 p-4 transition-[margin] duration-200 max-md:w-full lg:p-5" :class="sidebarCollapsed ? 'max-md:ml-[72px]' : ''">
         <header class="mb-3 flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-zinc-200/80 pb-3 dark:border-zinc-800">
           <div class="flex min-w-0 items-center gap-3">
             <UBadge variant="soft" color="neutral">{{ activeView === 'board' ? selectedProject?.key ?? t.workspace : t.admin }}</UBadge>
             <div class="min-w-0">
-              <h1 class="truncate text-xl font-semibold tracking-tight">
-                {{ activeView === 'board' ? selectedProject?.name ?? t.noProject : activeView === 'projects' ? t.projects : t.users }}
+              <h1 class="ak-display truncate text-xl font-semibold tracking-tight">
+                {{ activeView === 'board' ? scopeTitle : activeView === 'projects' ? t.projects : t.users }}
               </h1>
               <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                {{ activeView === 'board' ? selectedProject?.description || t.subtitle : activeView === 'projects' ? t.projectTableHint : t.userTableHint }}
+                {{ activeView === 'board' ? scopeDescription : activeView === 'projects' ? t.projectTableHint : t.userTableHint }}
               </p>
             </div>
           </div>
           <div v-if="activeView === 'board'" class="flex flex-wrap gap-2">
             <UBadge color="neutral" variant="soft">{{ boardStats.columns }} {{ t.columns }}</UBadge>
             <UBadge color="neutral" variant="soft">{{ boardStats.tasks }} {{ t.tasks }}</UBadge>
-            <UBadge color="neutral" variant="soft">{{ boardStats.members }} {{ t.members }}</UBadge>
+            <UBadge color="neutral" variant="soft">{{ boardStats.oberthemen }} {{ t.oberthemen }}</UBadge>
+            <UBadge color="neutral" variant="soft">{{ boardStats.unterthemen }} {{ t.unterthemen }}</UBadge>
           </div>
         </header>
 
@@ -1513,109 +2366,304 @@ const humanError = (error: unknown) => {
           </UCard>
         </section>
 
-        <section v-else-if="board">
-          <div class="overflow-x-auto pb-2">
-            <div class="grid min-w-[1180px] gap-4" :style="{ gridTemplateColumns: `repeat(${board.columns.length}, minmax(260px, 1fr))` }">
-              <section
-                v-for="column in board.columns"
-                :key="column.id"
-                :data-column-id="column.id"
-                :data-column-key="column.key"
-                class="flex min-h-[calc(100vh-106px)] flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white/80 shadow-xl shadow-zinc-950/5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/75"
-              >
-                <header class="border-b border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
-                  <div class="flex items-start justify-between gap-3">
-                    <div class="min-w-0">
-                      <p class="text-sm font-semibold leading-tight">{{ columnName(column) }}</p>
-                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ tasksForColumn(column.id).length }} {{ t.tasks }}</p>
-                      <p v-if="column.key === 'todo'" class="mt-2 text-xs leading-snug text-amber-700 dark:text-amber-300">
-                        {{ t.todoAutomationHint }}
-                      </p>
-                    </div>
-                    <UBadge color="neutral" variant="soft">{{ tasksForColumn(column.id).length }}</UBadge>
-                  </div>
-                  <UButton
-                    v-if="column.key === 'backlog'"
-                    class="mt-4 w-full justify-center"
-                    size="sm"
-                    color="primary"
-                    variant="soft"
-                    icon="i-lucide-plus"
-                    @click="openTaskModal(column.id)"
-                  >
-                    {{ t.newTask }}
-                  </UButton>
-                </header>
-
-                <div
-                  :data-drop-column-id="column.id"
-                  :data-drop-column-key="column.key"
-                  class="flex-1 bg-zinc-50/55 p-3 dark:bg-zinc-900/30"
-                  @dragover.prevent="markColumnDropTarget(column.id)"
-                  @dragenter.prevent="markColumnDropTarget(column.id)"
-                  @dragleave.self="dragOverColumnId = null"
-                  @drop="draggedTaskId && moveTask(draggedTaskId, column.id)"
+        <section v-else-if="board" class="grid gap-3">
+          <div class="ak-scope-panel flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+            <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span class="inline-flex items-center gap-2 font-semibold text-zinc-800 dark:text-zinc-100">
+                <span class="grid size-7 place-items-center rounded-lg bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300">
+                  <UIcon name="i-lucide-layout-panel-top" class="size-4" />
+                </span>
+                {{ t.hierarchy }}
+              </span>
+              <span class="text-zinc-500 dark:text-zinc-400">{{ boardStats.oberthemen }} {{ t.oberthemen }} · {{ boardStats.unterthemen }} {{ t.unterthemen }}</span>
+              <span class="hidden items-center gap-1.5 text-zinc-400 lg:inline-flex">
+                <UIcon name="i-lucide-grip-vertical" class="size-3.5" />
+                {{ t.hierarchyReorderHint }}
+              </span>
+              <span v-if="hiddenDoneCount && !showAllDone" class="inline-flex items-center gap-1.5 rounded-md bg-zinc-100 px-2 py-1 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300">
+                <UIcon name="i-lucide-archive" class="size-3.5" />
+                {{ hiddenDoneCount }} {{ t.completedHidden }}
+              </span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <UButton
+                  color="neutral"
+                  variant="outline"
+                  size="sm"
+                  :icon="showAllDone ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                  @click="toggleCompletedVisibility"
                 >
-                  <div class="grid gap-3">
-                    <template
-                      v-for="task in tasksForColumn(column.id)"
-                      :key="task.id"
-                    >
-                      <div
-                        v-if="draggedTaskId && dragOverTaskId === task.id"
-                        class="flex h-9 items-center justify-center rounded-lg border-2 border-dashed border-teal-500 bg-teal-50 text-xs font-semibold text-teal-700 dark:bg-teal-950/40 dark:text-teal-200"
-                      >
-                        {{ t.dropHere }}
-                      </div>
-                      <UCard
-                        :data-task-id="task.id"
-                        :data-task-key="task.key"
-                        class="cursor-pointer border-l-4 border-l-teal-500"
-                        :class="{
-                          'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running',
-                        }"
-                        :ui="{ body: 'p-3 sm:p-3' }"
-                        draggable="true"
-                        @click="openTaskDetail(task)"
-                        @dragover.prevent.stop="markTaskDropTarget(column.id, task.id)"
-                        @dragenter.prevent.stop="markTaskDropTarget(column.id, task.id)"
-                        @dragstart="draggedTaskId = task.id"
-                        @dragend="clearDragState"
-                        @drop.stop.prevent="draggedTaskId && moveTask(draggedTaskId, column.id, task.id)"
-                      >
-                        <div class="mb-2 flex items-start gap-2">
-                          <UBadge variant="subtle" color="neutral">{{ task.key }}</UBadge>
-                        </div>
-                        <h3 class="text-sm font-semibold leading-snug">{{ task.title }}</h3>
-                        <p v-if="task.description" class="mt-2 line-clamp-3 text-xs text-zinc-500 dark:text-zinc-400">{{ task.description }}</p>
-                        <div class="mt-3 flex flex-wrap gap-1.5">
-                          <UBadge
-                            v-for="tag in task.tags"
-                            :key="tag"
-                            color="primary"
-                            variant="soft"
-                            class="max-w-full"
-                          >
-                            #{{ tag }}
-                          </UBadge>
-                          <UBadge v-if="task.attachments.length" color="neutral" variant="outline">{{ task.attachments.length }} {{ t.attachments }}</UBadge>
-                        </div>
-                      </UCard>
-                    </template>
-                    <div
-                      v-if="draggedTaskId && dragOverColumnId === column.id && !dragOverTaskId"
-                      class="flex h-10 items-center justify-center rounded-lg border-2 border-dashed border-teal-500 bg-teal-50 text-xs font-semibold text-teal-700 dark:bg-teal-950/40 dark:text-teal-200"
-                    >
-                      {{ t.dropHere }}
-                    </div>
-                    <p v-if="!tasksForColumn(column.id).length" class="rounded-xl border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-400 dark:border-zinc-800">
-                      {{ t.emptyColumn }}
-                    </p>
-                  </div>
-                </div>
-              </section>
+                  {{ showAllDone ? t.hideCompleted : t.showCompleted }}
+                  <UBadge v-if="hiddenDoneCount" color="neutral" variant="soft">{{ hiddenDoneCount }}</UBadge>
+                </UButton>
+                <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-network" @click="openOberthemaModal()">
+                  {{ t.newOberthema }}
+                </UButton>
+                <UButton size="sm" icon="i-lucide-plus" :disabled="!board.oberthemen.length" @click="openTaskModal(backlogColumn?.id)">
+                  {{ t.newTask }}
+                </UButton>
             </div>
           </div>
+
+          <div v-if="board.oberthemen.length" class="overflow-x-auto rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <div
+              class="grid"
+              :style="{
+                gridTemplateColumns: `250px repeat(${board.columns.length}, minmax(230px, 1fr))`,
+                minWidth: `${250 + board.columns.length * 230}px`,
+              }"
+            >
+              <div class="sticky left-0 top-0 z-30 flex min-h-16 items-center border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
+                <div>
+                  <p class="text-sm font-semibold">{{ t.hierarchy }}</p>
+                  <p class="mt-0.5 text-[11px] text-teal-700/70 dark:text-zinc-400">{{ boardStats.oberthemen }} + {{ boardStats.unterthemen }}</p>
+                </div>
+              </div>
+              <div
+                v-for="column in board.columns"
+                :key="`header-${column.id}`"
+                :data-column-id="column.id"
+                :data-column-key="column.key"
+                class="sticky top-0 z-20 min-h-16 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <div>
+                    <p class="flex items-center gap-2 text-sm font-semibold">
+                      <UIcon :name="columnIcon(column)" class="size-4 text-zinc-500 dark:text-zinc-400" :class="column.key === 'in_progress' ? 'ak-spin-when-active' : ''" />
+                      {{ columnName(column) }}
+                    </p>
+                    <p v-if="column.key === 'todo'" class="mt-0.5 text-[10px] leading-4 text-amber-700 dark:text-amber-300">{{ t.todoAutomationShort }}</p>
+                    <p v-else class="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{{ tasksForColumn(column.id).length }} {{ t.tasks }}</p>
+                  </div>
+                  <span class="grid size-7 place-items-center rounded-lg border border-zinc-200 bg-white text-xs font-semibold shadow-sm dark:border-zinc-700 dark:bg-zinc-800">{{ tasksForColumn(column.id).length }}</span>
+                </div>
+              </div>
+
+              <template v-for="topic in board.oberthemen" :key="topic.id">
+                <div
+                  :id="`topic-${topic.id}`"
+                  :data-topic-id="topic.id"
+                  :data-topic-order="board.oberthemen.findIndex((item) => item.id === topic.id)"
+                  class="sticky left-0 z-10 flex min-h-16 items-center gap-1.5 border-b border-r border-zinc-200 bg-zinc-100 px-2.5 py-2 transition dark:border-zinc-800 dark:bg-zinc-900"
+                  :class="[
+                    selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
+                    hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
+                    draggedOberthemaId === topic.id ? 'opacity-45' : '',
+                  ]"
+                  @dragover.prevent="markHierarchyDropTarget($event, `oberthema:${topic.id}`)"
+                  @dragenter.prevent="markHierarchyDropTarget($event, `oberthema:${topic.id}`)"
+                  @drop.prevent.stop="dropOnOberthema($event, topic.id)"
+                >
+                  <button
+                    type="button"
+                    draggable="true"
+                    class="ak-hierarchy-drag-handle grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-zinc-400 hover:bg-white hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                    :aria-label="`${t.moveOberthema}: ${topic.name}`"
+                    :title="t.hierarchyReorderHint"
+                    @click.stop.prevent
+                    @dragstart.stop="startOberthemaDrag($event, topic.id)"
+                    @dragend.stop="clearHierarchyDragState"
+                  >
+                    <UIcon name="i-lucide-grip-vertical" class="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    class="grid size-7 shrink-0 place-items-center rounded-lg hover:bg-white dark:hover:bg-zinc-800"
+                    :aria-label="collapsedOberthemaIds.includes(topic.id) ? t.expandTopic : t.collapseTopic"
+                    :aria-expanded="!collapsedOberthemaIds.includes(topic.id)"
+                    @click="toggleOberthemaExpanded(topic.id)"
+                  >
+                    <UIcon :name="collapsedOberthemaIds.includes(topic.id) ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-4" />
+                  </button>
+                  <span class="size-2.5 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
+                  <button type="button" class="min-w-0 flex-1 text-left" @click="selectOberthema(topic.id)">
+                    <span class="block truncate text-sm font-semibold">{{ topic.name }}</span>
+                    <span class="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ taskCountForOberthema(topic.id) }} {{ t.tasks }}</span>
+                  </button>
+                  <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editOberthema" @click.stop="openOberthemaModal(topic)" />
+                  <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newUnterthema" @click.stop="openUnterthemaModal(topic.id)" />
+                </div>
+                <div
+                  v-for="column in board.columns"
+                  :key="`${topic.id}-summary-${column.id}`"
+                  class="flex min-h-16 items-center justify-between border-b border-r border-zinc-200 bg-zinc-100 px-3 last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <span class="text-xs font-medium text-zinc-500 dark:text-zinc-400">{{ columnName(column) }}</span>
+                  <span class="grid size-8 place-items-center rounded-lg bg-white text-sm font-semibold shadow-sm dark:bg-zinc-800">
+                    {{ tasksForOberthemaColumn(topic.id, column.id).length }}
+                  </span>
+                </div>
+
+                <template v-if="!collapsedOberthemaIds.includes(topic.id)">
+                  <template v-for="row in hierarchyRowsFor(topic.id)" :key="row.key">
+                    <div
+                      :id="row.subtopic ? `subtopic-${row.subtopic.id}` : undefined"
+                      :data-subtopic-id="row.subtopic?.id"
+                      class="sticky left-0 z-10 flex min-h-20 items-start gap-1.5 border-b border-r border-zinc-200 bg-white px-2.5 py-2.5 transition dark:border-zinc-800 dark:bg-zinc-950"
+                      :class="[
+                        row.subtopic && selectedUnterthemaId === row.subtopic.id ? 'ring-2 ring-inset ring-teal-500/40' : '',
+                        row.subtopic && hierarchyDragOverId === `unterthema:${row.subtopic.id}` ? 'ak-hierarchy-drop-target' : '',
+                        row.subtopic && draggedUnterthemaId === row.subtopic.id ? 'opacity-45' : '',
+                      ]"
+                      @dragover.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
+                      @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
+                      @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
+                    >
+                      <button
+                        v-if="row.subtopic"
+                        type="button"
+                        draggable="true"
+                        class="ak-hierarchy-drag-handle grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
+                        :aria-label="`${t.moveUnterthema}: ${row.subtopic.name}`"
+                        :title="t.hierarchyReorderHint"
+                        @click.stop.prevent
+                        @dragstart.stop="startUnterthemaDrag($event, row.subtopic.id)"
+                        @dragend.stop="clearHierarchyDragState"
+                      >
+                        <UIcon name="i-lucide-grip-vertical" class="size-4" />
+                      </button>
+                      <button
+                        v-if="row.subtopic"
+                        type="button"
+                        class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                        :aria-label="row.collapsed ? t.expandSubtopic : t.collapseSubtopic"
+                        :aria-expanded="!row.collapsed"
+                        @click="toggleUnterthemaExpanded(row.subtopic.id)"
+                      >
+                        <UIcon :name="row.collapsed ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3.5 text-zinc-400" />
+                      </button>
+                      <span v-else class="mt-0.5 grid size-7 shrink-0 place-items-center">
+                        <UIcon name="i-lucide-corner-down-right" class="size-3.5 text-zinc-400" />
+                      </span>
+                      <button
+                        type="button"
+                        class="min-w-0 flex-1 text-left"
+                        @click="row.subtopic ? selectUnterthema(row.subtopic.id) : selectOberthema(topic.id)"
+                      >
+                        <span class="block truncate text-sm font-medium">{{ row.label }}</span>
+                        <span class="mt-1 block line-clamp-2 text-[11px] leading-4 text-zinc-400">{{ row.description }}</span>
+                      </button>
+                      <UButton v-if="row.subtopic" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editUnterthema" @click.stop="openUnterthemaModal(topic.id, row.subtopic)" />
+                      <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newTask" @click.stop="openTaskModal(backlogColumn?.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })" />
+                    </div>
+
+                    <div
+                      v-for="column in board.columns"
+                      :key="`${row.key}-${column.id}`"
+                      :data-drop-column-id="column.id"
+                      :data-drop-column-key="column.key"
+                      :data-drop-oberthema-id="topic.id"
+                      :data-drop-unterthema-id="row.unterthemaId ?? ''"
+                      class="ak-task-drop-cell relative min-h-24 border-b border-r border-zinc-200 bg-zinc-50/60 p-2.5 transition-colors last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900/30"
+                      :class="draggedTaskId && dragOverPlacementKey === taskDropPlacementKey(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }) ? 'ak-task-drop-cell-active' : ''"
+                      @dragover.prevent="markColumnDropTarget(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
+                      @dragenter.prevent="markColumnDropTarget(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
+                      @dragleave="leaveTaskDropCell($event, taskDropPlacementKey(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }))"
+                      @drop.prevent="draggedTaskId && moveTask(draggedTaskId, column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
+                    >
+                      <div v-if="row.collapsed" class="flex h-full min-h-16 items-center justify-center">
+                        <span class="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                          {{ tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length }} {{ t.tasks }}
+                        </span>
+                      </div>
+                      <div v-else class="grid gap-2.5">
+                        <template v-for="task in tasksForPlacementColumn(topic.id, row.unterthemaId, column.id)" :key="task.id">
+                          <div class="ak-task-card-slot relative">
+                            <div
+                              v-if="draggedTaskId && dragOverTaskId === task.id"
+                              class="ak-task-insertion-marker pointer-events-none absolute z-10 flex items-center"
+                              aria-hidden="true"
+                            >
+                              <span class="ak-task-insertion-label inline-flex items-center gap-1 rounded-md bg-teal-600 px-2 py-1 text-[10px] font-semibold text-white shadow-sm">
+                                <UIcon name="i-lucide-move-down" class="size-3" />
+                                {{ t.dropHere }}
+                              </span>
+                            </div>
+                            <UCard
+                              :data-task-id="task.id"
+                              :data-task-key="task.key"
+                              :data-agent-enabled="String(task.agentEnabled)"
+                              :data-assignee-id="task.assigneeId ?? ''"
+                              class="ak-task-card cursor-pointer overflow-hidden"
+                              :style="{ '--task-accent': topicAccent(topic) }"
+                              :class="{
+                                'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running',
+                                'opacity-50': draggedTaskId === task.id,
+                              }"
+                              :ui="{ body: 'p-3 sm:p-3' }"
+                              role="button"
+                              tabindex="0"
+                              :aria-label="taskCardLabel(task)"
+                              draggable="true"
+                              @click="openTaskDetail(task)"
+                              @keydown.enter.prevent="openTaskDetail(task)"
+                              @keydown.space.prevent="openTaskDetail(task)"
+                              @dragover.prevent.stop="markTaskDropTarget(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }, task.id)"
+                              @dragenter.prevent.stop="markTaskDropTarget(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }, task.id)"
+                              @dragstart="startTaskDrag(task.id)"
+                              @dragend="clearDragState"
+                              @drop.stop.prevent="draggedTaskId && moveTask(draggedTaskId, column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }, task.id)"
+                            >
+                              <div class="mb-2 flex items-center justify-between gap-2">
+                                <UBadge variant="subtle" color="neutral" class="shrink-0 whitespace-nowrap">{{ task.key }}</UBadge>
+                                <span
+                                  class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
+                                  :class="task.agentEnabled ? 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'"
+                                >
+                                  <UIcon :name="task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round'" class="size-3" />
+                                  {{ task.agentEnabled ? t.aiTask : t.humanTask }}
+                                </span>
+                              </div>
+                              <h3 class="text-sm font-semibold leading-snug">{{ task.title }}</h3>
+                              <p v-if="task.description" class="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ plainTextDescription(task.description) }}</p>
+                              <div class="mt-3 flex flex-wrap gap-1.5">
+                                <UBadge
+                                  color="neutral"
+                                  variant="soft"
+                                  :icon="task.assigneeId ? 'i-lucide-user-round-check' : 'i-lucide-user-round-x'"
+                                  class="max-w-full"
+                                  :title="`${t.assignee}: ${taskAssigneeLabel(task)}`"
+                                >
+                                  <span class="max-w-32 truncate">{{ taskAssigneeLabel(task) }}</span>
+                                </UBadge>
+                                <UBadge v-for="tag in task.tags" :key="tag" color="primary" variant="soft" class="max-w-full">#{{ tag }}</UBadge>
+                                <UBadge v-if="task.attachments.length" color="neutral" variant="outline">{{ task.attachments.length }} {{ t.attachments }}</UBadge>
+                              </div>
+                            </UCard>
+                          </div>
+                        </template>
+                        <button
+                          v-if="column.key === 'backlog' && !tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length"
+                          type="button"
+                          class="flex min-h-14 w-full items-center justify-center gap-1 rounded-lg border border-dashed border-zinc-300 text-xs text-zinc-400 transition hover:border-teal-400 hover:text-teal-700 dark:border-zinc-700 dark:hover:text-teal-300"
+                          @click="openTaskModal(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
+                        >
+                          <UIcon name="i-lucide-plus" class="size-3.5" /> {{ t.newTask }}
+                        </button>
+                      </div>
+                      <div
+                        v-if="draggedTaskId && dragOverPlacementKey === taskDropPlacementKey(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }) && !dragOverTaskId"
+                        class="ak-task-cell-drop-overlay pointer-events-none absolute z-10 flex items-center justify-center rounded-lg border border-teal-500/70 bg-teal-50/95 text-xs font-semibold text-teal-800 shadow-sm dark:bg-teal-950/90 dark:text-teal-100"
+                        :class="row.collapsed || !tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length ? 'inset-2.5' : 'inset-x-2.5 bottom-2.5 h-10'"
+                        aria-hidden="true"
+                      >
+                        <span class="inline-flex items-center gap-1.5">
+                          <UIcon name="i-lucide-corner-down-left" class="size-3.5" />
+                          {{ t.dropHere }}
+                        </span>
+                      </div>
+                    </div>
+                  </template>
+                </template>
+              </template>
+            </div>
+          </div>
+
+          <button v-else class="w-full rounded-2xl border border-dashed border-zinc-300 bg-white p-12 text-center text-sm text-zinc-500 transition hover:border-teal-500 hover:text-teal-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-teal-300" @click="openOberthemaModal()">
+            <UIcon name="i-lucide-network" class="mx-auto mb-3 size-7" />
+            <span class="block font-semibold">{{ t.noOberthemen }}</span>
+            <span class="mt-1 block">{{ t.newOberthema }}</span>
+          </button>
         </section>
 
         <UCard v-else>
@@ -1734,8 +2782,100 @@ const humanError = (error: unknown) => {
       </UModal>
 
       <UModal
+        v-model:open="oberthemaModalOpen"
+        :title="editingOberthemaId ? t.editOberthema : t.newOberthema"
+        :description="t.topicDialog"
+        :ui="{ content: 'max-w-2xl', body: 'p-0 sm:p-0' }"
+      >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
+        <template #body>
+          <form @submit.prevent="saveOberthemaAction">
+            <div class="border-b border-zinc-200 bg-zinc-50/80 px-6 py-5 dark:border-zinc-800 dark:bg-zinc-900/70">
+              <div class="flex items-center gap-3">
+                <span class="grid size-9 place-items-center rounded-lg text-white" :style="{ backgroundColor: topicAccent({ color: oberthemaForm.color } as Oberthema) }">
+                  <UIcon name="i-lucide-layers-3" class="size-4" />
+                </span>
+                <div>
+                  <p class="ak-display font-semibold">{{ t.oberthema }}</p>
+                  <p class="text-xs text-zinc-500 dark:text-zinc-400">{{ t.topicDialog }}</p>
+                </div>
+              </div>
+            </div>
+            <div class="grid gap-5 p-6">
+              <UAlert v-if="errorMessage" color="error" variant="soft" icon="i-lucide-alert-circle" :description="errorMessage" />
+              <UFormField :label="t.topicName" required size="lg">
+                <UInput v-model="oberthemaForm.name" class="w-full" size="xl" icon="i-lucide-network" required autofocus />
+              </UFormField>
+              <UFormField :label="t.topicDescription" size="lg">
+                <UTextarea v-model="oberthemaForm.description" class="w-full" :rows="4" size="lg" />
+              </UFormField>
+              <UFormField :label="t.topicColor" size="lg">
+                <USelect v-model="oberthemaForm.color" class="w-full" :items="topicColorItems" size="lg" />
+              </UFormField>
+            </div>
+            <div class="flex justify-between gap-3 border-t border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
+              <UButton v-if="editingOberthemaId" color="error" variant="soft" icon="i-lucide-trash-2" type="button" :loading="hierarchySubmitting" @click="deleteOberthemaAction">{{ t.deleteOberthema }}</UButton>
+              <span v-else />
+              <div class="flex gap-2">
+                <UButton color="neutral" variant="ghost" type="button" @click="oberthemaModalOpen = false">{{ t.cancel }}</UButton>
+                <UButton icon="i-lucide-save" type="submit" :loading="hierarchySubmitting">{{ t.save }}</UButton>
+              </div>
+            </div>
+          </form>
+        </template>
+      </UModal>
+
+      <UModal
+        v-model:open="unterthemaModalOpen"
+        :title="editingUnterthemaId ? t.editUnterthema : t.newUnterthema"
+        :description="t.topicDialog"
+        :ui="{ content: 'max-w-2xl', body: 'p-0 sm:p-0' }"
+      >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
+        <template #body>
+          <form @submit.prevent="saveUnterthemaAction">
+            <div class="border-b border-zinc-200 bg-zinc-50/80 px-6 py-5 dark:border-zinc-800 dark:bg-zinc-900/70">
+              <div class="flex items-center gap-3">
+                <span class="grid size-9 place-items-center rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-950">
+                  <UIcon name="i-lucide-list-tree" class="size-4" />
+                </span>
+                <div>
+                  <p class="ak-display font-semibold">{{ t.unterthema }}</p>
+                  <p class="text-xs text-zinc-500 dark:text-zinc-400">{{ t.topicDialog }}</p>
+                </div>
+              </div>
+            </div>
+            <div class="grid gap-5 p-6">
+              <UAlert v-if="errorMessage" color="error" variant="soft" icon="i-lucide-alert-circle" :description="errorMessage" />
+              <UFormField :label="t.oberthema" required size="lg">
+                <USelect v-model="unterthemaForm.oberthemaId" class="w-full" :items="oberthemaItems" size="xl" required />
+              </UFormField>
+              <UFormField :label="t.topicName" required size="lg">
+                <UInput v-model="unterthemaForm.name" class="w-full" size="xl" icon="i-lucide-list-tree" required autofocus />
+              </UFormField>
+              <UFormField :label="t.topicDescription" size="lg">
+                <UTextarea v-model="unterthemaForm.description" class="w-full" :rows="4" size="lg" />
+              </UFormField>
+            </div>
+            <div class="flex justify-between gap-3 border-t border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
+              <UButton v-if="editingUnterthemaId" color="error" variant="soft" icon="i-lucide-trash-2" type="button" :loading="hierarchySubmitting" @click="deleteUnterthemaAction">{{ t.deleteUnterthema }}</UButton>
+              <span v-else />
+              <div class="flex gap-2">
+                <UButton color="neutral" variant="ghost" type="button" @click="unterthemaModalOpen = false">{{ t.cancel }}</UButton>
+                <UButton icon="i-lucide-save" type="submit" :loading="hierarchySubmitting">{{ t.save }}</UButton>
+              </div>
+            </div>
+          </form>
+        </template>
+      </UModal>
+
+      <UModal
         v-if="taskModalOpen"
-        v-model:open="taskModalOpen"
+        v-model:open="taskModalModel"
         :title="selectedTaskId ? t.editTask : t.createTask"
         :description="t.taskDialog"
         :ui="{ content: 'max-w-4xl', body: 'p-0 sm:p-0 overflow-y-auto', footer: 'justify-end border-t border-zinc-200 bg-zinc-50/95 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/90' }"
@@ -1748,34 +2888,46 @@ const humanError = (error: unknown) => {
             <div class="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
               <div>
                 <p class="text-xs font-bold uppercase tracking-wide text-teal-600 dark:text-teal-400">{{ selectedTaskDetail?.task.key ?? t.taskDialog }}</p>
-                <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{{ selectedTaskId && selectedTaskDetail ? taskStatusLabel(selectedTaskDetail.task.agentStatus) : t.pasteHint }}</p>
+                <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                  {{ selectedTaskId && selectedTaskDetail ? (selectedTaskDetail.task.agentEnabled ? taskStatusLabel(selectedTaskDetail.task.agentStatus) : t.humanTask) : t.pasteHint }}
+                </p>
               </div>
-              <UFormField :label="t.area" required size="sm">
-                <USelect v-model="taskForm.columnId" class="w-56 max-w-full" :items="columnItems" size="lg" :disabled="!selectedTaskId || hasAgentActivity" />
-              </UFormField>
+              <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <UFormField :label="t.topicAssignment" required size="sm">
+                  <USelect v-model="taskForm.placementId" class="w-64 max-w-full" :items="placementItems" size="lg" :placeholder="t.chooseUnterthema" required />
+                </UFormField>
+                <UFormField :label="t.area" required size="sm">
+                  <USelect v-model="taskForm.columnId" class="w-48 max-w-full" :items="columnItems" size="lg" :disabled="!selectedTaskId || hasAgentActivity" />
+                </UFormField>
+                <UFormField :label="t.assignee" size="sm">
+                  <USelect
+                    v-model="taskForm.assigneeId"
+                    data-assignee-select
+                    class="w-56 max-w-full"
+                    :items="assigneeItems"
+                    size="lg"
+                    icon="i-lucide-user-round-check"
+                  />
+                </UFormField>
+              </div>
             </div>
 
             <div v-if="selectedTaskId" class="grid gap-5 p-6">
-              <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p class="text-sm font-semibold">{{ t.tags }}</p>
-                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.tagsHelp }}</p>
-                  </div>
-                  <div class="relative">
-                    <UButton
-                      type="button"
-                      color="neutral"
-                      variant="outline"
-                      icon="i-lucide-tags"
-                      @click="tagDropdownOpen = !tagDropdownOpen"
-                    >
-                      {{ taskForm.tags.length ? `${taskForm.tags.length} ${t.tags}` : t.chooseTags }}
-                    </UButton>
-                    <div
-                      v-if="tagDropdownOpen"
-                      class="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-2 shadow-xl shadow-zinc-950/10 dark:border-zinc-800 dark:bg-zinc-950"
-                    >
+              <div class="flex min-h-10 flex-wrap items-center gap-2 px-1">
+                <span class="inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200">
+                  <UIcon name="i-lucide-tags" class="size-4 text-zinc-400" />
+                  {{ t.tags }}
+                </span>
+                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                  <UBadge v-for="tag in taskTagPreview" :key="tag" color="primary" variant="soft">#{{ tag }}</UBadge>
+                  <span v-if="!taskTagPreview.length" class="text-xs text-zinc-500 dark:text-zinc-400">{{ t.noTags }}</span>
+                </div>
+                <UPopover v-model:open="tagDropdownOpen" :content="{ align: 'end', side: 'bottom' }">
+                  <UButton type="button" color="neutral" variant="outline" size="sm" icon="i-lucide-list-filter">
+                    {{ t.editTags }}
+                  </UButton>
+                  <template #content>
+                    <div class="w-64 p-2">
                       <label
                         v-for="tag in currentProjectTags"
                         :key="tag"
@@ -1789,16 +2941,12 @@ const humanError = (error: unknown) => {
                         >
                         <span class="min-w-0 truncate">#{{ tag }}</span>
                       </label>
-                      <p v-if="!currentProjectTags.length" class="rounded-lg border border-dashed border-zinc-300 p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                      <p v-if="!currentProjectTags.length" class="p-3 text-sm text-zinc-500 dark:text-zinc-400">
                         {{ t.noProjectTags }}
                       </p>
                     </div>
-                  </div>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <UBadge v-for="tag in taskTagPreview" :key="tag" color="primary" variant="soft">#{{ tag }}</UBadge>
-                  <span v-if="!taskTagPreview.length" class="text-sm text-zinc-500 dark:text-zinc-400">-</span>
-                </div>
+                  </template>
+                </UPopover>
               </div>
 
               <div class="inline-flex rounded-lg border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950">
@@ -1963,6 +3111,20 @@ const humanError = (error: unknown) => {
               </section>
 
               <section v-else-if="activeTaskTab === 'task'" class="grid gap-4">
+                <label
+                  class="flex cursor-pointer items-start gap-3 rounded-xl border border-violet-200 bg-violet-50/70 p-4 dark:border-violet-900/60 dark:bg-violet-950/20"
+                  :class="editingTask?.agentStatus === 'running' ? 'cursor-not-allowed opacity-60' : ''"
+                >
+                  <input v-model="taskForm.agentEnabled" type="checkbox" class="mt-0.5 size-4 accent-violet-600" :disabled="editingTask?.agentStatus === 'running'">
+                  <span class="grid min-w-0 gap-1">
+                    <span class="flex items-center gap-2 text-sm font-semibold">
+                      <UIcon name="i-lucide-sparkles" class="size-4 text-violet-600 dark:text-violet-300" />
+                      {{ t.aiExecution }}
+                    </span>
+                    <span class="text-xs leading-5 text-violet-800/75 dark:text-violet-200/75">{{ t.aiExecutionHelp }}</span>
+                  </span>
+                </label>
+
                 <template v-if="hasAgentActivity">
                   <UAlert color="neutral" variant="soft" icon="i-lucide-file-text" :description="t.readonlyTask" />
                   <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
@@ -1972,7 +3134,17 @@ const humanError = (error: unknown) => {
                     </div>
                     <div>
                       <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.description }}</p>
-                      <p class="mt-1 whitespace-pre-wrap text-sm text-zinc-600 dark:text-zinc-300">{{ taskForm.description || '-' }}</p>
+                      <UEditor
+                        v-if="taskForm.description"
+                        :model-value="taskForm.description"
+                        content-type="markdown"
+                        :editable="false"
+                        :image="false"
+                        :mention="false"
+                        class="ak-markdown-readonly mt-1 text-sm text-zinc-600 dark:text-zinc-300"
+                        :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-600 dark:text-zinc-300' }"
+                      />
+                      <p v-else class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">-</p>
                     </div>
                     <div>
                       <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.files }}</p>
@@ -1985,8 +3157,26 @@ const humanError = (error: unknown) => {
                     <UInput v-model="taskForm.title" class="w-full" size="xl" required />
                   </UFormField>
 
-                  <UFormField :label="t.description" size="lg">
-                    <UTextarea v-model="taskForm.description" class="w-full" :rows="7" size="xl" @paste="handlePaste" />
+                  <UFormField :label="t.description" :description="t.markdownEditorHelp" size="lg">
+                    <div class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950">
+                      <UEditor
+                        v-slot="{ editor }"
+                        v-model="taskForm.description"
+                        content-type="markdown"
+                        :image="false"
+                        :mention="false"
+                        :placeholder="t.description"
+                        :ui="{ content: 'min-h-44', base: 'min-h-44 px-4 py-3 sm:px-4' }"
+                        @paste="handlePaste"
+                      >
+                        <UEditorToolbar
+                          layout="fixed"
+                          :editor="editor"
+                          :items="editorToolbarItems"
+                          class="border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
+                        />
+                      </UEditor>
+                    </div>
                   </UFormField>
 
                   <div
@@ -2107,34 +3297,58 @@ const humanError = (error: unknown) => {
             </div>
 
             <div v-else class="grid gap-5 p-6">
+              <label class="flex cursor-pointer items-start gap-3 rounded-xl border border-violet-200 bg-violet-50/70 p-4 dark:border-violet-900/60 dark:bg-violet-950/20">
+                <input v-model="taskForm.agentEnabled" type="checkbox" class="mt-0.5 size-4 accent-violet-600">
+                <span class="grid min-w-0 gap-1">
+                  <span class="flex items-center gap-2 text-sm font-semibold">
+                    <UIcon name="i-lucide-sparkles" class="size-4 text-violet-600 dark:text-violet-300" />
+                    {{ t.aiExecution }}
+                  </span>
+                  <span class="text-xs leading-5 text-violet-800/75 dark:text-violet-200/75">{{ t.aiExecutionHelp }}</span>
+                </span>
+              </label>
+
               <UFormField :label="t.title" required size="lg">
                 <UInput v-model="taskForm.title" class="w-full" size="xl" required />
               </UFormField>
 
-              <UFormField :label="t.description" size="lg">
-                <UTextarea v-model="taskForm.description" class="w-full" :rows="7" size="xl" @paste="handlePaste" />
+              <UFormField :label="t.description" :description="t.markdownEditorHelp" size="lg">
+                <div class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950">
+                  <UEditor
+                    v-slot="{ editor }"
+                    v-model="taskForm.description"
+                    content-type="markdown"
+                    :image="false"
+                    :mention="false"
+                    :placeholder="t.description"
+                    :ui="{ content: 'min-h-44', base: 'min-h-44 px-4 py-3 sm:px-4' }"
+                    @paste="handlePaste"
+                  >
+                    <UEditorToolbar
+                      layout="fixed"
+                      :editor="editor"
+                      :items="editorToolbarItems"
+                      class="border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
+                    />
+                  </UEditor>
+                </div>
               </UFormField>
 
-              <div class="grid gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p class="text-sm font-semibold">{{ t.tags }}</p>
-                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.tagsHelp }}</p>
-                  </div>
-                  <div class="relative">
-                    <UButton
-                      type="button"
-                      color="neutral"
-                      variant="outline"
-                      icon="i-lucide-tags"
-                      @click="tagDropdownOpen = !tagDropdownOpen"
-                    >
-                      {{ taskForm.tags.length ? `${taskForm.tags.length} ${t.tags}` : t.chooseTags }}
-                    </UButton>
-                    <div
-                      v-if="tagDropdownOpen"
-                      class="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-2 shadow-xl shadow-zinc-950/10 dark:border-zinc-800 dark:bg-zinc-950"
-                    >
+              <div class="flex min-h-10 flex-wrap items-center gap-2 px-1">
+                <span class="inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200">
+                  <UIcon name="i-lucide-tags" class="size-4 text-zinc-400" />
+                  {{ t.tags }}
+                </span>
+                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                  <UBadge v-for="tag in taskTagPreview" :key="tag" color="primary" variant="soft">#{{ tag }}</UBadge>
+                  <span v-if="!taskTagPreview.length" class="text-xs text-zinc-500 dark:text-zinc-400">{{ t.noTags }}</span>
+                </div>
+                <UPopover v-model:open="tagDropdownOpen" :content="{ align: 'end', side: 'bottom' }">
+                  <UButton type="button" color="neutral" variant="outline" size="sm" icon="i-lucide-list-filter">
+                    {{ t.editTags }}
+                  </UButton>
+                  <template #content>
+                    <div class="w-64 p-2">
                       <label
                         v-for="tag in currentProjectTags"
                         :key="tag"
@@ -2148,16 +3362,12 @@ const humanError = (error: unknown) => {
                         >
                         <span class="min-w-0 truncate">#{{ tag }}</span>
                       </label>
-                      <p v-if="!currentProjectTags.length" class="rounded-lg border border-dashed border-zinc-300 p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                      <p v-if="!currentProjectTags.length" class="p-3 text-sm text-zinc-500 dark:text-zinc-400">
                         {{ t.noProjectTags }}
                       </p>
                     </div>
-                  </div>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                  <UBadge v-for="tag in taskTagPreview" :key="tag" color="primary" variant="soft">#{{ tag }}</UBadge>
-                  <span v-if="!taskTagPreview.length" class="text-sm text-zinc-500 dark:text-zinc-400">-</span>
-                </div>
+                  </template>
+                </UPopover>
               </div>
 
               <div
@@ -2219,7 +3429,7 @@ const humanError = (error: unknown) => {
           >
             {{ t.deleteTask }}
           </UButton>
-          <UButton color="neutral" variant="ghost" type="button" @click="taskModalOpen = false">{{ t.cancel }}</UButton>
+          <UButton color="neutral" variant="ghost" type="button" @click="requestCloseTaskModal">{{ t.cancel }}</UButton>
           <UButton
             icon="i-lucide-clipboard-plus"
             type="submit"
@@ -2228,6 +3438,28 @@ const humanError = (error: unknown) => {
           >
             {{ !selectedTaskId ? t.createTask : canSendGuidance && taskMessage.trim() ? t.sendMessage : t.save }}
           </UButton>
+        </template>
+      </UModal>
+
+      <UModal
+        v-if="discardTaskModalOpen"
+        v-model:open="discardTaskModalOpen"
+        :title="t.unsavedTaskChanges"
+        :description="t.unsavedTaskChangesDescription"
+        :ui="{ content: 'max-w-md' }"
+      >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
+        <template #body>
+          <div class="flex justify-end gap-3">
+            <UButton color="neutral" variant="ghost" type="button" @click="discardTaskModalOpen = false">
+              {{ t.keepEditing }}
+            </UButton>
+            <UButton color="error" variant="soft" icon="i-lucide-log-out" type="button" @click="discardTaskChanges">
+              {{ t.discardChanges }}
+            </UButton>
+          </div>
         </template>
       </UModal>
 

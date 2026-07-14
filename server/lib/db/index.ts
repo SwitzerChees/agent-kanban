@@ -80,6 +80,29 @@ export function ensureDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS oberthemen (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      color TEXT NOT NULL DEFAULT 'teal',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS unterthemen (
+      id TEXT PRIMARY KEY,
+      oberthema_id TEXT NOT NULL REFERENCES oberthemen(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(oberthema_id, name)
+    );
+
     CREATE TABLE IF NOT EXISTS swimlanes (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -92,6 +115,8 @@ export function ensureDatabase() {
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      oberthema_id TEXT NOT NULL REFERENCES oberthemen(id),
+      unterthema_id TEXT REFERENCES unterthemen(id),
       column_id TEXT NOT NULL REFERENCES columns(id),
       swimlane_id TEXT REFERENCES swimlanes(id),
       key TEXT NOT NULL UNIQUE,
@@ -101,6 +126,7 @@ export function ensureDatabase() {
       position INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL REFERENCES users(id),
       assignee_id TEXT REFERENCES users(id),
+      agent_enabled INTEGER NOT NULL DEFAULT 0,
       agent_status TEXT NOT NULL DEFAULT 'idle',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -153,6 +179,8 @@ export function ensureDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks(column_id);
+    CREATE INDEX IF NOT EXISTS idx_oberthemen_project ON oberthemen(project_id);
+    CREATE INDEX IF NOT EXISTS idx_unterthemen_oberthema ON unterthemen(oberthema_id);
     CREATE INDEX IF NOT EXISTS idx_attachments_task ON attachments(task_id);
     CREATE INDEX IF NOT EXISTS idx_project_tags_project ON project_tags(project_id);
     CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
@@ -167,6 +195,69 @@ export function ensureDatabase() {
   if (!commentColumns.some((column) => column.name === 'kind')) {
     sqlite.exec("ALTER TABLE comments ADD COLUMN kind TEXT NOT NULL DEFAULT 'steering';");
   }
+
+  const taskColumns = sqlite.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
+  if (!taskColumns.some((column) => column.name === 'unterthema_id')) {
+    sqlite.exec('ALTER TABLE tasks ADD COLUMN unterthema_id TEXT REFERENCES unterthemen(id);');
+  }
+  if (!taskColumns.some((column) => column.name === 'oberthema_id')) {
+    sqlite.exec('ALTER TABLE tasks ADD COLUMN oberthema_id TEXT REFERENCES oberthemen(id);');
+  }
+  if (!taskColumns.some((column) => column.name === 'agent_enabled')) {
+    sqlite.exec('ALTER TABLE tasks ADD COLUMN agent_enabled INTEGER NOT NULL DEFAULT 0;');
+    sqlite.exec("UPDATE tasks SET agent_status = 'idle' WHERE agent_status = 'queued';");
+  }
+
+  const hierarchyNow = new Date().toISOString();
+  const createDefaultHierarchy = sqlite.transaction(() => {
+    const projectRows = sqlite.prepare('SELECT id FROM projects').all() as Array<{ id: string }>;
+    const findOberthema = sqlite.prepare('SELECT id FROM oberthemen WHERE project_id = ? ORDER BY position, created_at LIMIT 1');
+    const insertOberthema = sqlite.prepare(`
+      INSERT INTO oberthemen (id, project_id, name, description, color, position, created_at, updated_at)
+      VALUES (?, ?, 'Allgemein', 'Migrierte Aufgaben und allgemeine Projektarbeit', 'teal', 0, ?, ?)
+    `);
+    const findUnterthema = sqlite.prepare(`
+      SELECT unterthemen.id
+      FROM unterthemen
+      INNER JOIN oberthemen ON oberthemen.id = unterthemen.oberthema_id
+      WHERE oberthemen.project_id = ?
+      ORDER BY oberthemen.position, unterthemen.position, unterthemen.created_at
+      LIMIT 1
+    `);
+    const insertUnterthema = sqlite.prepare(`
+      INSERT INTO unterthemen (id, oberthema_id, name, description, position, created_at, updated_at)
+      VALUES (?, ?, 'Allgemeine Aufgaben', 'Aufgaben ohne bisherige Themenzuordnung', 0, ?, ?)
+    `);
+    const assignTasks = sqlite.prepare('UPDATE tasks SET unterthema_id = ? WHERE project_id = ? AND unterthema_id IS NULL');
+
+    for (const project of projectRows) {
+      let oberthema = findOberthema.get(project.id) as { id: string } | undefined;
+      if (!oberthema) {
+        oberthema = { id: randomUUID() };
+        insertOberthema.run(oberthema.id, project.id, hierarchyNow, hierarchyNow);
+      }
+      let unterthema = findUnterthema.get(project.id) as { id: string } | undefined;
+      if (!unterthema) {
+        unterthema = { id: randomUUID() };
+        insertUnterthema.run(unterthema.id, oberthema.id, hierarchyNow, hierarchyNow);
+      }
+      assignTasks.run(unterthema.id, project.id);
+    }
+  });
+  createDefaultHierarchy();
+
+  sqlite.exec(`
+    UPDATE tasks
+    SET oberthema_id = (
+      SELECT unterthemen.oberthema_id
+      FROM unterthemen
+      WHERE unterthemen.id = tasks.unterthema_id
+    )
+    WHERE oberthema_id IS NULL;
+  `);
+
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tasks_unterthema ON tasks(unterthema_id);');
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tasks_oberthema ON tasks(oberthema_id);');
 
   sqlite.exec(`
     INSERT OR IGNORE INTO project_tags (project_id, name, created_at)
