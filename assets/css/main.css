@@ -3,14 +3,26 @@
 
 :root {
   --ak-grid: rgba(24, 24, 27, 0.06);
+  --ak-canvas: rgb(250 250 250);
 }
 
 .dark {
   --ak-grid: rgba(244, 244, 245, 0.07);
+  --ak-canvas: rgb(9 9 11);
+}
+
+html,
+body,
+#__nuxt {
+  min-height: 100%;
 }
 
 body {
   margin: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  background: var(--ak-canvas);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 button,
@@ -26,6 +38,97 @@ button:focus-visible,
 
 .ak-topic-row:hover {
   background: rgb(250 250 250);
+}
+
+.ak-workspace-shell {
+  background:
+    radial-gradient(circle at 92% -8%, rgb(204 251 241 / 0.32), transparent 28rem),
+    rgb(250 250 250);
+}
+
+.dark .ak-workspace-shell {
+  background:
+    radial-gradient(circle at 92% -8%, rgb(13 148 136 / 0.08), transparent 28rem),
+    rgb(9 9 11);
+}
+
+.ak-sidebar {
+  box-shadow: 1px 0 0 rgb(24 24 27 / 0.02);
+}
+
+.ak-sidebar-projects {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(212 212 216) transparent;
+}
+
+.dark .ak-sidebar-projects {
+  scrollbar-color: rgb(63 63 70) transparent;
+}
+
+.ak-project-nav-item {
+  isolation: isolate;
+}
+
+.ak-main-header {
+  background: linear-gradient(to right, rgb(250 250 250 / 0.96), rgb(250 250 250 / 0.72));
+}
+
+.dark .ak-main-header {
+  background: linear-gradient(to right, rgb(9 9 11 / 0.96), rgb(9 9 11 / 0.72));
+}
+
+.ak-board-viewport {
+  contain: layout paint;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(161 161 170) rgb(244 244 245);
+}
+
+.dark .ak-board-viewport {
+  scrollbar-color: rgb(82 82 91) rgb(24 24 27);
+}
+
+.ak-board-viewport::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+.ak-board-viewport::-webkit-scrollbar-track {
+  background: rgb(244 244 245);
+}
+
+.ak-board-viewport::-webkit-scrollbar-thumb {
+  border: 3px solid rgb(244 244 245);
+  border-radius: 999px;
+  background: rgb(161 161 170);
+}
+
+.dark .ak-board-viewport::-webkit-scrollbar-track {
+  background: rgb(24 24 27);
+}
+
+.dark .ak-board-viewport::-webkit-scrollbar-thumb {
+  border-color: rgb(24 24 27);
+  background: rgb(82 82 91);
+}
+
+.ak-topic-band::before {
+  position: absolute;
+  inset-block: 0.75rem;
+  left: 0;
+  width: 3px;
+  border-radius: 0 999px 999px 0;
+  background: var(--topic-accent);
+  content: '';
+}
+
+.ak-topic-summary-cell {
+  background-image: linear-gradient(to right, rgb(244 244 245 / 0.72), rgb(244 244 245));
+}
+
+.dark .ak-topic-summary-cell {
+  background-image: linear-gradient(to right, rgb(39 39 42 / 0.62), rgb(39 39 42));
 }
 
 .dark .ak-topic-row:hover {
@@ -119,8 +222,15 @@ button:focus-visible,
 
 .ak-markdown-editor [data-slot="content"] {
   cursor: text;
+  min-width: 0;
   max-height: 22rem;
   overflow-y: auto;
+}
+
+.ak-editor-toolbar,
+.ak-editor-toolbar [data-slot="base"] {
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 
 .ak-markdown-editor .ProseMirror,
@@ -213,4 +323,30 @@ button:focus-visible,
   background: rgba(204, 251, 241, 0.62);
   content: '';
   pointer-events: none;
+}
+
+@media (max-width: 767px) {
+  .ak-sidebar {
+    will-change: transform;
+  }
+
+  .ak-main {
+    width: 100%;
+  }
+
+  .ak-board-viewport {
+    border-radius: 0.75rem;
+    scrollbar-gutter: auto;
+  }
+
+  .ak-markdown-editor,
+  .ak-markdown-editor [data-slot="base"],
+  .ak-markdown-editor [data-slot="content"] {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .ak-editor-toolbar {
+    overflow: hidden;
+  }
 }

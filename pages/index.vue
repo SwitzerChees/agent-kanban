@@ -166,6 +166,9 @@ const dictionary = {
     users: 'Users',
     admin: 'Admin',
     workspace: 'Projects',
+    projectNavigation: 'Project navigation',
+    jumpToTopic: 'Jump to topic',
+    navTagline: 'Work in flow',
     createProject: 'Create project',
     createUser: 'Create user',
     projectDialog: 'Project details',
@@ -256,6 +259,8 @@ const dictionary = {
     collapseSubtopic: 'Collapse sub-topic',
     aiTask: 'AI task',
     humanTask: 'Human task',
+    aiTaskShort: 'AI',
+    humanTaskShort: 'Human',
     aiExecution: 'Let the AI agent execute this task',
     aiExecutionHelp: 'Off by default. Only enabled tasks are started automatically in To Do.',
     noOberthemen: 'No parent topics yet',
@@ -351,6 +356,9 @@ const dictionary = {
     users: 'Benutzer',
     admin: 'Admin',
     workspace: 'Projekte',
+    projectNavigation: 'Projektnavigation',
+    jumpToTopic: 'Zu einem Thema springen',
+    navTagline: 'Arbeit im Fluss',
     createProject: 'Projekt erstellen',
     createUser: 'Benutzer erstellen',
     projectDialog: 'Projektdetails',
@@ -441,6 +449,8 @@ const dictionary = {
     collapseSubtopic: 'Unterthema zuklappen',
     aiTask: 'KI-Aufgabe',
     humanTask: 'Menschliche Aufgabe',
+    aiTaskShort: 'KI',
+    humanTaskShort: 'Mensch',
     aiExecution: 'Diesen Task vom KI-Agenten bearbeiten lassen',
     aiExecutionHelp: 'Standardmäßig aus. Nur aktivierte Tasks starten in „Zu erledigen“ automatisch.',
     noOberthemen: 'Noch keine Oberthemen',
@@ -561,6 +571,7 @@ const annotationSubmitting = ref(false);
 const attachmentSubmitting = ref(false);
 const downloadingAttachmentId = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
+const isMobileViewport = ref(false);
 const editingProjectId = ref<string | null>(null);
 const editingOberthemaId = ref<string | null>(null);
 const editingUnterthemaId = ref<string | null>(null);
@@ -690,6 +701,15 @@ const isAdmin = computed(() => user.value?.role === 'admin');
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
 const selectedOberthema = computed(() => board.value?.oberthemen.find((topic) => topic.id === selectedOberthemaId.value) ?? null);
 const selectedUnterthema = computed(() => board.value?.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value) ?? null);
+const userInitials = computed(() => {
+  const source = user.value?.name?.trim() || user.value?.email?.split('@')[0] || 'AK';
+  return source
+    .split(/[\s._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('');
+});
 const selectedTopicUnterthemen = computed(() => board.value?.unterthemen.filter((topic) => topic.oberthemaId === selectedOberthemaId.value) ?? []);
 const scopeTitle = computed(() => selectedProject.value?.name ?? t.value.projectOverview);
 const scopeDescription = computed(() => selectedProject.value?.description ?? t.value.hierarchyHint);
@@ -778,6 +798,21 @@ const placementItems = computed(() => board.value?.oberthemen.flatMap((topic) =>
     value: `unterthema:${subtopic.id}`,
   })),
 ]) ?? []);
+const boardScopeItems = computed(() => [
+  { label: t.value.allTasks, value: 'project' },
+  ...(board.value?.oberthemen.flatMap((topic) => [
+    { label: topic.name, value: `oberthema:${topic.id}` },
+    ...unterthemenFor(topic.id).map((subtopic) => ({
+      label: `${topic.name} › ${subtopic.name}`,
+      value: `unterthema:${subtopic.id}`,
+    })),
+  ]) ?? []),
+]);
+const selectedBoardScope = computed(() => selectedUnterthemaId.value
+  ? `unterthema:${selectedUnterthemaId.value}`
+  : selectedOberthemaId.value
+    ? `oberthema:${selectedOberthemaId.value}`
+    : 'project');
 const oberthemaItems = computed(() => board.value?.oberthemen.map((topic) => ({ label: topic.name, value: topic.id })) ?? []);
 const topicColorItems = [
   { label: 'Lagoon', value: 'teal' },
@@ -795,13 +830,11 @@ const userRows = computed(() => users.value.map((row) => ({
   roleLabel: row.role === 'admin' ? t.value.adminRole : t.value.memberRole,
 })));
 
-useHead(() => ({ title: t.value.app }));
-
-const projectColumns = computed<TableColumn<Project>[]>(() => [
-  { accessorKey: 'key', header: t.value.projectKey },
-  { accessorKey: 'name', header: t.value.projectName },
-  { accessorKey: 'description', header: t.value.description },
-]);
+useHead(() => ({
+  title: t.value.app,
+  link: [{ rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+  meta: [{ name: 'theme-color', content: isDarkMode.value ? '#09090b' : '#0f766e' }],
+}));
 
 const userColumns = computed<TableColumn<User & { roleLabel: string }>[]>(() => [
   { accessorKey: 'name', header: t.value.userName },
@@ -809,17 +842,87 @@ const userColumns = computed<TableColumn<User & { roleLabel: string }>[]>(() => 
   { accessorKey: 'roleLabel', header: t.value.role },
 ]);
 
+const focusSidebarElement = (selector: string) => nextTick(() => {
+  requestAnimationFrame(() => (document.querySelector(selector) as HTMLElement | null)?.focus());
+});
+
+const openMobileSidebar = () => {
+  sidebarCollapsed.value = false;
+  focusSidebarElement('[data-mobile-sidebar-close]');
+};
+
+const closeMobileSidebar = (restoreFocus = true) => {
+  sidebarCollapsed.value = true;
+  if (!restoreFocus) return;
+  focusSidebarElement(isMobileViewport.value ? '[data-mobile-sidebar-trigger]' : '[data-sidebar-expand]');
+};
+
+const closeSidebarOnMobile = () => {
+  if (isMobileViewport.value) closeMobileSidebar();
+};
+
+const selectAdminView = (view: Extract<View, 'projects' | 'users'>) => {
+  activeView.value = view;
+  closeSidebarOnMobile();
+};
+
+const trapMobileSidebarFocus = (event: KeyboardEvent) => {
+  if (event.key !== 'Tab' || sidebarCollapsed.value || !isMobileViewport.value) return;
+  const sidebar = document.querySelector('.ak-sidebar');
+  if (!sidebar) return;
+  const focusable = [...sidebar.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => !element.hasAttribute('inert') && element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !sidebar.contains(document.activeElement))) {
+    event.preventDefault();
+    last?.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !sidebar.contains(document.activeElement))) {
+    event.preventDefault();
+    first?.focus();
+  }
+};
+
+const handleWindowKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && !sidebarCollapsed.value && isMobileViewport.value) {
+    closeMobileSidebar();
+    return;
+  }
+  trapMobileSidebarFocus(event);
+};
+
+const syncMobileViewport = () => {
+  const nextMobile = window.matchMedia('(max-width: 767px)').matches;
+  const focusWasInSidebar = document.querySelector('.ak-sidebar')?.contains(document.activeElement) ?? false;
+  if (nextMobile && !isMobileViewport.value) {
+    sidebarCollapsed.value = true;
+    if (focusWasInSidebar) focusSidebarElement('[data-mobile-sidebar-trigger]');
+  }
+  if (!nextMobile && isMobileViewport.value) {
+    sidebarCollapsed.value = localStorage.getItem('ak_sidebar_collapsed') === 'true';
+    if (sidebarCollapsed.value && focusWasInSidebar) focusSidebarElement('[data-sidebar-expand]');
+  }
+  isMobileViewport.value = nextMobile;
+};
+
 onMounted(async () => {
   locale.value = (localStorage.getItem('ak_locale') as Locale | null) ?? 'en';
-  sidebarCollapsed.value = window.matchMedia('(max-width: 767px)').matches
+  syncMobileViewport();
+  sidebarCollapsed.value = isMobileViewport.value
     || localStorage.getItem('ak_sidebar_collapsed') === 'true';
   selectedProjectId.value = localStorage.getItem('ak_project');
+  window.addEventListener('keydown', handleWindowKeydown);
+  window.addEventListener('resize', syncMobileViewport);
   await loadSession();
   startBoardRefresh();
 });
 
 watch(locale, (value) => localStorage.setItem('ak_locale', value));
-watch(sidebarCollapsed, (value) => localStorage.setItem('ak_sidebar_collapsed', String(value)));
+watch(sidebarCollapsed, (value) => {
+  if (!isMobileViewport.value) localStorage.setItem('ak_sidebar_collapsed', String(value));
+});
 watch(selectedProjectId, async (value) => {
   if (value) localStorage.setItem('ak_project', value);
   if (value && user.value) await loadBoard(value);
@@ -832,6 +935,10 @@ watch(taskModalOpen, (open) => {
 
 onBeforeUnmount(() => {
   if (boardRefreshTimer) clearInterval(boardRefreshTimer);
+  if (import.meta.client) {
+    window.removeEventListener('keydown', handleWindowKeydown);
+    window.removeEventListener('resize', syncMobileViewport);
+  }
   closeTaskEventStream();
   clearTaskFiles();
 });
@@ -908,6 +1015,7 @@ const selectProject = async (projectId: string) => {
   }
   selectedProjectId.value = projectId;
   activeView.value = 'board';
+  closeSidebarOnMobile();
 };
 
 const selectProjectOverview = () => {
@@ -935,6 +1043,17 @@ const selectUnterthema = (unterthemaId: string) => {
   collapsedUnterthemaIds.value = collapsedUnterthemaIds.value.filter((id) => id !== unterthemaId);
   persistBoardViewState();
   scrollToHierarchyRow(`subtopic-${unterthemaId}`);
+};
+
+const selectBoardScope = (value: string) => {
+  if (value === 'project') {
+    selectProjectOverview();
+    return;
+  }
+  const [kind, id] = value.split(':', 2);
+  if (!id) return;
+  if (kind === 'oberthema') selectOberthema(id);
+  if (kind === 'unterthema') selectUnterthema(id);
 };
 
 const toggleOberthemaExpanded = (oberthemaId: string) => {
@@ -1758,6 +1877,9 @@ const parsePlacementId = (value: string): TaskPlacement => {
 };
 const taskCountForUnterthema = (unterthemaId: string) => visibleTasks.value.filter((task) => task.unterthemaId === unterthemaId).length;
 const taskCountForOberthema = (oberthemaId: string) => visibleTasks.value.filter((task) => task.oberthemaId === oberthemaId).length;
+const taskCountForPlacement = (oberthemaId: string, unterthemaId: string | null) => visibleTasks.value.filter((task) => (
+  task.oberthemaId === oberthemaId && task.unterthemaId === unterthemaId
+)).length;
 const doneCountForOberthema = (oberthemaId: string) => {
   const doneColumnId = board.value?.columns.find((column) => column.done)?.id;
   return visibleTasks.value.filter((task) => task.oberthemaId === oberthemaId && task.columnId === doneColumnId).length;
@@ -2153,17 +2275,15 @@ const humanError = (error: unknown) => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-zinc-100 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50 ak-grid-bg">
-    <section v-if="!user" class="relative grid min-h-screen place-items-center overflow-hidden px-4 py-10 sm:px-6">
+  <div class="min-h-dvh bg-zinc-100 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50 ak-grid-bg">
+    <section v-if="!user" class="relative grid min-h-dvh place-items-center overflow-hidden px-4 py-10 sm:px-6">
       <div class="absolute inset-0 ak-login-surface" />
       <div class="relative grid w-full max-w-5xl overflow-hidden rounded-2xl border border-teal-100 bg-white/95 shadow-2xl shadow-teal-950/12 backdrop-blur-xl dark:border-zinc-800 dark:bg-zinc-950/95 lg:grid-cols-[1.05fr_0.95fr]">
         <div class="relative hidden min-h-[620px] overflow-hidden bg-teal-50/90 p-10 text-zinc-950 dark:bg-zinc-950 dark:text-white lg:flex lg:flex-col lg:justify-between">
           <div class="absolute inset-0 ak-login-panel" />
           <div class="relative">
             <div class="mb-8 flex items-center gap-3">
-              <div class="grid size-11 place-items-center rounded-xl bg-teal-600 text-white shadow-lg shadow-teal-700/20">
-                <UIcon name="i-lucide-kanban-square" class="size-5" />
-              </div>
+              <img src="/agent-kanban-mark.svg" :alt="t.app" class="size-12 shrink-0 drop-shadow-lg">
               <div class="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-white/80 px-3 py-1.5 text-xs font-medium text-teal-800 shadow-sm dark:border-white/10 dark:bg-white/8 dark:text-teal-100">
                 <span class="size-2 rounded-full bg-teal-500 dark:bg-teal-300" />
                 {{ t.loginStatus }}
@@ -2205,6 +2325,13 @@ const humanError = (error: unknown) => {
 
         <form class="grid gap-6 p-6 sm:p-10 lg:p-12" @submit.prevent="login">
           <div class="space-y-3">
+            <div class="mb-5 flex items-center gap-3 lg:hidden">
+              <img src="/agent-kanban-mark.svg" alt="" class="size-10 shrink-0" aria-hidden="true">
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold tracking-tight">{{ t.app }}</p>
+                <p class="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ t.navTagline }}</p>
+              </div>
+            </div>
             <UBadge color="primary" variant="soft">{{ t.loginEyebrow }}</UBadge>
             <div>
               <h1 class="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">{{ t.loginHeadline }}</h1>
@@ -2227,45 +2354,65 @@ const humanError = (error: unknown) => {
       </div>
     </section>
 
-    <div v-else class="flex min-h-screen">
-      <button
+    <div v-else class="ak-workspace-shell flex h-dvh min-h-0 overflow-hidden bg-zinc-50 dark:bg-zinc-950">
+      <div
         v-if="!sidebarCollapsed"
         class="fixed inset-0 z-30 bg-zinc-950/35 backdrop-blur-[1px] md:hidden"
-        :aria-label="t.closeSidebar"
-        @click="sidebarCollapsed = true"
+        aria-hidden="true"
+        @click="closeMobileSidebar()"
       />
       <aside
-        class="ak-sidebar sticky top-0 z-40 flex h-screen shrink-0 flex-col border-r border-zinc-200/80 bg-white/95 shadow-xl shadow-zinc-950/5 transition-[width,padding] duration-200 max-md:fixed max-md:inset-y-0 max-md:left-0 dark:border-zinc-800 dark:bg-zinc-950/95"
-        :class="sidebarCollapsed ? 'w-[76px] p-3 max-md:w-[72px]' : 'w-[320px] p-4 max-md:w-[min(320px,86vw)]'"
+        class="ak-sidebar sticky top-0 z-40 flex h-dvh shrink-0 flex-col border-r border-zinc-200/80 bg-white px-3 py-3 transition-[width,transform,padding] duration-200 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:shadow-2xl dark:border-zinc-800 dark:bg-zinc-950"
+        :class="sidebarCollapsed ? 'w-[76px] max-md:-translate-x-full' : 'w-[280px] max-md:w-[min(304px,88vw)] max-md:translate-x-0'"
+        :aria-label="t.projectNavigation"
+        :aria-hidden="isMobileViewport && sidebarCollapsed ? 'true' : undefined"
+        :aria-modal="isMobileViewport && !sidebarCollapsed ? 'true' : undefined"
+        :inert="isMobileViewport && sidebarCollapsed"
+        :role="isMobileViewport && !sidebarCollapsed ? 'dialog' : 'complementary'"
+        @keydown="trapMobileSidebarFocus"
       >
-        <div class="mb-5 flex items-center gap-2">
-          <div class="grid size-10 shrink-0 place-items-center rounded-lg bg-teal-600 text-white shadow-lg shadow-teal-600/25">
-            <UIcon name="i-lucide-kanban-square" class="size-5" />
-          </div>
-          <div v-if="!sidebarCollapsed" class="min-w-0">
-            <p class="text-sm font-semibold">{{ t.app }}</p>
-            <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">{{ user.email }}</p>
-          </div>
-          <UButton
-            class="ml-auto"
-            color="neutral"
-            variant="ghost"
-            size="sm"
-            :icon="sidebarCollapsed ? 'i-lucide-panel-left-open' : 'i-lucide-panel-left-close'"
-            :aria-label="sidebarCollapsed ? t.openSidebar : t.closeSidebar"
-            @click="sidebarCollapsed = !sidebarCollapsed"
-          />
+        <div class="relative mb-4 flex h-14 shrink-0 items-center" :class="sidebarCollapsed ? 'justify-center' : 'gap-3 px-1'">
+          <button
+            v-if="sidebarCollapsed"
+            type="button"
+            data-sidebar-expand
+            class="grid size-11 place-items-center rounded-xl transition hover:bg-teal-50 dark:hover:bg-teal-950/40"
+            :aria-label="t.openSidebar"
+            :title="t.openSidebar"
+            @click="openMobileSidebar"
+          >
+            <img src="/agent-kanban-mark.svg" alt="" class="size-10" aria-hidden="true">
+          </button>
+          <template v-else>
+            <img src="/agent-kanban-mark.svg" alt="" class="size-11 shrink-0" aria-hidden="true">
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-semibold tracking-tight">{{ t.app }}</p>
+              <p class="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ t.navTagline }}</p>
+            </div>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="sm"
+              icon="i-lucide-panel-left-close"
+              data-mobile-sidebar-close
+              :aria-label="t.closeSidebar"
+              :title="t.closeSidebar"
+              @click="closeMobileSidebar()"
+            />
+          </template>
         </div>
 
-        <div v-if="isAdmin" class="mb-5 grid gap-2">
-          <p v-if="!sidebarCollapsed" class="px-2 text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.admin }}</p>
+        <nav v-if="isAdmin" class="mb-4 grid gap-1" :aria-label="t.admin">
+          <p v-if="!sidebarCollapsed" class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ t.admin }}</p>
           <UButton
             :variant="activeView === 'projects' ? 'soft' : 'ghost'"
             color="neutral"
             icon="i-lucide-folder-cog"
             block
+            :aria-label="t.projects"
+            :title="sidebarCollapsed ? t.projects : undefined"
             :class="sidebarCollapsed ? 'justify-center px-0' : 'justify-start'"
-            @click="activeView = 'projects'"
+            @click="selectAdminView('projects')"
           >
             <span v-if="!sidebarCollapsed">{{ t.projects }}</span>
           </UButton>
@@ -2274,158 +2421,144 @@ const humanError = (error: unknown) => {
             color="neutral"
             icon="i-lucide-users"
             block
+            :aria-label="t.users"
+            :title="sidebarCollapsed ? t.users : undefined"
             :class="sidebarCollapsed ? 'justify-center px-0' : 'justify-start'"
-            @click="activeView = 'users'"
+            @click="selectAdminView('users')"
           >
             <span v-if="!sidebarCollapsed">{{ t.users }}</span>
           </UButton>
-        </div>
+        </nav>
 
-        <div class="min-h-0 flex-1 overflow-y-auto pr-1">
+        <nav class="ak-sidebar-projects min-h-0 flex-1 overflow-y-auto overflow-x-hidden" :aria-label="t.workspace">
           <div v-if="!sidebarCollapsed" class="mb-2 flex items-center justify-between px-2">
-            <p class="text-xs font-bold uppercase tracking-wide text-zinc-400">{{ t.workspace }}</p>
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ t.workspace }}</p>
+            <span class="text-[11px] tabular-nums text-zinc-400">{{ projects.length }}</span>
           </div>
-          <div class="grid gap-2">
-            <div
+          <div class="grid gap-1">
+            <button
               v-for="project in projects"
               :key="project.id"
-              class="overflow-hidden rounded-xl border transition"
-              :class="project.id === selectedProjectId && activeView === 'board'
-                ? 'border-teal-500/40 bg-white shadow-lg shadow-teal-950/5 dark:bg-zinc-900'
-                : 'border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900'"
+              type="button"
+              class="ak-project-nav-item group flex w-full items-center rounded-xl text-left transition"
+              :class="[
+                sidebarCollapsed ? 'h-11 justify-center px-0' : 'min-h-12 gap-3 px-2 py-1.5',
+                project.id === selectedProjectId && activeView === 'board'
+                  ? 'bg-teal-50 text-teal-950 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.18)] dark:bg-teal-950/45 dark:text-teal-50'
+                  : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900',
+              ]"
+              :aria-current="project.id === selectedProjectId && activeView === 'board' ? 'page' : undefined"
+              :aria-label="project.name"
+              :title="project.name"
+              @click="selectProject(project.id)"
             >
-              <button
-                class="group w-full text-left transition hover:bg-zinc-50 dark:hover:bg-zinc-800/70"
-                :class="sidebarCollapsed ? 'grid h-11 place-items-center p-0' : 'p-3'"
-                :title="project.name"
-                @click="selectProject(project.id)"
+              <span
+                class="grid size-9 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tracking-wide transition"
+                :class="project.id === selectedProjectId && activeView === 'board'
+                  ? 'border-teal-200 bg-white text-teal-700 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200'
+                  : 'border-zinc-200 bg-white text-zinc-500 group-hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400'"
               >
-                <span v-if="sidebarCollapsed" class="text-xs font-bold text-teal-700 dark:text-teal-300">{{ project.key.slice(0, 2) }}</span>
-                <template v-else>
-                  <div class="mb-2 flex items-center justify-between gap-3">
-                    <UBadge color="primary" variant="subtle">{{ project.key }}</UBadge>
-                    <UIcon name="i-lucide-chevron-right" class="size-4 text-zinc-400 transition group-hover:translate-x-0.5" />
-                  </div>
-                  <p class="font-medium leading-tight">{{ project.name }}</p>
-                  <p class="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">{{ projectSidebarText(project) }}</p>
-                </template>
-              </button>
-
-              <div v-if="!sidebarCollapsed && project.id === selectedProjectId && board" class="border-t border-zinc-200 p-2 dark:border-zinc-800">
-                <div class="mb-1 flex items-center justify-between px-2 py-1.5">
-                  <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ t.hierarchy }}</p>
-                  <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newOberthema" @click.stop="openOberthemaModal()" />
-                </div>
-                <button
-                  class="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-medium transition"
-                  :class="!selectedOberthemaId ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-950' : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'"
-                  @click="selectProjectOverview"
-                >
-                  <UIcon name="i-lucide-layout-dashboard" class="size-3.5" />
-                  <span class="min-w-0 flex-1 truncate">{{ t.allTasks }}</span>
-                  <span class="text-[10px] opacity-70">{{ boardStats.tasks }}</span>
-                </button>
-
-                <div v-for="topic in board.oberthemen" :key="topic.id" class="mb-1">
-                  <div
-                    class="group flex items-center rounded-lg border pr-1 transition"
-                    :class="selectedOberthemaId === topic.id ? 'border-zinc-300 bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800' : 'border-transparent hover:bg-zinc-50 dark:hover:bg-zinc-800/60'"
-                  >
-                    <button
-                      class="grid size-8 shrink-0 place-items-center rounded-md"
-                      :aria-label="collapsedOberthemaIds.includes(topic.id) ? t.expandTopic : t.collapseTopic"
-                      :aria-expanded="!collapsedOberthemaIds.includes(topic.id)"
-                      @click="toggleOberthemaExpanded(topic.id)"
-                    >
-                      <UIcon :name="collapsedOberthemaIds.includes(topic.id) ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3.5 text-zinc-400" />
-                    </button>
-                    <button class="min-w-0 flex-1 rounded-md py-2 text-left" :aria-current="selectedOberthemaId === topic.id ? 'page' : undefined" @click="selectOberthema(topic.id)">
-                      <span class="flex items-center gap-2 truncate text-xs font-semibold">
-                        <span class="size-2 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
-                        <span class="truncate">{{ topic.name }}</span>
-                      </span>
-                      <span class="block text-[10px] text-zinc-400">{{ taskCountForOberthema(topic.id) }} {{ t.tasks }}</span>
-                    </button>
-                    <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newUnterthema" @click.stop="openUnterthemaModal(topic.id)" />
-                  </div>
-                  <div v-if="!collapsedOberthemaIds.includes(topic.id)" class="ml-4 border-l border-zinc-200 pl-2 dark:border-zinc-700">
-                    <button
-                      v-for="subtopic in unterthemenFor(topic.id)"
-                      :key="subtopic.id"
-                      class="my-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition"
-                      :class="selectedUnterthemaId === subtopic.id ? 'bg-teal-50 font-semibold text-teal-800 dark:bg-teal-950/50 dark:text-teal-200' : 'text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'"
-                      :aria-current="selectedUnterthemaId === subtopic.id ? 'page' : undefined"
-                      @click="selectUnterthema(subtopic.id)"
-                    >
-                      <span class="size-1.5 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
-                      <span class="min-w-0 flex-1 truncate">{{ subtopic.name }}</span>
-                      <span class="text-[10px] opacity-70">{{ taskCountForUnterthema(subtopic.id) }}</span>
-                    </button>
-                    <p v-if="!unterthemenFor(topic.id).length" class="px-2 py-2 text-[11px] leading-4 text-zinc-400">{{ t.noUnterthemen }}</p>
-                  </div>
-                </div>
-                <p v-if="!board.oberthemen.length" class="px-2 py-3 text-xs text-zinc-400">{{ t.noOberthemen }}</p>
-              </div>
-            </div>
+                {{ project.key.slice(0, 2) }}
+              </span>
+              <span v-if="!sidebarCollapsed" class="min-w-0 flex-1">
+                <span class="block truncate text-sm font-medium leading-5">{{ project.name }}</span>
+                <span class="block truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ project.key }}</span>
+              </span>
+              <UIcon v-if="!sidebarCollapsed" name="i-lucide-chevron-right" class="size-4 shrink-0 text-zinc-400 transition group-hover:translate-x-0.5" />
+            </button>
             <p v-if="!projects.length && !sidebarCollapsed" class="rounded-xl border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               {{ t.noProject }}
             </p>
           </div>
-        </div>
+        </nav>
 
-        <div
-          class="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-800"
-          :class="sidebarCollapsed ? 'grid gap-2' : 'flex items-center gap-2'"
-        >
-          <UButton
-            variant="soft"
-            color="neutral"
-            icon="i-lucide-globe-2"
-            :class="sidebarCollapsed ? 'w-full justify-center px-0' : ''"
-            @click="toggleLocale"
-          >
-            <span v-if="!sidebarCollapsed">{{ locale.toUpperCase() }}</span>
-          </UButton>
-          <UButton
-            variant="soft"
-            color="neutral"
-            :icon="themeToggleIcon"
-            :aria-label="themeToggleLabel"
-            :class="sidebarCollapsed ? 'w-full justify-center px-0' : ''"
-            @click="toggleTheme"
-          >
-            <span v-if="!sidebarCollapsed">{{ themeToggleLabel }}</span>
-          </UButton>
-          <UButton :class="sidebarCollapsed ? '' : 'ml-auto'" variant="ghost" color="neutral" icon="i-lucide-log-out" @click="logout">
-            <span v-if="!sidebarCollapsed">{{ t.logout }}</span>
-          </UButton>
+        <div class="mt-3 shrink-0 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <div v-if="!sidebarCollapsed" class="mb-2 flex min-w-0 items-center gap-2 rounded-xl bg-zinc-50 px-2.5 py-2 dark:bg-zinc-900/70">
+            <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-zinc-900 text-[10px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ userInitials }}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-xs font-semibold">{{ user.name }}</span>
+              <span class="block truncate text-[10px] text-zinc-500 dark:text-zinc-400">{{ user.email }}</span>
+            </span>
+          </div>
+          <div :class="sidebarCollapsed ? 'grid justify-items-center gap-1' : 'grid grid-cols-[auto_auto_1fr] gap-1'">
+            <UButton
+              variant="ghost"
+              color="neutral"
+              size="sm"
+              icon="i-lucide-globe-2"
+              :aria-label="`${t.language}: ${locale.toUpperCase()}`"
+              :title="`${t.language}: ${locale.toUpperCase()}`"
+              :class="sidebarCollapsed ? 'size-10 justify-center px-0' : ''"
+              @click="toggleLocale"
+            >
+              <span v-if="!sidebarCollapsed">{{ locale.toUpperCase() }}</span>
+            </UButton>
+            <UButton
+              variant="ghost"
+              color="neutral"
+              size="sm"
+              :icon="themeToggleIcon"
+              :aria-label="themeToggleLabel"
+              :title="themeToggleLabel"
+              :class="sidebarCollapsed ? 'size-10 justify-center px-0' : ''"
+              @click="toggleTheme"
+            />
+            <UButton
+              variant="ghost"
+              color="neutral"
+              size="sm"
+              icon="i-lucide-log-out"
+              :aria-label="t.logout"
+              :title="t.logout"
+              :class="sidebarCollapsed ? 'size-10 justify-center px-0' : 'justify-center'"
+              @click="logout"
+            >
+              <span v-if="!sidebarCollapsed">{{ t.logout }}</span>
+            </UButton>
+          </div>
         </div>
       </aside>
 
-      <main class="ak-main min-w-0 flex-1 p-4 transition-[margin] duration-200 max-md:w-full lg:p-5" :class="sidebarCollapsed ? 'max-md:ml-[72px]' : ''">
-        <header class="mb-3 flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-zinc-200/80 pb-3 dark:border-zinc-800">
+      <main
+        class="ak-main flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-2 sm:px-4 sm:pb-4 lg:px-5"
+        :aria-hidden="isMobileViewport && !sidebarCollapsed ? 'true' : undefined"
+        :inert="isMobileViewport && !sidebarCollapsed"
+      >
+        <header class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
           <div class="flex min-w-0 items-center gap-3">
-            <UBadge variant="soft" color="neutral">{{ activeView === 'board' ? selectedProject?.key ?? t.workspace : t.admin }}</UBadge>
+            <UButton
+              class="md:hidden"
+              data-mobile-sidebar-trigger
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-menu"
+              :tabindex="isMobileViewport && !sidebarCollapsed ? -1 : undefined"
+              :aria-label="t.openSidebar"
+              @click="openMobileSidebar"
+            />
+            <span class="hidden min-w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-[10px] font-bold tracking-wide text-zinc-600 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 sm:inline-flex">
+              {{ activeView === 'board' ? selectedProject?.key ?? t.workspace : t.admin }}
+            </span>
             <div class="min-w-0">
-              <h1 class="ak-display truncate text-xl font-semibold tracking-tight">
+              <h1 class="ak-display truncate text-lg font-semibold tracking-tight sm:text-xl">
                 {{ activeView === 'board' ? scopeTitle : activeView === 'projects' ? t.projects : t.users }}
               </h1>
-              <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">
+              <p class="hidden truncate text-xs text-zinc-500 dark:text-zinc-400 sm:block">
                 {{ activeView === 'board' ? scopeDescription : activeView === 'projects' ? t.projectTableHint : t.userTableHint }}
               </p>
             </div>
           </div>
-          <div v-if="activeView === 'board'" class="flex flex-wrap gap-2">
-            <UBadge color="neutral" variant="soft">{{ boardStats.columns }} {{ t.columns }}</UBadge>
-            <UBadge color="neutral" variant="soft">{{ boardStats.tasks }} {{ t.tasks }}</UBadge>
-            <UBadge color="neutral" variant="soft">{{ boardStats.oberthemen }} {{ t.oberthemen }}</UBadge>
-            <UBadge color="neutral" variant="soft">{{ boardStats.unterthemen }} {{ t.unterthemen }}</UBadge>
+          <div v-if="activeView === 'board'" class="hidden shrink-0 items-center gap-4 text-xs text-zinc-500 dark:text-zinc-400 lg:flex">
+            <span><strong class="font-semibold text-zinc-900 dark:text-zinc-100">{{ boardStats.tasks }}</strong> {{ t.tasks }}</span>
+            <span><strong class="font-semibold text-zinc-900 dark:text-zinc-100">{{ boardStats.oberthemen }}</strong> {{ t.oberthemen }}</span>
+            <span><strong class="font-semibold text-zinc-900 dark:text-zinc-100">{{ boardStats.unterthemen }}</strong> {{ t.unterthemen }}</span>
+            <span><strong class="font-semibold text-zinc-900 dark:text-zinc-100">{{ boardStats.columns }}</strong> {{ t.columns }}</span>
           </div>
         </header>
 
         <UAlert v-if="errorMessage" class="mb-4" color="error" variant="soft" icon="i-lucide-alert-triangle" :description="errorMessage" />
 
-        <section v-if="activeView === 'projects'" class="grid gap-5">
+        <section v-if="activeView === 'projects'" class="min-h-0 flex-1 overflow-y-auto pb-2">
           <UCard class="overflow-hidden">
             <template #header>
               <div class="flex items-center justify-between">
@@ -2436,36 +2569,43 @@ const humanError = (error: unknown) => {
                 <UButton icon="i-lucide-folder-plus" size="lg" @click="openProjectModal()">{{ t.createProject }}</UButton>
               </div>
             </template>
-            <UTable :data="projects" :columns="projectColumns" class="max-h-[640px]" />
-            <div class="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="divide-y divide-zinc-200 dark:divide-zinc-800">
               <div
                 v-for="project in projects"
                 :key="project.id"
-                class="flex gap-2"
+                class="flex flex-wrap items-center gap-3 py-3 first:pt-0 last:pb-0 sm:flex-nowrap"
               >
+                <span class="grid size-10 shrink-0 place-items-center rounded-xl border border-teal-200 bg-teal-50 text-[10px] font-bold tracking-wide text-teal-700 dark:border-teal-900 dark:bg-teal-950/50 dark:text-teal-200">{{ project.key.slice(0, 2) }}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="flex items-center gap-2">
+                    <span class="truncate text-sm font-semibold">{{ project.name }}</span>
+                    <UBadge color="neutral" variant="soft" size="sm">{{ project.key }}</UBadge>
+                  </span>
+                  <span class="mt-0.5 block truncate text-xs text-zinc-500 dark:text-zinc-400">{{ projectSidebarText(project) }}</span>
+                </span>
                 <UButton
-                  class="min-w-0 flex-1 justify-start"
                   color="neutral"
-                  variant="soft"
-                  icon="i-lucide-panel-left-open"
-                  @click="selectProject(project.id)"
-                >
-                  {{ t.openBoard }}: {{ project.key }}
-                </UButton>
-                <UButton
-                  color="neutral"
-                  variant="outline"
+                  variant="ghost"
                   icon="i-lucide-pencil"
                   @click="openProjectModal(project)"
                 >
                   {{ t.editProject }}
                 </UButton>
+                <UButton
+                  color="neutral"
+                  variant="soft"
+                  icon="i-lucide-arrow-up-right"
+                  @click="selectProject(project.id)"
+                >
+                  {{ t.openBoard }}
+                </UButton>
               </div>
+              <p v-if="!projects.length" class="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">{{ t.noProject }}</p>
             </div>
           </UCard>
         </section>
 
-        <section v-else-if="activeView === 'users'" class="grid gap-5">
+        <section v-else-if="activeView === 'users'" class="min-h-0 flex-1 overflow-y-auto pb-2">
           <UCard>
             <template #header>
               <div class="flex items-center justify-between">
@@ -2480,76 +2620,88 @@ const humanError = (error: unknown) => {
           </UCard>
         </section>
 
-        <section v-else-if="board" class="grid gap-3">
-          <div class="ak-scope-panel flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
-            <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span class="inline-flex items-center gap-2 font-semibold text-zinc-800 dark:text-zinc-100">
-                <span class="grid size-7 place-items-center rounded-lg bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300">
-                  <UIcon name="i-lucide-layout-panel-top" class="size-4" />
-                </span>
-                {{ t.hierarchy }}
+        <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
+          <div class="ak-scope-panel flex shrink-0 flex-wrap items-center gap-2 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+              <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300">
+                <UIcon name="i-lucide-list-tree" class="size-4" />
               </span>
-              <span class="text-zinc-500 dark:text-zinc-400">{{ boardStats.oberthemen }} {{ t.oberthemen }} · {{ boardStats.unterthemen }} {{ t.unterthemen }}</span>
-              <span class="hidden items-center gap-1.5 text-zinc-400 lg:inline-flex">
-                <UIcon name="i-lucide-grip-vertical" class="size-3.5" />
-                {{ t.hierarchyReorderHint }}
-              </span>
-              <span v-if="hiddenDoneCount && !showAllDone" class="inline-flex items-center gap-1.5 rounded-md bg-zinc-100 px-2 py-1 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300">
+              <div class="hidden min-w-0 xl:block">
+                <p class="text-xs font-semibold text-zinc-800 dark:text-zinc-100">{{ t.hierarchy }}</p>
+                <p class="truncate text-[10px] text-zinc-400">{{ t.jumpToTopic }}</p>
+              </div>
+              <USelect
+                :model-value="selectedBoardScope"
+                class="min-w-0 flex-1 sm:max-w-64"
+                :items="boardScopeItems"
+                size="sm"
+                icon="i-lucide-locate-fixed"
+                :aria-label="t.jumpToTopic"
+                @update:model-value="(value) => selectBoardScope(String(value))"
+              />
+              <span v-if="hiddenDoneCount && !showAllDone" class="hidden items-center gap-1.5 rounded-md bg-zinc-100 px-2 py-1 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300 lg:inline-flex">
                 <UIcon name="i-lucide-archive" class="size-3.5" />
                 {{ hiddenDoneCount }} {{ t.completedHidden }}
               </span>
             </div>
-            <div class="flex flex-wrap items-center gap-2">
-                <UButton
-                  color="neutral"
-                  variant="outline"
-                  size="sm"
-                  :icon="showAllDone ? 'i-lucide-eye-off' : 'i-lucide-eye'"
-                  @click="toggleCompletedVisibility"
-                >
-                  {{ showAllDone ? t.hideCompleted : t.showCompleted }}
-                  <UBadge v-if="hiddenDoneCount" color="neutral" variant="soft">{{ hiddenDoneCount }}</UBadge>
-                </UButton>
-                <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-network" @click="openOberthemaModal()">
-                  {{ t.newOberthema }}
-                </UButton>
-                <UButton size="sm" icon="i-lucide-plus" :disabled="!board.oberthemen.length" @click="openTaskModal(backlogColumn?.id)">
-                  {{ t.newTask }}
-                </UButton>
+            <div class="ml-auto flex shrink-0 items-center gap-1.5">
+              <UButton
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                :icon="showAllDone ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                :aria-label="showAllDone ? t.hideCompleted : t.showCompleted"
+                :title="showAllDone ? t.hideCompleted : t.showCompleted"
+                @click="toggleCompletedVisibility"
+              >
+                <span class="hidden lg:inline">{{ showAllDone ? t.hideCompleted : t.showCompleted }}</span>
+                <UBadge v-if="hiddenDoneCount" color="neutral" variant="soft">{{ hiddenDoneCount }}</UBadge>
+              </UButton>
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="sm"
+                icon="i-lucide-network"
+                :aria-label="t.newOberthema"
+                :title="t.newOberthema"
+                @click="openOberthemaModal()"
+              >
+                <span class="hidden md:inline">{{ t.newOberthema }}</span>
+              </UButton>
+              <UButton size="sm" icon="i-lucide-plus" :disabled="!board.oberthemen.length" :aria-label="t.newTask" :title="t.newTask" @click="openTaskModal(backlogColumn?.id)">
+                <span class="hidden sm:inline">{{ t.newTask }}</span>
+              </UButton>
             </div>
           </div>
 
-          <div v-if="board.oberthemen.length" class="overflow-x-auto rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div v-if="board.oberthemen.length" class="ak-board-viewport min-h-0 flex-1 overflow-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div
               class="grid"
               :style="{
-                gridTemplateColumns: `250px repeat(${board.columns.length}, minmax(230px, 1fr))`,
-                minWidth: `${250 + board.columns.length * 230}px`,
+                gridTemplateColumns: `248px repeat(${board.columns.length}, minmax(214px, 1fr))`,
+                minWidth: `${248 + board.columns.length * 214}px`,
               }"
             >
-              <div class="sticky left-0 top-0 z-30 flex min-h-16 items-center border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
-                <div>
-                  <p class="text-sm font-semibold">{{ t.hierarchy }}</p>
-                  <p class="mt-0.5 text-[11px] text-teal-700/70 dark:text-zinc-400">{{ boardStats.oberthemen }} + {{ boardStats.unterthemen }}</p>
-                </div>
+              <div class="sticky left-0 top-0 z-30 flex min-h-14 items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
+                <UIcon name="i-lucide-git-branch" class="size-4 text-teal-600 dark:text-teal-300" />
+                <p class="text-sm font-semibold">{{ t.hierarchy }}</p>
               </div>
               <div
                 v-for="column in board.columns"
                 :key="`header-${column.id}`"
                 :data-column-id="column.id"
                 :data-column-key="column.key"
-                class="sticky top-0 z-20 min-h-16 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
+                class="sticky top-0 z-20 min-h-14 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
               >
                 <div class="flex items-center justify-between gap-3">
-                  <div>
+                  <div class="min-w-0">
                     <p class="flex items-center gap-2 text-sm font-semibold">
                       <UIcon :name="columnIcon(column)" class="size-4 text-zinc-500 dark:text-zinc-400" :class="column.key === 'in_progress' ? 'ak-spin-when-active' : ''" />
-                      {{ columnName(column) }}
+                      <span class="truncate">{{ columnName(column) }}</span>
                     </p>
                     <p v-if="column.key === 'todo'" class="mt-0.5 text-[10px] leading-4 text-amber-700 dark:text-amber-300">{{ t.todoAutomationShort }}</p>
-                    <p v-else class="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{{ tasksForColumn(column.id).length }} {{ t.tasks }}</p>
                   </div>
-                  <span class="grid size-7 place-items-center rounded-lg border border-zinc-200 bg-white text-xs font-semibold shadow-sm dark:border-zinc-700 dark:bg-zinc-800">{{ tasksForColumn(column.id).length }}</span>
+                  <span class="grid size-7 shrink-0 place-items-center rounded-lg border border-zinc-200 bg-white text-xs font-semibold tabular-nums shadow-sm dark:border-zinc-700 dark:bg-zinc-800">{{ tasksForColumn(column.id).length }}</span>
                 </div>
               </div>
 
@@ -2558,7 +2710,8 @@ const humanError = (error: unknown) => {
                   :id="`topic-${topic.id}`"
                   :data-topic-id="topic.id"
                   :data-topic-order="board.oberthemen.findIndex((item) => item.id === topic.id)"
-                  class="sticky left-0 z-10 flex min-h-16 items-center gap-1.5 border-b border-r border-zinc-200 bg-zinc-100 px-2.5 py-2 transition dark:border-zinc-800 dark:bg-zinc-900"
+                  class="ak-topic-band sticky left-0 z-10 flex min-h-14 items-center gap-1 border-b border-r border-zinc-200 bg-zinc-100 px-2 py-1.5 transition dark:border-zinc-800 dark:bg-zinc-900"
+                  :style="{ '--topic-accent': topicAccent(topic) }"
                   :class="[
                     selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
                     hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
@@ -2600,10 +2753,10 @@ const humanError = (error: unknown) => {
                 <div
                   v-for="column in board.columns"
                   :key="`${topic.id}-summary-${column.id}`"
-                  class="flex min-h-16 items-center justify-between border-b border-r border-zinc-200 bg-zinc-100 px-3 last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900"
+                  class="ak-topic-summary-cell flex min-h-14 items-center justify-end border-b border-r border-zinc-200 bg-zinc-100 px-3 last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900"
                 >
-                  <span class="text-xs font-medium text-zinc-500 dark:text-zinc-400">{{ columnName(column) }}</span>
-                  <span class="grid size-8 place-items-center rounded-lg bg-white text-sm font-semibold shadow-sm dark:bg-zinc-800">
+                  <span class="sr-only">{{ columnName(column) }}</span>
+                  <span class="grid size-7 place-items-center rounded-lg border border-zinc-200 bg-white text-xs font-semibold tabular-nums shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
                     {{ tasksForOberthemaColumn(topic.id, column.id).length }}
                   </span>
                 </div>
@@ -2613,7 +2766,7 @@ const humanError = (error: unknown) => {
                     <div
                       :id="row.subtopic ? `subtopic-${row.subtopic.id}` : undefined"
                       :data-subtopic-id="row.subtopic?.id"
-                      class="sticky left-0 z-10 flex min-h-20 items-start gap-1.5 border-b border-r border-zinc-200 bg-white px-2.5 py-2.5 transition dark:border-zinc-800 dark:bg-zinc-950"
+                      class="sticky left-0 z-10 flex min-h-18 items-center gap-1 border-b border-r border-zinc-200 bg-white px-2 py-2 transition dark:border-zinc-800 dark:bg-zinc-950"
                       :class="[
                         row.subtopic && selectedUnterthemaId === row.subtopic.id ? 'ring-2 ring-inset ring-teal-500/40' : '',
                         row.subtopic && hierarchyDragOverId === `unterthema:${row.subtopic.id}` ? 'ak-hierarchy-drop-target' : '',
@@ -2639,14 +2792,14 @@ const humanError = (error: unknown) => {
                       <button
                         v-if="row.subtopic"
                         type="button"
-                        class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                        class="grid size-7 shrink-0 place-items-center rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-900"
                         :aria-label="row.collapsed ? t.expandSubtopic : t.collapseSubtopic"
                         :aria-expanded="!row.collapsed"
                         @click="toggleUnterthemaExpanded(row.subtopic.id)"
                       >
                         <UIcon :name="row.collapsed ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3.5 text-zinc-400" />
                       </button>
-                      <span v-else class="mt-0.5 grid size-7 shrink-0 place-items-center">
+                      <span v-else class="grid size-7 shrink-0 place-items-center">
                         <UIcon name="i-lucide-corner-down-right" class="size-3.5 text-zinc-400" />
                       </span>
                       <button
@@ -2655,7 +2808,7 @@ const humanError = (error: unknown) => {
                         @click="row.subtopic ? selectUnterthema(row.subtopic.id) : selectOberthema(topic.id)"
                       >
                         <span class="block truncate text-sm font-medium">{{ row.label }}</span>
-                        <span class="mt-1 block line-clamp-2 text-[11px] leading-4 text-zinc-400">{{ row.description }}</span>
+                        <span class="mt-0.5 block text-[10px] text-zinc-400">{{ taskCountForPlacement(topic.id, row.unterthemaId) }} {{ t.tasks }}</span>
                       </button>
                       <UButton v-if="row.subtopic" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editUnterthema" @click.stop="openUnterthemaModal(topic.id, row.subtopic)" />
                       <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newTask" @click.stop="openTaskModal(backlogColumn?.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })" />
@@ -2668,15 +2821,15 @@ const humanError = (error: unknown) => {
                       :data-drop-column-key="column.key"
                       :data-drop-oberthema-id="topic.id"
                       :data-drop-unterthema-id="row.unterthemaId ?? ''"
-                      class="ak-task-drop-cell relative min-h-24 border-b border-r border-zinc-200 bg-zinc-50/60 p-2.5 transition-colors last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900/30"
+                      class="ak-task-drop-cell group relative min-h-18 border-b border-r border-zinc-200 bg-zinc-50/60 p-2 transition-colors last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900/30"
                       :class="draggedTaskId && dragOverPlacementKey === taskDropPlacementKey(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }) ? 'ak-task-drop-cell-active' : ''"
                       @dragover.prevent="markColumnDropTarget(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
                       @dragenter.prevent="markColumnDropTarget(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
                       @dragleave="leaveTaskDropCell($event, taskDropPlacementKey(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }))"
                       @drop.prevent="draggedTaskId && moveTask(draggedTaskId, column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
                     >
-                      <div v-if="row.collapsed" class="flex h-full min-h-16 items-center justify-center">
-                        <span class="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                      <div v-if="row.collapsed" class="flex h-full min-h-12 items-center justify-center">
+                        <span class="rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                           {{ tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length }} {{ t.tasks }}
                         </span>
                       </div>
@@ -2704,7 +2857,7 @@ const humanError = (error: unknown) => {
                                 'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running',
                                 'opacity-50': draggedTaskId === task.id,
                               }"
-                              :ui="{ body: 'p-3 sm:p-3' }"
+                              :ui="{ body: 'p-2.5 sm:p-2.5' }"
                               role="button"
                               tabindex="0"
                               :aria-label="taskCardLabel(task)"
@@ -2725,7 +2878,7 @@ const humanError = (error: unknown) => {
                                   :class="task.agentEnabled ? 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'"
                                 >
                                   <UIcon :name="task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round'" class="size-3" />
-                                  {{ task.agentEnabled ? t.aiTask : t.humanTask }}
+                                  {{ task.agentEnabled ? t.aiTaskShort : t.humanTaskShort }}
                                 </span>
                               </div>
                               <h3 class="text-sm font-semibold leading-snug">{{ task.title }}</h3>
@@ -2749,7 +2902,7 @@ const humanError = (error: unknown) => {
                         <button
                           v-if="column.key === 'backlog' && !tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length"
                           type="button"
-                          class="flex min-h-14 w-full items-center justify-center gap-1 rounded-lg border border-dashed border-zinc-300 text-xs text-zinc-400 transition hover:border-teal-400 hover:text-teal-700 dark:border-zinc-700 dark:hover:text-teal-300"
+                          class="ak-add-task-button flex min-h-10 w-full items-center justify-center gap-1 rounded-lg border border-dashed border-zinc-300 text-xs text-zinc-400 transition hover:border-teal-400 hover:bg-white hover:text-teal-700 dark:border-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-teal-300"
                           @click="openTaskModal(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })"
                         >
                           <UIcon name="i-lucide-plus" class="size-3.5" /> {{ t.newTask }}
@@ -2758,7 +2911,7 @@ const humanError = (error: unknown) => {
                       <div
                         v-if="draggedTaskId && dragOverPlacementKey === taskDropPlacementKey(column.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId }) && !dragOverTaskId"
                         class="ak-task-cell-drop-overlay pointer-events-none absolute z-10 flex items-center justify-center rounded-lg border border-teal-500/70 bg-teal-50/95 text-xs font-semibold text-teal-800 shadow-sm dark:bg-teal-950/90 dark:text-teal-100"
-                        :class="row.collapsed || !tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length ? 'inset-2.5' : 'inset-x-2.5 bottom-2.5 h-10'"
+                        :class="row.collapsed || !tasksForPlacementColumn(topic.id, row.unterthemaId, column.id).length ? 'inset-2' : 'inset-x-2 bottom-2 h-10'"
                         aria-hidden="true"
                       >
                         <span class="inline-flex items-center gap-1.5">
@@ -2992,32 +3145,32 @@ const humanError = (error: unknown) => {
         v-model:open="taskModalModel"
         :title="selectedTaskId ? t.editTask : t.createTask"
         :description="t.taskDialog"
-        :ui="{ content: 'max-w-4xl', body: 'p-0 sm:p-0 overflow-y-auto', footer: 'justify-end border-t border-zinc-200 bg-zinc-50/95 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/90' }"
+        :ui="{ content: 'w-[calc(100vw-1rem)] max-w-4xl overflow-hidden sm:w-[calc(100vw-4rem)]', body: 'min-w-0 overflow-x-hidden overflow-y-auto p-0 sm:p-0', footer: 'flex-wrap justify-end border-t border-zinc-200 bg-zinc-50/95 px-4 py-3 sm:px-6 sm:py-4 dark:border-zinc-800 dark:bg-zinc-900/90' }"
       >
         <template #close="{ ui }">
           <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
         </template>
         <template #body>
-          <form id="task-form" @submit.prevent="saveTaskAction">
-            <div class="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
-              <div>
+          <form id="task-form" class="min-w-0" @submit.prevent="saveTaskAction">
+            <div class="flex min-w-0 flex-wrap items-start justify-between gap-4 border-b border-zinc-200 bg-zinc-50/80 px-4 py-4 sm:px-6 dark:border-zinc-800 dark:bg-zinc-900/70">
+              <div class="min-w-0">
                 <p class="text-xs font-bold uppercase tracking-wide text-teal-600 dark:text-teal-400">{{ selectedTaskDetail?.task.key ?? t.taskDialog }}</p>
                 <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                   {{ selectedTaskId && selectedTaskDetail ? (selectedTaskDetail.task.agentEnabled ? taskStatusLabel(selectedTaskDetail.task.agentStatus) : t.humanTask) : t.pasteHint }}
                 </p>
               </div>
-              <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div class="grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
                 <UFormField :label="t.topicAssignment" required size="sm">
-                  <USelect v-model="taskForm.placementId" class="w-64 max-w-full" :items="placementItems" size="lg" :placeholder="t.chooseUnterthema" required />
+                  <USelect v-model="taskForm.placementId" class="w-full xl:w-64" :items="placementItems" size="lg" :placeholder="t.chooseUnterthema" required />
                 </UFormField>
                 <UFormField :label="t.area" required size="sm">
-                  <USelect v-model="taskForm.columnId" class="w-48 max-w-full" :items="columnItems" size="lg" :disabled="!selectedTaskId || hasAgentActivity" />
+                  <USelect v-model="taskForm.columnId" class="w-full xl:w-48" :items="columnItems" size="lg" :disabled="!selectedTaskId || hasAgentActivity" />
                 </UFormField>
                 <UFormField :label="t.assignee" size="sm">
                   <USelect
                     v-model="taskForm.assigneeId"
                     data-assignee-select
-                    class="w-56 max-w-full"
+                    class="w-full xl:w-56"
                     :items="assigneeItems"
                     size="lg"
                     icon="i-lucide-user-round-check"
@@ -3026,7 +3179,7 @@ const humanError = (error: unknown) => {
               </div>
             </div>
 
-            <div v-if="selectedTaskId" class="grid gap-5 p-6">
+            <div v-if="selectedTaskId" class="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 p-4 sm:p-6">
               <div class="flex min-h-10 flex-wrap items-center gap-2 px-1">
                 <span class="inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200">
                   <UIcon name="i-lucide-tags" class="size-4 text-zinc-400" />
@@ -3230,7 +3383,7 @@ const humanError = (error: unknown) => {
                   :class="editingTask?.agentStatus === 'running' ? 'cursor-not-allowed opacity-60' : ''"
                 >
                   <input v-model="taskForm.agentEnabled" type="checkbox" class="mt-0.5 size-4 accent-violet-600" :disabled="editingTask?.agentStatus === 'running'">
-                  <span class="grid min-w-0 gap-1">
+                  <span class="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
                     <span class="flex items-center gap-2 text-sm font-semibold">
                       <UIcon name="i-lucide-sparkles" class="size-4 text-violet-600 dark:text-violet-300" />
                       {{ t.aiExecution }}
@@ -3287,7 +3440,7 @@ const humanError = (error: unknown) => {
                           layout="fixed"
                           :editor="editor"
                           :items="editorToolbarItems"
-                          class="border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
+                          class="ak-editor-toolbar border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
                         />
                       </UEditor>
                     </div>
@@ -3298,7 +3451,7 @@ const humanError = (error: unknown) => {
                     @dragover.prevent
                     @drop.prevent="handleFileDrop"
                   >
-                    <div class="mb-3 flex items-center justify-between gap-3">
+                    <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                       <div class="min-w-0">
                         <p class="text-sm font-semibold">{{ t.evidence }}</p>
                         <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">{{ t.pasteHint }}</p>
@@ -3459,10 +3612,10 @@ const humanError = (error: unknown) => {
               </section>
             </div>
 
-            <div v-else class="grid gap-5 p-6">
+            <div v-else class="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 p-4 sm:p-6">
               <label class="flex cursor-pointer items-start gap-3 rounded-xl border border-violet-200 bg-violet-50/70 p-4 dark:border-violet-900/60 dark:bg-violet-950/20">
                 <input v-model="taskForm.agentEnabled" type="checkbox" class="mt-0.5 size-4 accent-violet-600">
-                <span class="grid min-w-0 gap-1">
+                <span class="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
                   <span class="flex items-center gap-2 text-sm font-semibold">
                     <UIcon name="i-lucide-sparkles" class="size-4 text-violet-600 dark:text-violet-300" />
                     {{ t.aiExecution }}
@@ -3491,7 +3644,7 @@ const humanError = (error: unknown) => {
                       layout="fixed"
                       :editor="editor"
                       :items="editorToolbarItems"
-                      class="border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
+                      class="ak-editor-toolbar border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
                     />
                   </UEditor>
                 </div>
@@ -3538,7 +3691,7 @@ const humanError = (error: unknown) => {
                 @dragover.prevent
                 @drop.prevent="handleFileDrop"
               >
-                <div class="mb-3 flex items-center justify-between gap-3">
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <div class="min-w-0">
                     <p class="text-sm font-semibold">{{ t.evidence }}</p>
                     <p class="truncate text-xs text-zinc-500 dark:text-zinc-400">{{ t.pasteHint }}</p>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Agent Kanban">
+  <rect x="3" y="3" width="42" height="42" rx="10" fill="#0F766E"/>
+  <circle cx="11.5" cy="24" r="2.75" fill="#CCFBF1"/>
+  <path d="M14.25 24H18V15.5H21.5M18 24V32.5H21.5" fill="none" stroke="#CCFBF1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="21" y="11" width="10" height="9" rx="2.75" fill="#FFFFFF"/>
+  <rect x="21" y="28" width="10" height="9" rx="2.75" fill="#FFFFFF"/>
+  <path d="M31 15.5H34M31 32.5H34" fill="none" stroke="#99F6E4" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="34" y="12" width="5" height="7" rx="2" fill="#99F6E4"/>
+  <rect x="34" y="29" width="5" height="7" rx="2" fill="#99F6E4"/>
+</svg>
