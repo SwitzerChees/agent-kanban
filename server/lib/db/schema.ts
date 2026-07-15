@@ -107,6 +107,40 @@ export const tasks = sqliteTable('tasks', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const taskRefinements = sqliteTable('task_refinements', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  status: text('status', { enum: ['queued', 'running', 'awaiting_input', 'completed', 'failed'] }).notNull().default('queued'),
+  requestedBy: text('requested_by').notNull().references(() => users.id),
+  brief: text('brief'),
+  visualMode: text('visual_mode', { enum: ['auto', 'off', 'force'] }).notNull().default('auto'),
+  sourceDescription: text('source_description'),
+  sourceTaskUpdatedAt: text('source_task_updated_at').notNull(),
+  sourceCodeRevision: text('source_code_revision'),
+  resultCodeRevision: text('result_code_revision'),
+  questionsJson: text('questions_json').notNull().default('[]'),
+  round: integer('round').notNull().default(1),
+  resultMarkdown: text('result_markdown'),
+  resultJson: text('result_json'),
+  complexity: text('complexity', { enum: ['simple', 'moderate', 'complex'] }),
+  visualsJson: text('visuals_json').notNull().default('[]'),
+  threadId: text('thread_id'),
+  leaseOwner: text('lease_owner'),
+  leaseToken: text('lease_token'),
+  leaseExpiresAt: text('lease_expires_at'),
+  heartbeatAt: text('heartbeat_at'),
+  error: text('error'),
+  createdAt: text('created_at').notNull(),
+  startedAt: text('started_at'),
+  awaitingInputAt: text('awaiting_input_at'),
+  completedAt: text('completed_at'),
+  failedAt: text('failed_at'),
+  appliedAt: text('applied_at'),
+  appliedBy: text('applied_by').references(() => users.id),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const attachments = sqliteTable('attachments', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
@@ -161,6 +195,7 @@ export type Oberthema = typeof oberthemen.$inferSelect;
 export type Unterthema = typeof unterthemen.$inferSelect;
 export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type TaskRefinement = typeof taskRefinements.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type TaskTag = typeof taskTags.$inferSelect;
 export type AttachmentAnnotation = typeof attachmentAnnotations.$inferSelect;

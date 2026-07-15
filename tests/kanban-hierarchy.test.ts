@@ -228,6 +228,136 @@ describe('project topic hierarchy', () => {
       .where(eq(dbModule.schema.attachments.id, attachment.id)).get()).toBeUndefined();
     expect(existsSync(stored.storagePath)).toBe(false);
   });
+
+  test('removes persisted attachment files when deleting their task', async () => {
+    const project = await kanban.createProject({
+      name: 'Deleted Attachment Project',
+      key: 'DELFILES',
+      folderPath: path.join(testRoot, 'workspace-deleted-attachments'),
+    }, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Delete task and its file',
+      files: [{
+        fileName: 'temporary.txt',
+        mimeType: 'text/plain',
+        data: Buffer.from('Remove me'),
+      }],
+    }, admin);
+    const attachment = dbModule.db.select().from(dbModule.schema.attachments)
+      .where(eq(dbModule.schema.attachments.taskId, task!.id))
+      .get()!;
+
+    expect(existsSync(attachment.storagePath)).toBe(true);
+    await expect(kanban.deleteTask(task!.id, admin)).resolves.toEqual({ ok: true });
+    expect(existsSync(attachment.storagePath)).toBe(false);
+    expect(dbModule.db.select().from(dbModule.schema.attachments)
+      .where(eq(dbModule.schema.attachments.id, attachment.id)).get()).toBeUndefined();
+    expect(dbModule.db.select().from(dbModule.schema.tasks)
+      .where(eq(dbModule.schema.tasks.id, task!.id)).get()).toBeUndefined();
+  });
+
+  test('builds a permission-filtered command palette index without attachment payloads', async () => {
+    const firstProject = await kanban.createProject({
+      name: 'Palette Visible Project',
+      key: 'PALVIS',
+      folderPath: path.join(testRoot, 'workspace-palette-visible'),
+      tags: ['customer', 'launch'],
+    }, admin);
+    const secondProject = await kanban.createProject({
+      name: 'Palette Hidden Project',
+      key: 'PALHID',
+      folderPath: path.join(testRoot, 'workspace-palette-hidden'),
+    }, admin);
+    const member = insertUser('palette-index-member', 'Palette Member');
+    kanban.addProjectUser(firstProject.id, member.id, admin);
+
+    const visibleParent = kanban.createOberthema(firstProject.id, {
+      name: 'Visible parent topic',
+      description: 'Visible parent description',
+    }, admin);
+    const visibleSubtopic = kanban.createUnterthema(visibleParent.id, {
+      name: 'Visible sub-topic',
+      description: 'Visible sub-topic description',
+    }, admin);
+    const visibleTodo = kanban.getBoard(firstProject.id, admin).columns.find((column) => column.key === 'todo')!;
+    const createdVisibleTask = await kanban.createTask(firstProject.id, {
+      title: 'Searchable visible task',
+      description: 'A description included in the search index',
+      unterthemaId: visibleSubtopic.id,
+      assigneeId: member.id,
+      agentEnabled: true,
+      priority: 'high',
+      tags: ['customer', 'launch'],
+      files: [{
+        fileName: 'not-indexed.txt',
+        mimeType: 'text/plain',
+        data: Buffer.from('Attachment content must not be indexed'),
+      }],
+    }, admin);
+    const visibleTask = kanban.updateTask(createdVisibleTask!.id, { columnId: visibleTodo.id }, admin)!;
+
+    const hiddenBoard = kanban.getBoard(secondProject.id, admin);
+    const hiddenTask = await kanban.createTask(secondProject.id, {
+      title: 'Task hidden from the member',
+      unterthemaId: hiddenBoard.unterthemen[0]!.id,
+      assigneeId: null,
+    }, admin);
+
+    const memberIndex = kanban.getCommandPaletteIndex(member);
+    expect(memberIndex.tasks.map((task) => task.id)).toContain(visibleTask!.id);
+    expect(memberIndex.tasks.map((task) => task.id)).not.toContain(hiddenTask!.id);
+    expect(memberIndex.tasks.every((task) => task.projectId === firstProject.id)).toBe(true);
+    expect(memberIndex.topics.every((topic) => topic.projectId === firstProject.id)).toBe(true);
+
+    const indexedTask = memberIndex.tasks.find((task) => task.id === visibleTask!.id)!;
+    expect(indexedTask).toMatchObject({
+      projectId: firstProject.id,
+      projectKey: firstProject.key,
+      projectName: firstProject.name,
+      key: visibleTask!.key,
+      title: 'Searchable visible task',
+      description: 'A description included in the search index',
+      priority: 'high',
+      columnId: visibleTodo.id,
+      columnKey: 'todo',
+      columnNameEn: 'To Do',
+      columnNameDe: 'Zu erledigen',
+      columnDone: false,
+      oberthemaId: visibleParent.id,
+      oberthemaName: 'Visible parent topic',
+      unterthemaId: visibleSubtopic.id,
+      unterthemaName: 'Visible sub-topic',
+      assigneeId: member.id,
+      assigneeName: member.name,
+      assigneeEmail: member.email,
+      agentEnabled: true,
+      agentStatus: 'queued',
+      tags: ['customer', 'launch'],
+      updatedAt: visibleTask!.updatedAt,
+    });
+    expect(indexedTask).not.toHaveProperty('attachments');
+
+    expect(memberIndex.topics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: visibleParent.id,
+        kind: 'oberthema',
+        projectId: firstProject.id,
+        name: 'Visible parent topic',
+      }),
+      expect.objectContaining({
+        id: visibleSubtopic.id,
+        kind: 'unterthema',
+        projectId: firstProject.id,
+        oberthemaId: visibleParent.id,
+        oberthemaName: visibleParent.name,
+        name: 'Visible sub-topic',
+      }),
+    ]));
+
+    const adminIndex = kanban.getCommandPaletteIndex(admin);
+    expect(adminIndex.tasks.map((task) => task.id)).toEqual(expect.arrayContaining([visibleTask!.id, hiddenTask!.id]));
+    expect(adminIndex.topics.some((topic) => topic.projectId === secondProject.id)).toBe(true);
+  });
 });
 
 function expectStatusMessage(action: () => unknown, expected: string) {

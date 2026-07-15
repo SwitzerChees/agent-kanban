@@ -15,6 +15,7 @@
     "@vitejs/plugin-vue": "latest",
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
+    "fuse.js": "^7.5.0",
     "liquidjs": "latest",
     "lucide-vue-next": "latest",
     "nuxt": "latest",

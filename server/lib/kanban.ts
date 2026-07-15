@@ -244,6 +244,127 @@ export function getBoard(projectId: string, user: User) {
   };
 }
 
+export function getCommandPaletteIndex(user: User) {
+  const projects = listProjects(user);
+  if (!projects.length) return { tasks: [], topics: [] };
+
+  const projectIds = projects.map((project) => project.id);
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const columns = db.select().from(schema.columns)
+    .where(inArray(schema.columns.projectId, projectIds))
+    .orderBy(asc(schema.columns.position))
+    .all();
+  const columnById = new Map(columns.map((column) => [column.id, column]));
+  const oberthemen = db.select().from(schema.oberthemen)
+    .where(inArray(schema.oberthemen.projectId, projectIds))
+    .orderBy(asc(schema.oberthemen.position), asc(schema.oberthemen.createdAt))
+    .all();
+  const oberthemaById = new Map(oberthemen.map((topic) => [topic.id, topic]));
+  const unterthemen = db.select({
+    unterthema: schema.unterthemen,
+    projectId: schema.oberthemen.projectId,
+  })
+    .from(schema.unterthemen)
+    .innerJoin(schema.oberthemen, eq(schema.unterthemen.oberthemaId, schema.oberthemen.id))
+    .where(inArray(schema.oberthemen.projectId, projectIds))
+    .orderBy(asc(schema.unterthemen.position), asc(schema.unterthemen.createdAt))
+    .all();
+  const unterthemaById = new Map(unterthemen.map((row) => [row.unterthema.id, row.unterthema]));
+  const taskRows = db.select({
+    task: schema.tasks,
+    assigneeName: schema.users.name,
+    assigneeEmail: schema.users.email,
+  })
+    .from(schema.tasks)
+    .leftJoin(schema.users, eq(schema.tasks.assigneeId, schema.users.id))
+    .where(inArray(schema.tasks.projectId, projectIds))
+    .orderBy(desc(schema.tasks.updatedAt), asc(schema.tasks.key))
+    .all();
+  const taskTagRows = db.select({
+    taskId: schema.taskTags.taskId,
+    name: schema.taskTags.name,
+  })
+    .from(schema.taskTags)
+    .innerJoin(schema.tasks, eq(schema.taskTags.taskId, schema.tasks.id))
+    .where(inArray(schema.tasks.projectId, projectIds))
+    .orderBy(asc(schema.taskTags.name))
+    .all();
+  const tagsByTaskId = new Map<string, string[]>();
+  for (const row of taskTagRows) {
+    const tags = tagsByTaskId.get(row.taskId) ?? [];
+    tags.push(row.name);
+    tagsByTaskId.set(row.taskId, tags);
+  }
+
+  return {
+    tasks: taskRows.map(({ task, assigneeName, assigneeEmail }) => {
+      const project = projectById.get(task.projectId)!;
+      const column = columnById.get(task.columnId);
+      const oberthema = oberthemaById.get(task.oberthemaId);
+      const unterthema = task.unterthemaId ? unterthemaById.get(task.unterthemaId) : undefined;
+      return {
+        id: task.id,
+        projectId: project.id,
+        projectKey: project.key,
+        projectName: project.name,
+        key: task.key,
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        columnId: task.columnId,
+        columnKey: column?.key ?? null,
+        columnNameEn: column?.nameEn ?? null,
+        columnNameDe: column?.nameDe ?? null,
+        columnDone: column?.done ?? false,
+        oberthemaId: task.oberthemaId,
+        oberthemaName: oberthema?.name ?? null,
+        unterthemaId: task.unterthemaId,
+        unterthemaName: unterthema?.name ?? null,
+        assigneeId: task.assigneeId,
+        assigneeName,
+        assigneeEmail,
+        agentEnabled: task.agentEnabled,
+        agentStatus: task.agentStatus,
+        tags: tagsByTaskId.get(task.id) ?? [],
+        updatedAt: task.updatedAt,
+      };
+    }),
+    topics: [
+      ...oberthemen.map((topic) => {
+        const project = projectById.get(topic.projectId)!;
+        return {
+          id: topic.id,
+          kind: 'oberthema' as const,
+          name: topic.name,
+          description: topic.description,
+          projectId: project.id,
+          projectKey: project.key,
+          projectName: project.name,
+          oberthemaId: topic.id,
+          oberthemaName: topic.name,
+          updatedAt: topic.updatedAt,
+        };
+      }),
+      ...unterthemen.map(({ unterthema, projectId }) => {
+        const project = projectById.get(projectId)!;
+        const oberthema = oberthemaById.get(unterthema.oberthemaId)!;
+        return {
+          id: unterthema.id,
+          kind: 'unterthema' as const,
+          name: unterthema.name,
+          description: unterthema.description,
+          projectId: project.id,
+          projectKey: project.key,
+          projectName: project.name,
+          oberthemaId: oberthema.id,
+          oberthemaName: oberthema.name,
+          updatedAt: unterthema.updatedAt,
+        };
+      }),
+    ],
+  };
+}
+
 export function getTaskDetail(taskId: string, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
@@ -535,16 +656,27 @@ export async function createTask(projectId: string, input: {
     updatedAt: now,
   }).run();
 
-  if (input.tags?.length) {
-    setTaskTags(taskId, input.tags, projectId);
-  }
+  try {
+    if (input.tags?.length) {
+      setTaskTags(taskId, input.tags, projectId);
+    }
 
-  for (const file of input.files ?? []) {
-    await storeTaskAttachment(taskId, file, user.id);
-  }
-  logTaskActivity(projectId, taskId, user.id, 'task_created', { columnKey: column.key, tags: normalizeTags(input.tags ?? []) });
+    for (const file of input.files ?? []) {
+      const attachmentId = await storeTaskAttachment(taskId, file, user.id);
+      if (file.annotation) {
+        await saveAttachmentAnnotation(taskId, attachmentId, {
+          annotationData: file.annotation.data,
+          renderedImage: file.annotation.renderedImage,
+        }, user);
+      }
+    }
+    logTaskActivity(projectId, taskId, user.id, 'task_created', { columnKey: column.key, tags: normalizeTags(input.tags ?? []) });
 
-  return getBoard(projectId, user).tasks.find((task) => task.id === taskId);
+    return getBoard(projectId, user).tasks.find((task) => task.id === taskId);
+  } catch (error) {
+    await rollbackCreatedTask(taskId);
+    throw error;
+  }
 }
 
 export function updateTask(taskId: string, input: {
@@ -647,7 +779,7 @@ export function updateTask(taskId: string, input: {
   return updated;
 }
 
-export function deleteTask(taskId: string, user: User) {
+export async function deleteTask(taskId: string, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
@@ -655,11 +787,56 @@ export function deleteTask(taskId: string, user: User) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_delete' });
   }
   logTaskActivity(task.projectId, taskId, user.id, 'task_deleted', { key: task.key, title: task.title });
+  await rollbackTaskAttachments(taskId);
   db.delete(schema.tasks).where(eq(schema.tasks.id, taskId)).run();
   return { ok: true };
 }
 
-export async function storeTaskAttachment(taskId: string, file: UploadedTaskFile, userId: string) {
+async function rollbackTaskAttachments(taskId: string, attachmentIds?: string[], activityIds: string[] = []) {
+  if (attachmentIds && attachmentIds.length === 0) {
+    if (activityIds.length) db.delete(schema.activity).where(inArray(schema.activity.id, activityIds)).run();
+    return;
+  }
+  const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+  const attachments = db.select().from(schema.attachments)
+    .where(attachmentIds
+      ? and(eq(schema.attachments.taskId, taskId), inArray(schema.attachments.id, attachmentIds))
+      : eq(schema.attachments.taskId, taskId))
+    .all();
+  if (!attachments.length) {
+    if (activityIds.length) db.delete(schema.activity).where(inArray(schema.activity.id, activityIds)).run();
+    return;
+  }
+
+  const storedAnnotations = db.select().from(schema.attachmentAnnotations)
+    .where(inArray(schema.attachmentAnnotations.attachmentId, attachments.map((attachment) => attachment.id)))
+    .all();
+  const renderedPaths = new Set(storedAnnotations.map((annotation) => annotation.renderedStoragePath));
+  if (task) {
+    for (const attachment of attachments) {
+      renderedPaths.add(appDataDir('annotations', task.projectId, taskId, `${attachment.id}.png`));
+    }
+  }
+
+  await Promise.allSettled([
+    ...attachments.map((attachment) => fs.rm(attachment.storagePath, { force: true })),
+    ...[...renderedPaths].map((storagePath) => fs.rm(storagePath, { force: true })),
+  ]);
+  db.delete(schema.attachments)
+    .where(inArray(schema.attachments.id, attachments.map((attachment) => attachment.id)))
+    .run();
+  if (activityIds.length) db.delete(schema.activity).where(inArray(schema.activity.id, activityIds)).run();
+}
+
+async function rollbackCreatedTask(taskId: string) {
+  try {
+    await rollbackTaskAttachments(taskId);
+  } finally {
+    db.delete(schema.tasks).where(eq(schema.tasks.id, taskId)).run();
+  }
+}
+
+export async function storeTaskAttachment(taskId: string, file: UploadedTaskFile, userId: string, activityIds?: string[]) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   const now = new Date().toISOString();
@@ -667,30 +844,52 @@ export async function storeTaskAttachment(taskId: string, file: UploadedTaskFile
   const safeName = file.fileName.replace(/[^A-Za-z0-9._-]/g, '_') || 'attachment';
   const storagePath = appDataDir('uploads', task.projectId, taskId, `${attachmentId}-${safeName}`);
   await fs.writeFile(storagePath, file.data);
-  db.insert(schema.attachments).values({
-    id: attachmentId,
-    taskId,
-    fileName: file.fileName,
-    mimeType: file.mimeType,
-    size: file.data.byteLength,
-    storagePath,
-    createdBy: userId,
-    createdAt: now,
-  }).run();
-  logTaskActivity(task.projectId, taskId, userId, 'attachment_added', {
-    fileName: file.fileName,
-    mimeType: file.mimeType,
-    size: file.data.byteLength,
-    storagePath,
-  });
+  try {
+    db.insert(schema.attachments).values({
+      id: attachmentId,
+      taskId,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      size: file.data.byteLength,
+      storagePath,
+      createdBy: userId,
+      createdAt: now,
+    }).run();
+    const activityId = logTaskActivity(task.projectId, taskId, userId, 'attachment_added', {
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      size: file.data.byteLength,
+      storagePath,
+    });
+    activityIds?.push(activityId);
+    return attachmentId;
+  } catch (error) {
+    db.delete(schema.attachments).where(eq(schema.attachments.id, attachmentId)).run();
+    await fs.rm(storagePath, { force: true });
+    throw error;
+  }
 }
 
 export async function addTaskAttachments(taskId: string, files: UploadedTaskFile[], user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
-  for (const file of files) {
-    await storeTaskAttachment(taskId, file, user.id);
+  const storedAttachmentIds: string[] = [];
+  const activityIds: string[] = [];
+  try {
+    for (const file of files) {
+      const attachmentId = await storeTaskAttachment(taskId, file, user.id, activityIds);
+      storedAttachmentIds.push(attachmentId);
+      if (file.annotation) {
+        await saveAttachmentAnnotation(taskId, attachmentId, {
+          annotationData: file.annotation.data,
+          renderedImage: file.annotation.renderedImage,
+        }, user, activityIds);
+      }
+    }
+  } catch (error) {
+    await rollbackTaskAttachments(taskId, storedAttachmentIds, activityIds);
+    throw error;
   }
   return getTaskDetail(taskId, user);
 }
@@ -731,7 +930,7 @@ export async function deleteTaskAttachment(taskId: string, attachmentId: string,
 export async function saveAttachmentAnnotation(taskId: string, attachmentId: string, input: {
   annotationData: unknown;
   renderedImage: Buffer;
-}, user: User) {
+}, user: User, activityIds?: string[]) {
   const { task, attachment } = getTaskAttachment(taskId, attachmentId, user);
   if (!attachment.mimeType.startsWith('image/')) {
     throw createError({ statusCode: 400, statusMessage: 'attachment_not_image' });
@@ -754,7 +953,8 @@ export async function saveAttachmentAnnotation(taskId: string, attachmentId: str
       updatedAt: now,
     },
   }).run();
-  logTaskActivity(task.projectId, taskId, user.id, 'attachment_annotated', { fileName: attachment.fileName });
+  const activityId = logTaskActivity(task.projectId, taskId, user.id, 'attachment_annotated', { fileName: attachment.fileName });
+  activityIds?.push(activityId);
   return getTaskDetail(taskId, user);
 }
 
@@ -783,8 +983,9 @@ export function addTaskMessage(taskId: string, body: string, user: User) {
 }
 
 export function logTaskActivity(projectId: string, taskId: string | null, userId: string | null, action: string, metadata?: unknown) {
+  const activityId = randomUUID();
   db.insert(schema.activity).values({
-    id: randomUUID(),
+    id: activityId,
     projectId,
     taskId,
     userId,
@@ -792,6 +993,7 @@ export function logTaskActivity(projectId: string, taskId: string | null, userId
     metadata: metadata === undefined ? null : JSON.stringify(metadata),
     createdAt: new Date().toISOString(),
   }).run();
+  return activityId;
 }
 
 export function listUsers() {
@@ -817,6 +1019,10 @@ export interface UploadedTaskFile {
   fileName: string;
   mimeType: string;
   data: Buffer;
+  annotation?: {
+    data: unknown;
+    renderedImage: Buffer;
+  };
 }
 
 function insertTaskComment(taskId: string, body: string, user: User, kind: 'comment' | 'steering') {

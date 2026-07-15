@@ -2,10 +2,15 @@ import { getRouterParam, readBody } from 'h3';
 import { z } from 'zod';
 import { requireUser } from '../../../../../lib/security/auth';
 import { saveAttachmentAnnotation } from '../../../../../lib/kanban';
+import {
+  annotationDataSchema,
+  decodeRenderedAnnotationImage,
+  renderedAnnotationImageSchema,
+} from '../../../../../lib/attachment-annotation';
 
 const schema = z.object({
-  annotationData: z.unknown(),
-  renderedImage: z.string().startsWith('data:image/png;base64,'),
+  annotationData: annotationDataSchema,
+  renderedImage: renderedAnnotationImageSchema,
 });
 
 export default defineEventHandler(async (event) => {
@@ -13,9 +18,8 @@ export default defineEventHandler(async (event) => {
   const taskId = getRouterParam(event, 'taskId')!;
   const attachmentId = getRouterParam(event, 'attachmentId')!;
   const body = schema.parse(await readBody(event));
-  const renderedImage = Buffer.from(body.renderedImage.split(',')[1] ?? '', 'base64');
   return saveAttachmentAnnotation(taskId, attachmentId, {
     annotationData: body.annotationData,
-    renderedImage,
+    renderedImage: decodeRenderedAnnotationImage(body.renderedImage, body.annotationData),
   }, user);
 });

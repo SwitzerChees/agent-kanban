@@ -1,7 +1,8 @@
 import { getHeader, getRouterParam, readBody, readMultipartFormData } from 'h3';
 import { z } from 'zod';
 import { requireUser } from '../../../lib/security/auth';
-import { createTask, type UploadedTaskFile } from '../../../lib/kanban';
+import { createTask } from '../../../lib/kanban';
+import { parseTaskUploadParts } from '../../../lib/task-upload';
 
 const jsonTaskSchema = z.object({
   title: z.string().min(1),
@@ -23,20 +24,7 @@ export default defineEventHandler(async (event) => {
 
   if (contentType.includes('multipart/form-data')) {
     const parts = await readMultipartFormData(event);
-    const fields = new Map<string, string>();
-    const files: UploadedTaskFile[] = [];
-    for (const part of parts ?? []) {
-      if (!part.name) continue;
-      if (part.filename) {
-        files.push({
-          fileName: part.filename,
-          mimeType: part.type || 'application/octet-stream',
-          data: Buffer.from(part.data),
-        });
-      } else {
-        fields.set(part.name, Buffer.from(part.data).toString('utf8'));
-      }
-    }
+    const { fields, files } = parseTaskUploadParts(parts);
     const taskInput = jsonTaskSchema.parse({
       title: fields.get('title'),
       description: fields.get('description') || null,
