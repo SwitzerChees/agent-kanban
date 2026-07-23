@@ -13,12 +13,14 @@ process.env.KANBAN_ADMIN_PASSWORD = 'hierarchy-test-password';
 let dbModule: typeof import('../server/lib/db');
 let kanban: typeof import('../server/lib/kanban');
 let localDispatcher: typeof import('../server/lib/local-dispatcher');
+let passwordSecurity: typeof import('../server/lib/security/password');
 let admin: User;
 
 beforeAll(async () => {
   dbModule = await import('../server/lib/db');
   kanban = await import('../server/lib/kanban');
   localDispatcher = await import('../server/lib/local-dispatcher');
+  passwordSecurity = await import('../server/lib/security/password');
   const seededAdmin = dbModule.db.select().from(dbModule.schema.users).get();
   if (!seededAdmin) throw new Error('seeded_admin_missing');
   admin = seededAdmin;
@@ -491,6 +493,96 @@ describe('project topic hierarchy', () => {
     const adminIndex = kanban.getCommandPaletteIndex(admin);
     expect(adminIndex.tasks.map((task) => task.id)).toEqual(expect.arrayContaining([visibleTask!.id, hiddenTask!.id]));
     expect(adminIndex.topics.some((topic) => topic.projectId === secondProject.id)).toBe(true);
+  });
+});
+
+describe('admin user management', () => {
+  test('updates identity, password and role while protecting the current admin', () => {
+    const editableUser = insertUser('editable-user', 'Editable User');
+    const otherUser = insertUser('other-user', 'Other User');
+
+    const updatedUsers = kanban.updateUser(editableUser.id, {
+      name: 'Updated Person',
+      email: 'Updated.Person@Example.com',
+      password: 'new-secure-password',
+      role: 'admin',
+    }, admin);
+    const updated = dbModule.db.select().from(dbModule.schema.users)
+      .where(eq(dbModule.schema.users.id, editableUser.id))
+      .get();
+
+    expect(updated).toMatchObject({
+      name: 'Updated Person',
+      email: 'updated.person@example.com',
+      role: 'admin',
+    });
+    expect(passwordSecurity.verifyPassword('new-secure-password', updated!.passwordHash)).toBe(true);
+    expect(updatedUsers.find((row) => row.id === editableUser.id)).toMatchObject({
+      name: 'Updated Person',
+      role: 'admin',
+    });
+
+    expectStatusMessage(
+      () => kanban.updateUser(admin.id, { role: 'member' }, admin),
+      'self_admin_role_required',
+    );
+    expectStatusMessage(
+      () => kanban.updateUser(editableUser.id, { email: otherUser.email }, admin),
+      'user_email_exists',
+    );
+    expectStatusMessage(
+      () => kanban.updateUser(editableUser.id, { name: 'Blocked' }, otherUser),
+      'admin_required',
+    );
+  });
+
+  test('deactivates deleted users, removes access and preserves admin self-protection', async () => {
+    const deletableUser = insertUser('deletable-user', 'Deletable User');
+    const project = await kanban.createProject({
+      name: 'User deletion project',
+      key: 'USRDEL',
+      folderPath: path.join(testRoot, 'workspace-user-deletion'),
+      userIds: [deletableUser.id],
+    }, admin);
+    const board = kanban.getBoard(project.id, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Assigned before deletion',
+      assigneeId: deletableUser.id,
+    }, admin);
+    dbModule.db.insert(dbModule.schema.sessions).values({
+      id: 'deletable-user-session',
+      userId: deletableUser.id,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      createdAt: new Date().toISOString(),
+    }).run();
+
+    const remainingUsers = kanban.deleteUser(deletableUser.id, admin);
+    const deleted = dbModule.db.select().from(dbModule.schema.users)
+      .where(eq(dbModule.schema.users.id, deletableUser.id))
+      .get();
+    const updatedTask = dbModule.db.select().from(dbModule.schema.tasks)
+      .where(eq(dbModule.schema.tasks.id, task!.id))
+      .get();
+
+    expect(board.members.some((member) => member.id === deletableUser.id)).toBe(true);
+    expect(deleted?.active).toBe(false);
+    expect(updatedTask?.assigneeId).toBeNull();
+    expect(dbModule.db.select().from(dbModule.schema.projectUsers)
+      .where(eq(dbModule.schema.projectUsers.userId, deletableUser.id))
+      .all()).toHaveLength(0);
+    expect(dbModule.db.select().from(dbModule.schema.sessions)
+      .where(eq(dbModule.schema.sessions.userId, deletableUser.id))
+      .all()).toHaveLength(0);
+    expect(remainingUsers.some((row) => row.id === deletableUser.id)).toBe(false);
+
+    expectStatusMessage(
+      () => kanban.deleteUser(admin.id, admin),
+      'self_user_delete_forbidden',
+    );
+    expectStatusMessage(
+      () => kanban.deleteUser(admin.id, insertUser('delete-member-actor', 'Delete Member Actor')),
+      'admin_required',
+    );
   });
 });
 

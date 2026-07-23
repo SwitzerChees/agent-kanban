@@ -5,6 +5,7 @@ import { and, asc, count, desc, eq, inArray, isNull, max, notInArray, sql } from
 import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
 import { removeTaskWorktree } from './git-workspaces';
+import { hashPassword } from './security/password';
 import type { User } from './db/schema';
 
 const DEFAULT_COLUMNS = [
@@ -1218,7 +1219,80 @@ export function listUsers() {
     role: schema.users.role,
     active: schema.users.active,
     createdAt: schema.users.createdAt,
-  }).from(schema.users).orderBy(asc(schema.users.name)).all();
+  }).from(schema.users)
+    .where(eq(schema.users.active, true))
+    .orderBy(asc(schema.users.name))
+    .all();
+}
+
+export function updateUser(userId: string, input: {
+  name?: string;
+  email?: string;
+  password?: string;
+  role?: 'admin' | 'member';
+}, admin: User) {
+  if (admin.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'admin_required' });
+  }
+  const existing = db.select().from(schema.users).where(eq(schema.users.id, userId)).get();
+  if (!existing || !existing.active) {
+    throw createError({ statusCode: 404, statusMessage: 'user_not_found' });
+  }
+  if (userId === admin.id && input.role && input.role !== 'admin') {
+    throw createError({ statusCode: 400, statusMessage: 'self_admin_role_required' });
+  }
+
+  const email = input.email?.trim().toLowerCase();
+  if (email && email !== existing.email) {
+    const duplicate = db.select({ id: schema.users.id })
+      .from(schema.users)
+      .where(eq(schema.users.email, email))
+      .get();
+    if (duplicate && duplicate.id !== userId) {
+      throw createError({ statusCode: 409, statusMessage: 'user_email_exists' });
+    }
+  }
+
+  const updates: Partial<typeof schema.users.$inferInsert> = {
+    updatedAt: new Date().toISOString(),
+  };
+  if (input.name !== undefined) updates.name = input.name.trim();
+  if (email !== undefined) updates.email = email;
+  if (input.password !== undefined) updates.passwordHash = hashPassword(input.password);
+  if (input.role !== undefined) updates.role = input.role;
+
+  db.update(schema.users).set(updates).where(eq(schema.users.id, userId)).run();
+  return listUsers();
+}
+
+export function deleteUser(userId: string, admin: User) {
+  if (admin.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'admin_required' });
+  }
+  if (userId === admin.id) {
+    throw createError({ statusCode: 400, statusMessage: 'self_user_delete_forbidden' });
+  }
+  const existing = db.select().from(schema.users)
+    .where(and(eq(schema.users.id, userId), eq(schema.users.active, true)))
+    .get();
+  if (!existing) {
+    throw createError({ statusCode: 404, statusMessage: 'user_not_found' });
+  }
+
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    tx.update(schema.tasks)
+      .set({ assigneeId: null, updatedAt: now })
+      .where(eq(schema.tasks.assigneeId, userId))
+      .run();
+    tx.delete(schema.projectUsers).where(eq(schema.projectUsers.userId, userId)).run();
+    tx.delete(schema.sessions).where(eq(schema.sessions.userId, userId)).run();
+    tx.update(schema.users)
+      .set({ active: false, updatedAt: now })
+      .where(eq(schema.users.id, userId))
+      .run();
+  });
+  return listUsers();
 }
 
 export function addProjectUser(projectId: string, userId: string, user: User) {

@@ -340,6 +340,12 @@ const dictionary = {
     navTagline: 'Work in flow',
     createProject: 'Create project',
     createUser: 'Create user',
+    editUser: 'Edit user',
+    updateUser: 'Save changes',
+    deleteUser: 'Delete user',
+    deleteUserConfirm: 'Remove this user’s access?',
+    deleteUserWarning: 'The user will be signed out, removed from all projects, and cleared from open responsibilities. Historical contributions remain visible.',
+    deleteUserSelfProtected: 'You cannot delete your own account.',
     projectDialog: 'Project details',
     userDialog: 'User details',
     taskDialog: 'Task details',
@@ -380,6 +386,12 @@ const dictionary = {
     discardChanges: 'Discard changes',
     editProject: 'Edit project',
     updateProject: 'Save project',
+    newPassword: 'New password',
+    passwordCreateHint: 'At least 8 characters.',
+    passwordEditHint: 'Leave empty to keep the current password.',
+    selfAdminRoleLocked: 'Your own admin role is protected and cannot be changed.',
+    userEmailExists: 'This email address is already used by another user.',
+    userNotFound: 'This user no longer exists.',
     role: 'Role',
     memberRole: 'Member',
     adminRole: 'Admin',
@@ -597,6 +609,12 @@ const dictionary = {
     navTagline: 'Arbeit im Fluss',
     createProject: 'Projekt erstellen',
     createUser: 'Benutzer erstellen',
+    editUser: 'Benutzer bearbeiten',
+    updateUser: 'Änderungen speichern',
+    deleteUser: 'Benutzer löschen',
+    deleteUserConfirm: 'Zugriff dieses Benutzers entfernen?',
+    deleteUserWarning: 'Der Benutzer wird abgemeldet, aus allen Projekten entfernt und aus offenen Verantwortlichkeiten gelöscht. Historische Beiträge bleiben sichtbar.',
+    deleteUserSelfProtected: 'Du kannst dein eigenes Benutzerkonto nicht löschen.',
     projectDialog: 'Projektdetails',
     userDialog: 'Benutzerdetails',
     taskDialog: 'Aufgabendetails',
@@ -637,6 +655,12 @@ const dictionary = {
     discardChanges: 'Änderungen verwerfen',
     editProject: 'Projekt bearbeiten',
     updateProject: 'Projekt speichern',
+    newPassword: 'Neues Passwort',
+    passwordCreateHint: 'Mindestens 8 Zeichen.',
+    passwordEditHint: 'Leer lassen, um das aktuelle Passwort beizubehalten.',
+    selfAdminRoleLocked: 'Deine eigene Adminrolle ist geschützt und kann nicht geändert werden.',
+    userEmailExists: 'Diese E-Mail-Adresse wird bereits von einem anderen Benutzer verwendet.',
+    userNotFound: 'Dieser Benutzer existiert nicht mehr.',
     role: 'Rolle',
     memberRole: 'Mitglied',
     adminRole: 'Admin',
@@ -820,17 +844,21 @@ const discardTaskModalOpen = ref(false);
 const refinementOverwriteModalOpen = ref(false);
 const oberthemaModalOpen = ref(false);
 const unterthemaModalOpen = ref(false);
+const deleteUserModalOpen = ref(false);
 const deleteTaskModalOpen = ref(false);
 const deleteAttachmentModalOpen = ref(false);
 const annotationModalOpen = ref(false);
 const taskSubmitting = ref(false);
 const hierarchySubmitting = ref(false);
+const userSubmitting = ref(false);
 const annotationSubmitting = ref(false);
 const attachmentSubmitting = ref(false);
 const downloadingAttachmentId = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
 const isMobileViewport = ref(false);
 const editingProjectId = ref<string | null>(null);
+const editingUserId = ref<string | null>(null);
+const selectedUserForDeletion = ref<User | null>(null);
 const editingOberthemaId = ref<string | null>(null);
 const editingUnterthemaId = ref<string | null>(null);
 const selectedTaskId = ref<string | null>(null);
@@ -898,6 +926,8 @@ const UNASSIGNED_ID = '__unassigned__';
 
 const loginForm = reactive({ email: '', password: '' });
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
+const userFormError = ref<string | null>(null);
+const userFormElement = ref<HTMLFormElement | null>(null);
 const projectForm = reactive({ name: '', key: '', folderPath: '', description: '', userIds: [] as string[], tags: '' });
 const oberthemaForm = reactive({ name: '', description: '', color: 'teal' });
 const unterthemaForm = reactive({ name: '', description: '', oberthemaId: '' });
@@ -1557,6 +1587,7 @@ const userRows = computed(() => users.value.map((row) => ({
   ...row,
   roleLabel: row.role === 'admin' ? t.value.adminRole : t.value.memberRole,
 })));
+const editingCurrentUser = computed(() => Boolean(editingUserId.value && editingUserId.value === user.value?.id));
 
 useHead(() => ({
   title: t.value.app,
@@ -1567,8 +1598,16 @@ useHead(() => ({
 const userColumns = computed<TableColumn<User & { roleLabel: string }>[]>(() => [
   { accessorKey: 'name', header: t.value.userName },
   { accessorKey: 'email', header: t.value.email },
-  { accessorKey: 'roleLabel', header: t.value.role },
+  { accessorKey: 'role', header: t.value.role },
+  { id: 'actions', header: '' },
 ]);
+
+const formatUserInitials = (row: User) => row.name
+  .split(/\s+/)
+  .filter(Boolean)
+  .slice(0, 2)
+  .map((part) => part[0]?.toUpperCase())
+  .join('') || row.email.slice(0, 1).toUpperCase();
 
 const focusSidebarElement = (selector: string) => nextTick(() => {
   requestAnimationFrame(() => (document.querySelector(selector) as HTMLElement | null)?.focus());
@@ -2064,8 +2103,15 @@ const openProjectModal = async (project?: Project) => {
   projectModalOpen.value = true;
 };
 
-const openUserModal = () => {
-  Object.assign(userForm, { name: '', email: '', password: '', role: 'member' });
+const openUserModal = (row?: User) => {
+  editingUserId.value = row?.id ?? null;
+  userFormError.value = null;
+  Object.assign(userForm, {
+    name: row?.name ?? '',
+    email: row?.email ?? '',
+    password: '',
+    role: row?.role ?? 'member',
+  });
   userModalOpen.value = true;
 };
 
@@ -2382,15 +2428,72 @@ const logout = async () => {
   clearBoardFilters();
 };
 
-const createUser = async () => {
-  errorMessage.value = null;
+const saveUserAction = async () => {
+  if (userSubmitting.value) return;
+  userFormError.value = null;
+  userSubmitting.value = true;
   try {
-    const response = await $fetch<{ users: User[] }>('/api/users', { method: 'POST', body: userForm });
+    const body = {
+      name: userForm.name,
+      email: userForm.email,
+      password: userForm.password || undefined,
+      role: userForm.role,
+    };
+    const response = editingUserId.value
+      ? await $fetch<{ users: User[] }>(`/api/users/${editingUserId.value}`, { method: 'PATCH', body })
+      : await $fetch<{ users: User[] }>('/api/users', { method: 'POST', body: { ...body, password: userForm.password } });
     users.value = response.users;
+    const currentUser = response.users.find((row) => row.id === user.value?.id);
+    if (currentUser && user.value) {
+      user.value = {
+        id: currentUser.id,
+        email: currentUser.email,
+        name: currentUser.name,
+        role: currentUser.role,
+      };
+    }
     Object.assign(userForm, { name: '', email: '', password: '', role: 'member' });
+    editingUserId.value = null;
     userModalOpen.value = false;
   } catch (error) {
+    userFormError.value = humanError(error);
+  } finally {
+    userSubmitting.value = false;
+  }
+};
+
+const submitUserForm = () => {
+  if (!userFormElement.value?.reportValidity()) return;
+  void saveUserAction();
+};
+
+const requestDeleteUser = (row: User) => {
+  if (row.id === user.value?.id) return;
+  errorMessage.value = null;
+  selectedUserForDeletion.value = row;
+  deleteUserModalOpen.value = true;
+};
+
+const closeDeleteUserModal = () => {
+  if (userSubmitting.value) return;
+  deleteUserModalOpen.value = false;
+  selectedUserForDeletion.value = null;
+};
+
+const confirmDeleteUserAction = async () => {
+  const target = selectedUserForDeletion.value;
+  if (!target || target.id === user.value?.id || userSubmitting.value) return;
+  userSubmitting.value = true;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ users: User[] }>(`/api/users/${target.id}`, { method: 'DELETE' });
+    users.value = response.users;
+    deleteUserModalOpen.value = false;
+    selectedUserForDeletion.value = null;
+  } catch (error) {
     errorMessage.value = humanError(error);
+  } finally {
+    userSubmitting.value = false;
   }
 };
 
@@ -3639,6 +3742,7 @@ const hasBlockingOverlay = computed(() => Boolean(
   || discardTaskModalOpen.value
   || oberthemaModalOpen.value
   || unterthemaModalOpen.value
+  || deleteUserModalOpen.value
   || deleteTaskModalOpen.value
   || deleteAttachmentModalOpen.value
   || annotationModalOpen.value,
@@ -4230,7 +4334,10 @@ const commandPaletteGroups = computed<CommandPaletteGroup<AppCommandPaletteItem>
       onSelect: () => runCommandPaletteAction(() => openUserModal()),
     });
   }
-  if (actionItems.length) groups.push({ id: 'actions', label: t.value.commandGroupActions, items: actionItems, ignoreFilter: true });
+  const actionGroup: CommandPaletteGroup<AppCommandPaletteItem> | null = actionItems.length
+    ? { id: 'actions', label: t.value.commandGroupActions, items: actionItems, ignoreFilter: true }
+    : null;
+  if (!query && actionGroup) groups.push(actionGroup);
 
   if (commandPaletteError.value) {
     groups.push({
@@ -4256,6 +4363,9 @@ const commandPaletteGroups = computed<CommandPaletteGroup<AppCommandPaletteItem>
       highlightedIcon: 'i-lucide-corner-down-left',
     });
   }
+  // During search, matching tasks take priority. UCommandPalette removes the
+  // task group when nothing matches, so quick actions naturally become first.
+  if (query && actionGroup) groups.push(actionGroup);
 
   if (projects.value.length) {
     groups.push({
@@ -4507,6 +4617,10 @@ const humanError = (error: unknown) => {
     invalid_credentials: { en: 'Email or password is incorrect.', de: 'E-Mail oder Passwort ist nicht korrekt.' },
     unauthorized: { en: 'Please sign in again.', de: 'Bitte melde dich erneut an.' },
     admin_required: { en: 'Only administrators can do this.', de: 'Nur Administratoren können das ausführen.' },
+    user_not_found: { en: 'This user no longer exists.', de: 'Dieser Benutzer existiert nicht mehr.' },
+    user_email_exists: { en: 'This email address is already used by another user.', de: 'Diese E-Mail-Adresse wird bereits von einem anderen Benutzer verwendet.' },
+    self_admin_role_required: { en: 'Your own admin role cannot be removed.', de: 'Du kannst dir deine eigene Adminrolle nicht entziehen.' },
+    self_user_delete_forbidden: { en: 'You cannot delete your own account.', de: 'Du kannst dein eigenes Benutzerkonto nicht löschen.' },
     project_not_found: { en: 'The project could not be found.', de: 'Das Projekt wurde nicht gefunden.' },
     project_forbidden: { en: 'You do not have access to this project.', de: 'Du hast keinen Zugriff auf dieses Projekt.' },
     task_not_found: { en: 'The task could not be found.', de: 'Die Aufgabe wurde nicht gefunden.' },
@@ -4987,17 +5101,65 @@ const humanError = (error: unknown) => {
         </section>
 
         <section v-else-if="activeView === 'users'" class="min-h-0 flex-1 overflow-y-auto pb-2">
-          <UCard>
+          <UCard class="overflow-hidden">
             <template #header>
-              <div class="flex items-center justify-between">
+              <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 class="font-semibold">{{ t.users }}</h2>
                   <p class="text-sm text-zinc-500 dark:text-zinc-400">{{ users.length }} {{ t.total }}</p>
                 </div>
-                <UButton icon="i-lucide-user-plus" size="lg" @click="openUserModal">{{ t.createUser }}</UButton>
+                <UButton icon="i-lucide-user-plus" size="lg" @click="openUserModal()">{{ t.createUser }}</UButton>
               </div>
             </template>
-            <UTable :data="userRows" :columns="userColumns" />
+            <UTable :data="userRows" :columns="userColumns">
+              <template #name-cell="{ row }">
+                <div class="flex min-w-0 items-center gap-3 py-1">
+                  <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-teal-50 text-xs font-bold text-teal-700 ring-1 ring-inset ring-teal-200 dark:bg-teal-950/60 dark:text-teal-200 dark:ring-teal-900">
+                    {{ formatUserInitials(row.original) }}
+                  </span>
+                  <span class="min-w-0">
+                    <span class="block truncate font-medium text-zinc-950 dark:text-zinc-50">{{ row.original.name }}</span>
+                    <span v-if="row.original.id === user?.id" class="block text-xs text-zinc-500 dark:text-zinc-400">{{ t.you }}</span>
+                  </span>
+                </div>
+              </template>
+              <template #email-cell="{ row }">
+                <span class="text-zinc-600 dark:text-zinc-300">{{ row.original.email }}</span>
+              </template>
+              <template #role-cell="{ row }">
+                <UBadge
+                  :color="row.original.role === 'admin' ? 'primary' : 'neutral'"
+                  :variant="row.original.role === 'admin' ? 'soft' : 'subtle'"
+                  :icon="row.original.role === 'admin' ? 'i-lucide-shield-check' : 'i-lucide-user-round'"
+                >
+                  {{ row.original.roleLabel }}
+                </UBadge>
+              </template>
+              <template #actions-cell="{ row }">
+                <div class="flex justify-end gap-1">
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    icon="i-lucide-user-pen"
+                    :aria-label="`${t.editUser}: ${row.original.name}`"
+                    @click="openUserModal(row.original)"
+                  >
+                    <span class="hidden sm:inline">{{ t.editUser }}</span>
+                  </UButton>
+                  <UButton
+                    color="error"
+                    variant="ghost"
+                    icon="i-lucide-trash-2"
+                    :disabled="row.original.id === user?.id"
+                    :aria-label="row.original.id === user?.id
+                      ? t.deleteUserSelfProtected
+                      : `${t.deleteUser}: ${row.original.name}`"
+                    :title="row.original.id === user?.id ? t.deleteUserSelfProtected : t.deleteUser"
+                    @click="requestDeleteUser(row.original)"
+                  />
+                </div>
+              </template>
+            </UTable>
           </UCard>
         </section>
 
@@ -5557,7 +5719,7 @@ const humanError = (error: unknown) => {
 
       <UModal
         v-model:open="userModalOpen"
-        :title="t.createUser"
+        :title="editingUserId ? t.editUser : t.createUser"
         :description="t.userDialog"
         :ui="{ content: 'max-w-2xl', body: 'p-0 sm:p-0' }"
       >
@@ -5565,30 +5727,128 @@ const humanError = (error: unknown) => {
           <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
         </template>
         <template #body>
-          <form @submit.prevent="createUser">
+          <form ref="userFormElement" @submit.prevent="saveUserAction">
             <div class="border-b border-zinc-200 bg-zinc-50/80 px-6 py-5 dark:border-zinc-800 dark:bg-zinc-900/70">
-              <p class="text-xs font-bold uppercase tracking-wide text-teal-600 dark:text-teal-400">{{ t.credentials }}</p>
-              <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{{ t.userTableHint }}</p>
+              <div class="flex items-center gap-3">
+                <span class="grid size-10 shrink-0 place-items-center rounded-lg bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-200">
+                  <UIcon :name="editingUserId ? 'i-lucide-user-pen' : 'i-lucide-user-plus'" class="size-5" />
+                </span>
+                <div class="min-w-0">
+                  <p class="font-semibold text-zinc-950 dark:text-zinc-50">{{ t.credentials }}</p>
+                  <p class="mt-0.5 text-sm text-zinc-600 dark:text-zinc-400">
+                    {{ editingUserId ? userForm.email : t.userTableHint }}
+                  </p>
+                </div>
+              </div>
             </div>
             <div class="grid gap-5 p-6">
+              <UAlert
+                v-if="userFormError"
+                color="error"
+                variant="soft"
+                icon="i-lucide-alert-triangle"
+                :description="userFormError"
+              />
               <UFormField :label="t.userName" required size="lg">
                 <UInput v-model="userForm.name" class="w-full" size="xl" icon="i-lucide-user" required />
               </UFormField>
               <UFormField :label="t.email" required size="lg">
                 <UInput v-model="userForm.email" class="w-full" size="xl" icon="i-lucide-mail" type="email" required />
               </UFormField>
-              <UFormField :label="t.password" required size="lg" description="Minimum 8 characters.">
-                <UInput v-model="userForm.password" class="w-full" size="xl" icon="i-lucide-lock" type="password" minlength="8" required />
+              <UFormField
+                :label="editingUserId ? t.newPassword : t.password"
+                :required="!editingUserId"
+                size="lg"
+                :description="editingUserId ? t.passwordEditHint : t.passwordCreateHint"
+              >
+                <UInput
+                  v-model="userForm.password"
+                  class="w-full"
+                  size="xl"
+                  icon="i-lucide-lock-keyhole"
+                  type="password"
+                  minlength="8"
+                  :required="!editingUserId"
+                  autocomplete="new-password"
+                />
               </UFormField>
-              <UFormField :label="t.role" required size="lg">
-                <USelect v-model="userForm.role" class="w-full" :items="roleItems" size="xl" />
+              <UFormField
+                :label="t.role"
+                required
+                size="lg"
+                :description="editingCurrentUser ? t.selfAdminRoleLocked : undefined"
+              >
+                <USelect
+                  v-model="userForm.role"
+                  class="w-full"
+                  :items="roleItems"
+                  size="xl"
+                  icon="i-lucide-shield-check"
+                  :disabled="editingCurrentUser"
+                />
               </UFormField>
             </div>
             <div class="flex justify-end gap-3 border-t border-zinc-200 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/70">
-              <UButton color="neutral" variant="ghost" type="button" @click="userModalOpen = false">{{ t.cancel }}</UButton>
-              <UButton icon="i-lucide-user-plus" type="submit">{{ t.createUser }}</UButton>
+              <UButton color="neutral" variant="ghost" type="button" :disabled="userSubmitting" @click="userModalOpen = false">{{ t.cancel }}</UButton>
+              <UButton
+                :icon="editingUserId ? 'i-lucide-save' : 'i-lucide-user-plus'"
+                type="button"
+                :loading="userSubmitting"
+                @click="submitUserForm"
+              >
+                {{ editingUserId ? t.updateUser : t.createUser }}
+              </UButton>
             </div>
           </form>
+        </template>
+      </UModal>
+
+      <UModal
+        v-if="deleteUserModalOpen"
+        v-model:open="deleteUserModalOpen"
+        :title="t.deleteUser"
+        :description="t.deleteUserConfirm"
+        :ui="{ content: 'max-w-md' }"
+      >
+        <template #close="{ ui }">
+          <UButton
+            :aria-label="t.close"
+            :class="ui.close()"
+            color="neutral"
+            variant="ghost"
+            icon="i-lucide-x"
+            :disabled="userSubmitting"
+            @click="closeDeleteUserModal"
+          />
+        </template>
+        <template #body>
+          <div class="grid gap-5">
+            <UAlert
+              v-if="errorMessage"
+              color="error"
+              variant="soft"
+              icon="i-lucide-alert-circle"
+              :description="errorMessage"
+            />
+            <div class="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-red-950 dark:border-red-900/60 dark:bg-red-950/35 dark:text-red-100">
+              <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-white/80 text-red-700 ring-1 ring-red-200 dark:bg-red-950 dark:text-red-300 dark:ring-red-900">
+                <UIcon name="i-lucide-user-round-x" class="size-4" />
+              </span>
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold">{{ selectedUserForDeletion?.name }}</p>
+                <p class="truncate text-xs text-red-700/80 dark:text-red-300/80">{{ selectedUserForDeletion?.email }}</p>
+                <p class="mt-3 text-sm leading-6">{{ t.deleteUserWarning }}</p>
+              </div>
+            </div>
+            <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <UButton color="neutral" variant="ghost" type="button" :disabled="userSubmitting" @click="closeDeleteUserModal">
+                {{ t.cancel }}
+              </UButton>
+              <UButton color="error" icon="i-lucide-trash-2" type="button" :loading="userSubmitting" @click="confirmDeleteUserAction">
+                {{ t.deleteUser }}
+              </UButton>
+            </div>
+          </div>
         </template>
       </UModal>
 
