@@ -159,6 +159,35 @@ button:focus-visible,
   box-shadow: inset 0 3px 0 var(--task-accent), 0 2px 5px rgb(0 0 0 / 0.45);
 }
 
+.ak-task-card-mentioned {
+  --mention-ring: rgb(13 148 136 / 0.48);
+  border-color: rgb(45 212 191);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  animation: ak-mention-attention 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.dark .ak-task-card-mentioned {
+  --mention-ring: rgb(45 212 191 / 0.42);
+  border-color: rgb(20 184 166);
+}
+
+@keyframes ak-mention-attention {
+  0%,
+  68%,
+  100% {
+    outline-color: transparent;
+  }
+
+  80% {
+    outline-color: var(--mention-ring);
+  }
+}
+
+.ak-unread-mention-comment {
+  scroll-margin-block: 5rem;
+}
+
 .ak-task-drop-cell {
   isolation: isolate;
 }

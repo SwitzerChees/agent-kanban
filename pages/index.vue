@@ -76,6 +76,7 @@ interface Task {
   priority: 'low' | 'normal' | 'high' | 'urgent';
   position: number;
   columnId: string;
+  clientRequestId: string | null;
   oberthemaId: string;
   unterthemaId: string | null;
   swimlaneId: string | null;
@@ -84,15 +85,24 @@ interface Task {
   agentStatus: 'idle' | 'queued' | 'running' | 'failed' | 'done';
   attachments: Attachment[];
   tags: string[];
+  unreadMentionCount?: number;
+  latestUnreadMentionAt?: string | null;
   updatedAt: string;
 }
 
 interface TaskComment {
   id: string;
+  userId: string;
   userName: string;
   kind: 'comment' | 'steering';
   body: string;
   createdAt: string;
+  mentions: Array<{
+    userId: string;
+    userName: string;
+  }>;
+  mentionedCurrentUser: boolean;
+  unreadMention: boolean;
 }
 
 interface TaskEvent {
@@ -107,6 +117,7 @@ interface TaskDetail {
   hierarchy: { oberthema: Oberthema; unterthema: Unterthema | null } | null;
   task: Task;
   comments: TaskComment[];
+  unreadMentionCount: number;
   events: TaskEvent[];
 }
 
@@ -387,8 +398,12 @@ const dictionary = {
     taskTab: 'Task brief',
     refinementTab: 'Refinement',
     refineTask: 'Refine with Codex',
-    refinementCtaHint: 'Turn the current idea into an implementation-ready brief grounded in this project.',
-    refinementSaveFirst: 'Save the current task changes before starting a refinement so Codex receives the latest brief.',
+    refinementCtaHint: 'Turn the current idea into an implementation-ready brief. Open changes are saved when refinement starts.',
+    refinementTitleRequired: 'Add a title to the task first. Your refinement text has been kept.',
+    refinementCreatedButNotStarted: 'The task was saved, but refinement did not start. Try again; no duplicate task will be created.',
+    refinementOverwriteTitle: 'Replace the current description?',
+    refinementOverwriteDescription: 'This refinement was created from an earlier description. Applying it replaces the current description. The title and all other task details stay unchanged.',
+    refinementOverwriteConfirm: 'Apply anyway',
     commentsTab: 'Comments',
     readonlyTask: 'This is the original task brief. It stays unchanged once work has started.',
     dropHere: 'Drop here',
@@ -452,9 +467,18 @@ const dictionary = {
     noTags: 'No tags',
     noProjectTags: 'No project tags defined',
     comments: 'Comments',
-    commentPlaceholder: 'Write a comment for the team.',
+    commentPlaceholder: 'Write a comment for the team. Type @ to mention someone.',
+    commentMentionHint: 'Mention a project member with @. They will see this task highlighted until they view the comment.',
+    commentMentionedYou: 'Mentioned you',
+    commentMentionNotification: '{count} unread mentions',
+    commentMentionNotificationSingle: '1 unread mention',
+    commentMentionSuggestions: 'Mention someone',
     sendComment: 'Send comment',
     noComments: 'No comments yet',
+    agentRunFailed: 'The latest AI run failed: {error}',
+    agentRunCompleted: 'The AI run finished and is ready for review.',
+    agentRunStarted: 'A new AI run has started.',
+    agentWorktreeResumeFailed: 'The existing task worktree could not be resumed because its branch name changed.',
     followUp: 'Follow-up task',
     followUpHelp: 'Add what was not good enough and send the task back to the agent.',
     followUpPlaceholder: 'Describe what should be improved or continued.',
@@ -631,8 +655,12 @@ const dictionary = {
     taskTab: 'Auftrag',
     refinementTab: 'Refinement',
     refineTask: 'Mit Codex refinen',
-    refinementCtaHint: 'Die aktuelle Idee mit Projekt- und Codekontext zu einem umsetzbaren Auftrag ausarbeiten.',
-    refinementSaveFirst: 'Speichere die aktuellen Aufgabenänderungen vor dem Refinement, damit Codex mit dem neuesten Auftrag arbeitet.',
+    refinementCtaHint: 'Die Idee mit Projekt- und Codekontext ausarbeiten. Offene Änderungen werden beim Start automatisch gespeichert.',
+    refinementTitleRequired: 'Gib der Aufgabe zuerst einen Titel. Dein Refinement-Text wurde beibehalten.',
+    refinementCreatedButNotStarted: 'Die Aufgabe wurde gespeichert, das Refinement aber nicht gestartet. Versuche es erneut; es wird keine doppelte Aufgabe erstellt.',
+    refinementOverwriteTitle: 'Aktuelle Beschreibung ersetzen?',
+    refinementOverwriteDescription: 'Dieses Refinement wurde mit einer früheren Beschreibung erstellt. Beim Übernehmen wird die aktuelle Beschreibung ersetzt. Titel und alle anderen Aufgabendaten bleiben unverändert.',
+    refinementOverwriteConfirm: 'Trotzdem übernehmen',
     commentsTab: 'Kommentare',
     readonlyTask: 'Das ist der ursprüngliche Auftrag. Er bleibt unverändert, sobald die Bearbeitung begonnen hat.',
     dropHere: 'Hier ablegen',
@@ -696,9 +724,18 @@ const dictionary = {
     noTags: 'Keine Tags',
     noProjectTags: 'Keine Projekt-Tags definiert',
     comments: 'Kommentare',
-    commentPlaceholder: 'Kommentar für das Team schreiben.',
+    commentPlaceholder: 'Kommentar für das Team schreiben. Mit @ jemanden erwähnen.',
+    commentMentionHint: 'Erwähne ein Projektmitglied mit @. Die Aufgabe bleibt hervorgehoben, bis die Person den Kommentar angesehen hat.',
+    commentMentionedYou: 'Du wurdest erwähnt',
+    commentMentionNotification: '{count} ungelesene Erwähnungen',
+    commentMentionNotificationSingle: '1 ungelesene Erwähnung',
+    commentMentionSuggestions: 'Person erwähnen',
     sendComment: 'Kommentar senden',
     noComments: 'Noch keine Kommentare',
+    agentRunFailed: 'Der letzte KI-Lauf ist fehlgeschlagen: {error}',
+    agentRunCompleted: 'Der KI-Lauf ist abgeschlossen und bereit zur Prüfung.',
+    agentRunStarted: 'Ein neuer KI-Lauf wurde gestartet.',
+    agentWorktreeResumeFailed: 'Der vorhandene Task-Worktree konnte wegen eines geänderten Branch-Namens nicht wiederaufgenommen werden.',
     followUp: 'Folgeaufgabe',
     followUpHelp: 'Beschreibe, was noch nicht gut genug war, und gib die Aufgabe zurück an den Agenten.',
     followUpPlaceholder: 'Beschreibe, was verbessert oder weiterbearbeitet werden soll.',
@@ -780,6 +817,7 @@ const projectModalOpen = ref(false);
 const userModalOpen = ref(false);
 const taskModalOpen = ref(false);
 const discardTaskModalOpen = ref(false);
+const refinementOverwriteModalOpen = ref(false);
 const oberthemaModalOpen = ref(false);
 const unterthemaModalOpen = ref(false);
 const deleteTaskModalOpen = ref(false);
@@ -796,12 +834,21 @@ const editingProjectId = ref<string | null>(null);
 const editingOberthemaId = ref<string | null>(null);
 const editingUnterthemaId = ref<string | null>(null);
 const selectedTaskId = ref<string | null>(null);
+const taskCreateRequestId = ref('');
 const selectedTaskDetail = ref<TaskDetail | null>(null);
 const taskRefinements = ref<TaskRefinementApi[]>([]);
 const selectedRefinementId = ref<string | null>(null);
+const pendingRefinementApplyId = ref<string | null>(null);
 const refinementBusy = ref(false);
 const taskMessage = ref('');
 const commentMessage = ref('');
+const commentMentionUserIds = ref<string[]>([]);
+const commentMentionOpen = ref(false);
+const commentMentionQuery = ref('');
+const commentMentionStart = ref<number | null>(null);
+const commentMentionEnd = ref<number | null>(null);
+const commentMentionActiveIndex = ref(0);
+const commentComposerEl = ref<HTMLElement | null>(null);
 const followUpMessage = ref('');
 const activeTaskTab = ref<TaskTab>('activity');
 const tagDropdownOpen = ref(false);
@@ -836,6 +883,13 @@ const drawingStroke = ref<AnnotationStroke | null>(null);
 const annotationColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'];
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let taskEventSource: EventSource | null = null;
+let taskDetailRefreshInFlight: Promise<void> | null = null;
+let taskDetailRefreshQueued = false;
+let commentMentionVisibilityObserver: IntersectionObserver | null = null;
+const commentMentionSeenTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingCommentMentionAckIds = new Set<string>();
+let commentMentionAckInFlight: Promise<void> | null = null;
+let lastAutoFocusedMentionKey = '';
 let refinementPollTimer: ReturnType<typeof setTimeout> | null = null;
 let annotationResizeObserver: ResizeObserver | null = null;
 let annotationResizeFrame: number | null = null;
@@ -922,6 +976,20 @@ function markTaskModalClean() {
   taskDetailsBaseline.value = taskDetailsFingerprint();
 }
 
+function markTaskDetailsPersisted() {
+  const details = taskDetailsFingerprint();
+  taskDetailsBaseline.value = details;
+  if (!taskModalBaseline.value) return;
+  try {
+    const baseline = JSON.parse(taskModalBaseline.value) as Record<string, unknown>;
+    taskModalBaseline.value = JSON.stringify({ ...baseline, details });
+  } catch {
+    // A missing/corrupt local baseline must never block a successfully saved
+    // task. The next modal open establishes a fresh snapshot.
+    taskModalBaseline.value = '';
+  }
+}
+
 async function establishTaskModalBaseline() {
   const version = ++taskModalBaselineVersion;
   taskModalBaseline.value = '';
@@ -941,10 +1009,13 @@ function closeTaskModalImmediately() {
   taskModalBaseline.value = '';
   taskDetailsBaseline.value = '';
   discardTaskModalOpen.value = false;
+  refinementOverwriteModalOpen.value = false;
+  pendingRefinementApplyId.value = null;
   deleteAttachmentModalOpen.value = false;
   selectedAttachmentForDeletion.value = null;
   tagDropdownOpen.value = false;
   taskModalOpen.value = false;
+  taskCreateRequestId.value = '';
   closeTaskEventStream();
   stopRefinementPolling();
   taskRefinements.value = [];
@@ -1043,6 +1114,13 @@ const assigneeItems = computed(() => [
     icon: 'i-lucide-user-round',
   })),
 ]);
+const defaultTaskAssigneeId = computed(() => (
+  user.value
+  && board.value?.project.id === selectedProjectId.value
+  && board.value.members.some((member) => member.id === user.value?.id)
+    ? user.value.id
+    : UNASSIGNED_ID
+));
 const boardAssigneeItems = computed(() => [
   { label: t.value.unassigned, value: UNASSIGNED_ID, icon: 'i-lucide-user-round-x' },
   ...(board.value?.members ?? []).map((member) => ({
@@ -1086,6 +1164,266 @@ const editorToolbarItems = computed<EditorToolbarItem[][]>(() => [
 ]);
 const teamComments = computed(() => (selectedTaskDetail.value?.comments ?? []).filter((comment) => comment.kind === 'comment'));
 const commentCount = computed(() => teamComments.value.length);
+const unreadCommentMentionCount = computed(() => selectedTaskDetail.value?.unreadMentionCount ?? 0);
+const selectedCommentMentionMembers = computed(() => (board.value?.members ?? [])
+  .filter((member) => commentMentionUserIds.value.includes(member.id)));
+const commentMentionSuggestions = computed(() => {
+  const query = commentMentionQuery.value.trim().toLocaleLowerCase();
+  return (board.value?.members ?? [])
+    .filter((member) => member.id !== user.value?.id)
+    .filter((member) => {
+      if (!query) return true;
+      return `${member.name} ${member.email}`.toLocaleLowerCase().includes(query);
+    })
+    .slice(0, 6);
+});
+
+function closeCommentMentionSuggestions() {
+  commentMentionOpen.value = false;
+  commentMentionQuery.value = '';
+  commentMentionStart.value = null;
+  commentMentionEnd.value = null;
+  commentMentionActiveIndex.value = 0;
+}
+
+function resetCommentComposer() {
+  commentMessage.value = '';
+  commentMentionUserIds.value = [];
+  closeCommentMentionSuggestions();
+}
+
+function syncSelectedCommentMentions(body: string) {
+  const members = new Map((board.value?.members ?? []).map((member) => [member.id, member]));
+  commentMentionUserIds.value = commentMentionUserIds.value.filter((userId) => {
+    const member = members.get(userId);
+    return Boolean(member && body.includes(`@${member.name}`));
+  });
+}
+
+function handleCommentInput(event: Event) {
+  const textarea = event.target as HTMLTextAreaElement;
+  const body = textarea.value;
+  commentMessage.value = body;
+  syncSelectedCommentMentions(body);
+  const cursor = textarea.selectionStart ?? body.length;
+  const prefix = body.slice(0, cursor);
+  const mentionStart = prefix.lastIndexOf('@');
+  const precedingCharacter = mentionStart > 0 ? prefix[mentionStart - 1] : '';
+  const query = mentionStart >= 0 ? prefix.slice(mentionStart + 1) : '';
+  const selectedMentionCompleted = selectedCommentMentionMembers.value
+    .some((member) => query.startsWith(`${member.name} `));
+  if (
+    mentionStart < 0
+    || (precedingCharacter && !/[\s([{]/.test(precedingCharacter))
+    || query.includes('\n')
+    || query.length > 50
+    || selectedMentionCompleted
+  ) {
+    closeCommentMentionSuggestions();
+    return;
+  }
+  commentMentionStart.value = mentionStart;
+  commentMentionEnd.value = cursor;
+  commentMentionQuery.value = query;
+  commentMentionActiveIndex.value = 0;
+  commentMentionOpen.value = true;
+}
+
+function selectCommentMention(member: User) {
+  const start = commentMentionStart.value;
+  const end = commentMentionEnd.value;
+  if (start === null || end === null) return;
+  const mention = `@${member.name}`;
+  const before = commentMessage.value.slice(0, start);
+  const after = commentMessage.value.slice(end).replace(/^\s+/, '');
+  commentMessage.value = `${before}${mention} ${after}`;
+  if (!commentMentionUserIds.value.includes(member.id)) {
+    commentMentionUserIds.value = [...commentMentionUserIds.value, member.id];
+  }
+  const caret = before.length + mention.length + 1;
+  closeCommentMentionSuggestions();
+  void nextTick(() => {
+    const textarea = commentComposerEl.value?.querySelector('textarea');
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+  });
+}
+
+function removeCommentMention(member: User) {
+  commentMentionUserIds.value = commentMentionUserIds.value.filter((userId) => userId !== member.id);
+  commentMessage.value = commentMessage.value.replace(`@${member.name}`, member.name);
+  closeCommentMentionSuggestions();
+}
+
+function handleCommentMentionKeydown(event: KeyboardEvent) {
+  if (!commentMentionOpen.value || !commentMentionSuggestions.value.length) {
+    if (event.key === 'Escape') closeCommentMentionSuggestions();
+    return;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const direction = event.key === 'ArrowDown' ? 1 : -1;
+    commentMentionActiveIndex.value = (
+      commentMentionActiveIndex.value
+      + direction
+      + commentMentionSuggestions.value.length
+    ) % commentMentionSuggestions.value.length;
+    return;
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    const member = commentMentionSuggestions.value[commentMentionActiveIndex.value];
+    if (member) selectCommentMention(member);
+    return;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeCommentMentionSuggestions();
+  }
+}
+
+function commentSegments(comment: TaskComment) {
+  if (!comment.mentions.length) return [{ text: comment.body, mention: false, currentUser: false }];
+  const mentions = comment.mentions
+    .map((mention) => ({ ...mention, token: `@${mention.userName}` }))
+    .sort((left, right) => right.token.length - left.token.length);
+  const segments: Array<{ text: string; mention: boolean; currentUser: boolean }> = [];
+  let cursor = 0;
+  while (cursor < comment.body.length) {
+    let nextMention: (typeof mentions)[number] | null = null;
+    let nextIndex = -1;
+    for (const mention of mentions) {
+      const index = comment.body.indexOf(mention.token, cursor);
+      if (index >= 0 && (nextIndex < 0 || index < nextIndex)) {
+        nextIndex = index;
+        nextMention = mention;
+      }
+    }
+    if (!nextMention || nextIndex < 0) {
+      segments.push({ text: comment.body.slice(cursor), mention: false, currentUser: false });
+      break;
+    }
+    if (nextIndex > cursor) {
+      segments.push({ text: comment.body.slice(cursor, nextIndex), mention: false, currentUser: false });
+    }
+    segments.push({
+      text: nextMention.token,
+      mention: true,
+      currentUser: nextMention.userId === user.value?.id,
+    });
+    cursor = nextIndex + nextMention.token.length;
+  }
+  return segments;
+}
+
+function stopCommentMentionVisibilityObserver() {
+  commentMentionVisibilityObserver?.disconnect();
+  commentMentionVisibilityObserver = null;
+  for (const timer of commentMentionSeenTimers.values()) clearTimeout(timer);
+  commentMentionSeenTimers.clear();
+}
+
+function isCommentMostlyVisible(element: Element) {
+  const rect = element.getBoundingClientRect();
+  if (rect.height <= 0 || rect.width <= 0) return false;
+  const visibleHeight = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+  return visibleHeight / rect.height >= 0.6;
+}
+
+async function acknowledgeCommentMentions(commentIds: string[]) {
+  for (const commentId of commentIds) pendingCommentMentionAckIds.add(commentId);
+  if (commentMentionAckInFlight || !selectedTaskId.value) return;
+  const taskId = selectedTaskId.value;
+  commentMentionAckInFlight = (async () => {
+    while (pendingCommentMentionAckIds.size && selectedTaskId.value === taskId) {
+      const batch = [...pendingCommentMentionAckIds];
+      pendingCommentMentionAckIds.clear();
+      try {
+        const response = await $fetch<{ ok: true; count: number }>(`/api/tasks/${taskId}/mentions/read`, {
+          method: 'POST',
+          body: { commentIds: batch },
+        });
+        const acknowledgedIds = new Set(batch);
+        if (selectedTaskDetail.value?.task.id === taskId) {
+          selectedTaskDetail.value = {
+            ...selectedTaskDetail.value,
+            unreadMentionCount: Math.max(0, selectedTaskDetail.value.unreadMentionCount - response.count),
+            comments: selectedTaskDetail.value.comments.map((comment) => (
+              acknowledgedIds.has(comment.id) ? { ...comment, unreadMention: false } : comment
+            )),
+          };
+        }
+        if (board.value) {
+          board.value = {
+            ...board.value,
+            tasks: board.value.tasks.map((task) => task.id === taskId
+              ? {
+                ...task,
+                unreadMentionCount: Math.max(0, (task.unreadMentionCount ?? 0) - response.count),
+                latestUnreadMentionAt: response.count >= (task.unreadMentionCount ?? 0)
+                  ? null
+                  : task.latestUnreadMentionAt,
+              }
+              : task),
+          };
+        }
+      } catch {
+        for (const commentId of batch) pendingCommentMentionAckIds.add(commentId);
+        window.setTimeout(() => void setupCommentMentionVisibilityObserver(), 2000);
+        break;
+      }
+    }
+  })().finally(() => {
+    commentMentionAckInFlight = null;
+  });
+  await commentMentionAckInFlight;
+}
+
+async function setupCommentMentionVisibilityObserver() {
+  stopCommentMentionVisibilityObserver();
+  if (
+    !import.meta.client
+    || document.hidden
+    || !taskModalOpen.value
+    || activeTaskTab.value !== 'comments'
+    || !selectedTaskId.value
+    || !unreadCommentMentionCount.value
+  ) return;
+  await nextTick();
+  if (document.hidden || activeTaskTab.value !== 'comments') return;
+  const elements = [...document.querySelectorAll<HTMLElement>('#task-panel-comments [data-unread-mention="true"]')];
+  if (!elements.length) return;
+  commentMentionVisibilityObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const commentId = (entry.target as HTMLElement).dataset.commentId;
+      if (!commentId) continue;
+      if (!entry.isIntersecting || entry.intersectionRatio < 0.6) {
+        const timer = commentMentionSeenTimers.get(commentId);
+        if (timer) clearTimeout(timer);
+        commentMentionSeenTimers.delete(commentId);
+        continue;
+      }
+      if (commentMentionSeenTimers.has(commentId)) continue;
+      commentMentionSeenTimers.set(commentId, setTimeout(() => {
+        commentMentionSeenTimers.delete(commentId);
+        if (isCommentMostlyVisible(entry.target)) void acknowledgeCommentMentions([commentId]);
+      }, 450));
+    }
+  }, { threshold: [0.6] });
+  for (const element of elements) commentMentionVisibilityObserver.observe(element);
+
+  const firstUnread = elements[0];
+  const focusKey = `${selectedTaskId.value}:${firstUnread?.dataset.commentId ?? ''}`;
+  if (firstUnread && focusKey !== lastAutoFocusedMentionKey) {
+    lastAutoFocusedMentionKey = focusKey;
+    firstUnread.scrollIntoView({
+      block: 'center',
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  }
+}
+
 const selectedTaskRefinement = computed(() => taskRefinements.value.find((run) => run.id === selectedRefinementId.value)
   ?? taskRefinements.value[0]
   ?? null);
@@ -1097,6 +1435,7 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
   updatedAt: run.updatedAt,
   sourceCodeRevision: run.sourceCodeRevision,
   resultCodeRevision: run.resultCodeRevision,
+  sourceDescription: run.sourceDescription,
   questions: run.questions
     .filter((question) => run.status !== 'awaiting_input' || !question.answeredAt)
     .map((question) => ({
@@ -1125,15 +1464,26 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
   appliedAt: run.appliedAt,
 })));
 const selectedRefinementPanelRun = computed(() => refinementPanelRuns.value.find((run) => run.id === selectedTaskRefinement.value?.id) ?? null);
+const selectedRefinementDescriptionChanged = computed(() => {
+  const run = selectedTaskRefinement.value;
+  if (!run || run.status !== 'completed' || run.appliedAt) return false;
+  return normalizeEditorMarkdown(taskForm.description) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
+});
+
+function cancelRefinementOverwrite() {
+  if (refinementBusy.value) return;
+  refinementOverwriteModalOpen.value = false;
+  pendingRefinementApplyId.value = null;
+}
 const taskTabs = computed(() => [
   { key: 'task' as const, label: t.value.taskTab, icon: 'i-lucide-file-text' },
-  ...(selectedTaskId.value
-    ? [{ key: 'refinement' as const, label: t.value.refinementTab, icon: 'i-lucide-wand-sparkles' }]
-    : []),
-  ...(editingTask.value?.agentEnabled || hasAgentActivity.value
+  { key: 'refinement' as const, label: t.value.refinementTab, icon: 'i-lucide-wand-sparkles' },
+  ...(selectedTaskId.value && (editingTask.value?.agentEnabled || hasAgentActivity.value)
     ? [{ key: 'activity' as const, label: t.value.activityTab, icon: 'i-lucide-activity' }]
     : []),
-  { key: 'comments' as const, label: t.value.commentsTab, icon: 'i-lucide-messages-square' },
+  ...(selectedTaskId.value
+    ? [{ key: 'comments' as const, label: t.value.commentsTab, icon: 'i-lucide-messages-square' }]
+    : []),
 ]);
 const handleTaskTabKeydown = async (event: KeyboardEvent, currentKey: TaskTab) => {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -1153,7 +1503,7 @@ const handleTaskTabKeydown = async (event: KeyboardEvent, currentKey: TaskTab) =
   await nextTick();
   document.getElementById(`task-tab-${nextTab.key}`)?.focus();
 };
-const latestAgentUpdate = computed(() => latestTextUpdate(selectedTaskDetail.value?.events ?? []));
+const latestAgentUpdate = computed(() => latestAgentTimelineUpdate(selectedTaskDetail.value?.events ?? []));
 const taskAttachments = computed(() => editingTask.value?.attachments ?? []);
 const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? []).filter(isImageAttachment));
 const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
@@ -1325,6 +1675,7 @@ const handleWindowBlur = () => {
 
 const handleVisibilityChange = () => {
   if (document.hidden) handleWindowBlur();
+  else if (activeTaskTab.value === 'comments') void setupCommentMentionVisibilityObserver();
 };
 
 const syncMobileViewport = () => {
@@ -1378,8 +1729,15 @@ watch(taskModalOpen, (open) => {
   if (!open) {
     closeTaskEventStream();
     stopRefinementPolling();
+    stopCommentMentionVisibilityObserver();
+    pendingCommentMentionAckIds.clear();
+    lastAutoFocusedMentionKey = '';
   }
 });
+watch(
+  [activeTaskTab, selectedTaskId, unreadCommentMentionCount],
+  () => void setupCommentMentionVisibilityObserver(),
+);
 watch(annotationModalOpen, (open) => {
   if (!open) stopAnnotationResizeObserver();
 });
@@ -1399,6 +1757,7 @@ onBeforeUnmount(() => {
   }
   deactivateKeyboardHintMode();
   closeTaskEventStream();
+  stopCommentMentionVisibilityObserver();
   stopRefinementPolling();
   stopAnnotationResizeObserver();
   clearTaskFiles();
@@ -1742,35 +2101,51 @@ function scheduleRefinementPolling() {
 }
 
 function openTaskRefinementTab() {
-  if (!selectedTaskId.value) return;
-  if (taskDetailsDirty.value) {
-    errorMessage.value = t.value.refinementSaveFirst;
-    return;
-  }
   errorMessage.value = null;
   activeTaskTab.value = 'refinement';
 }
 
+async function focusTaskTitleForRefinement() {
+  errorMessage.value = t.value.refinementTitleRequired;
+  activeTaskTab.value = 'task';
+  await nextTick();
+  document.getElementById('task-title')?.focus();
+}
+
 async function startTaskRefinement(payload: { brief: string; visualMode: 'auto' }) {
-  const taskId = selectedTaskId.value;
-  if (!taskId || refinementBusy.value) return;
-  if (taskDetailsDirty.value) {
-    errorMessage.value = t.value.refinementSaveFirst;
-    activeTaskTab.value = 'task';
+  if (refinementBusy.value || taskSubmitting.value) return;
+  if (!taskForm.title.trim()) {
+    await focusTaskTitleForRefinement();
     return;
   }
+  const taskWasNew = !selectedTaskId.value;
   refinementBusy.value = true;
   errorMessage.value = null;
   try {
+    const taskId = await persistTaskBeforeRefinement();
     const response = await $fetch<{ refinement: TaskRefinementApi }>(`/api/tasks/${taskId}/refinements`, {
       method: 'POST',
       body: payload,
     });
     taskRefinements.value = [response.refinement, ...taskRefinements.value.filter((run) => run.id !== response.refinement.id)];
     selectedRefinementId.value = response.refinement.id;
+    refinementDraftDirty.value = false;
     scheduleRefinementPolling();
   } catch (error) {
-    errorMessage.value = humanError(error);
+    const persistedTaskId = selectedTaskId.value;
+    if (persistedTaskId) {
+      await loadTaskRefinements(persistedTaskId, { silent: true });
+      const recoveredRun = activeTaskRefinement.value;
+      if (recoveredRun) {
+        selectedRefinementId.value = recoveredRun.id;
+        refinementDraftDirty.value = false;
+        scheduleRefinementPolling();
+        return;
+      }
+    }
+    errorMessage.value = taskWasNew && persistedTaskId
+      ? t.value.refinementCreatedButNotStarted
+      : humanError(error);
   } finally {
     refinementBusy.value = false;
   }
@@ -1796,16 +2171,37 @@ async function submitRefinementAnswers(payload: { runId: string; answers: Record
   }
 }
 
-async function applyTaskRefinement(runId: string) {
+function refinementDescriptionChangedFor(runId: string) {
+  const run = taskRefinements.value.find((item) => item.id === runId);
+  if (!run) return false;
+  return normalizeEditorMarkdown(taskForm.description) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
+}
+
+function requestApplyTaskRefinement(runId: string) {
+  errorMessage.value = null;
+  if (refinementDescriptionChangedFor(runId)) {
+    pendingRefinementApplyId.value = runId;
+    refinementOverwriteModalOpen.value = true;
+    return;
+  }
+  void applyTaskRefinement(runId);
+}
+
+async function applyTaskRefinement(runId: string, allowDescriptionOverwrite = false) {
   const taskId = selectedTaskId.value;
-  const task = selectedTaskDetail.value?.task;
-  if (!taskId || !task || refinementBusy.value) return;
+  if (!taskId || !selectedTaskDetail.value?.task || refinementBusy.value) return false;
   refinementBusy.value = true;
   errorMessage.value = null;
   try {
+    // Preserve title, placement, tags and other open details before replacing
+    // the description. These edits do not invalidate a refinement.
+    if (taskDetailsDirty.value) {
+      await persistExistingTaskDetails(taskId);
+      await refreshPersistedTaskState(taskId);
+    }
     await $fetch(`/api/tasks/${taskId}/refinements/${runId}/apply`, {
       method: 'POST',
-      body: { mode: 'replace', expectedTaskUpdatedAt: task.updatedAt },
+      body: { mode: 'replace', allowDescriptionOverwrite },
     });
     selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${taskId}`);
     taskForm.description = selectedTaskDetail.value.task.description ?? '';
@@ -1813,11 +2209,26 @@ async function applyTaskRefinement(runId: string) {
     if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
     activeTaskTab.value = 'task';
     await establishTaskModalBaseline();
+    refinementOverwriteModalOpen.value = false;
+    pendingRefinementApplyId.value = null;
+    return true;
   } catch (error) {
-    errorMessage.value = humanError(error);
+    if (!allowDescriptionOverwrite && errorStatusKey(error) === 'refinement_description_changed') {
+      pendingRefinementApplyId.value = runId;
+      refinementOverwriteModalOpen.value = true;
+    } else {
+      errorMessage.value = humanError(error);
+    }
+    return false;
   } finally {
     refinementBusy.value = false;
   }
+}
+
+async function confirmApplyTaskRefinement() {
+  const runId = pendingRefinementApplyId.value;
+  if (!runId) return;
+  await applyTaskRefinement(runId, true);
 }
 
 async function retryTaskRefinement(runId: string) {
@@ -1829,17 +2240,32 @@ function selectTaskRefinement(runId: string) {
   selectedRefinementId.value = runId;
 }
 
+function syncTaskFormFromDetail(detailTask: Task) {
+  Object.assign(taskForm, {
+    title: detailTask.title,
+    description: detailTask.description ?? '',
+    columnId: detailTask.columnId,
+    placementId: placementIdFor(detailTask),
+    swimlaneId: detailTask.swimlaneId ?? defaultSwimlaneId.value,
+    assigneeId: detailTask.assigneeId ?? UNASSIGNED_ID,
+    agentEnabled: detailTask.agentEnabled,
+    priority: detailTask.priority,
+    tags: detailTask.tags,
+  });
+}
+
 const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   closeTaskEventStream();
   stopRefinementPolling();
   errorMessage.value = null;
   selectedTaskId.value = null;
+  taskCreateRequestId.value = fileId();
   selectedTaskDetail.value = null;
   taskRefinements.value = [];
   selectedRefinementId.value = null;
   refinementDraftDirty.value = false;
   taskMessage.value = '';
-  commentMessage.value = '';
+  resetCommentComposer();
   followUpMessage.value = '';
   tagDropdownOpen.value = false;
   activeTaskTab.value = 'task';
@@ -1849,7 +2275,7 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
     columnId: columnId ?? backlogColumn.value?.id ?? '',
     placementId: placement ? placementIdFor(placement) : defaultPlacementId.value,
     swimlaneId: defaultSwimlaneId.value,
-    assigneeId: user.value?.id ?? UNASSIGNED_ID,
+    assigneeId: defaultTaskAssigneeId.value,
     agentEnabled: false,
     priority: 'normal',
     tags: [],
@@ -1865,15 +2291,19 @@ const openTaskDetail = async (task: Task) => {
   errorMessage.value = null;
   refinementDraftDirty.value = false;
   selectedTaskId.value = task.id;
+  taskCreateRequestId.value = '';
   taskRefinements.value = [];
   selectedRefinementId.value = null;
   clearTaskFiles();
   taskMessage.value = '';
-  commentMessage.value = '';
+  resetCommentComposer();
   followUpMessage.value = '';
   tagDropdownOpen.value = false;
-  selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${task.id}`);
-  await loadTaskRefinements(task.id);
+  const [detail] = await Promise.all([
+    $fetch<TaskDetail>(`/api/tasks/${task.id}`),
+    loadTaskRefinements(task.id),
+  ]);
+  selectedTaskDetail.value = detail;
   const latestRefinement = taskRefinements.value[0];
   activeTaskTab.value = latestRefinement
     && !latestRefinement.appliedAt
@@ -1882,18 +2312,7 @@ const openTaskDetail = async (task: Task) => {
     : hasAgentActivity.value
       ? 'activity'
       : 'task';
-  const detailTask = selectedTaskDetail.value.task;
-  Object.assign(taskForm, {
-    title: detailTask.title,
-    description: detailTask.description ?? '',
-    columnId: detailTask.columnId,
-    placementId: placementIdFor(detailTask),
-    swimlaneId: detailTask.swimlaneId ?? defaultSwimlaneId.value,
-    assigneeId: detailTask.assigneeId ?? UNASSIGNED_ID,
-    agentEnabled: detailTask.agentEnabled,
-    priority: 'normal',
-    tags: detailTask.tags,
-  });
+  syncTaskFormFromDetail(selectedTaskDetail.value.task);
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
   scheduleRefinementPolling();
@@ -1903,16 +2322,39 @@ const openTaskDetail = async (task: Task) => {
 const closeTaskEventStream = () => {
   taskEventSource?.close();
   taskEventSource = null;
+  taskDetailRefreshQueued = false;
+};
+
+const refreshTaskDetailFromActivity = (taskId: string) => {
+  if (taskDetailRefreshInFlight) {
+    taskDetailRefreshQueued = true;
+    return taskDetailRefreshInFlight;
+  }
+
+  taskDetailRefreshInFlight = (async () => {
+    do {
+      taskDetailRefreshQueued = false;
+      const detail = await $fetch<TaskDetail>(`/api/tasks/${taskId}`);
+      if (selectedTaskId.value === taskId) selectedTaskDetail.value = detail;
+    } while (taskDetailRefreshQueued && selectedTaskId.value === taskId);
+  })()
+    .catch(() => {
+      // The regular board refresh and the next SSE invalidation retry this
+      // transiently. Avoid an unhandled rejection while the modal is open.
+    })
+    .finally(() => {
+      taskDetailRefreshInFlight = null;
+    });
+
+  return taskDetailRefreshInFlight;
 };
 
 const openTaskEventStream = (taskId: string) => {
   closeTaskEventStream();
   if (!import.meta.client) return;
   taskEventSource = new EventSource(`/api/tasks/${taskId}/events`);
-  taskEventSource.addEventListener('activity', async () => {
-    if (selectedTaskId.value === taskId) {
-      selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${taskId}`);
-    }
+  taskEventSource.addEventListener('activity', () => {
+    if (selectedTaskId.value === taskId) void refreshTaskDetailFromActivity(taskId);
   });
 };
 
@@ -1976,6 +2418,102 @@ const saveProjectAction = async () => {
   }
 };
 
+async function createTaskFromCurrentForm() {
+  const projectId = selectedProjectId.value;
+  if (!projectId) throw new Error('missing_project');
+  if (!taskForm.title.trim()) throw new Error('missing_title');
+
+  taskForm.swimlaneId = taskForm.swimlaneId || defaultSwimlaneId.value;
+  taskForm.placementId = taskForm.placementId || defaultPlacementId.value;
+  taskCreateRequestId.value = taskCreateRequestId.value || fileId();
+  const placement = parsePlacementId(taskForm.placementId);
+  const files = [...taskAttachmentFiles.value];
+  const form = new FormData();
+  form.append('title', taskForm.title);
+  if (taskForm.description) form.append('description', taskForm.description);
+  if (taskForm.columnId) form.append('columnId', taskForm.columnId);
+  if (taskForm.swimlaneId) form.append('swimlaneId', taskForm.swimlaneId);
+  form.append('oberthemaId', placement.oberthemaId);
+  if (placement.unterthemaId) form.append('unterthemaId', placement.unterthemaId);
+  form.append('assigneeId', taskAssigneeIdForRequest() ?? '');
+  form.append('agentEnabled', String(taskForm.agentEnabled));
+  form.append('clientRequestId', taskCreateRequestId.value);
+  form.append('priority', taskForm.priority);
+  form.append('tags', JSON.stringify(taskForm.tags));
+  await appendTaskFiles(form, files);
+
+  const response = await $fetch<{ task: Task }>(`/api/projects/${projectId}/tasks`, { method: 'POST', body: form });
+  if (!response.task?.id) throw new Error('task_create_invalid_response');
+  removePendingTaskFiles(files);
+  return response.task;
+}
+
+async function persistExistingTaskDetails(taskId: string) {
+  const placement = parsePlacementId(taskForm.placementId);
+  const tags = taskForm.tags;
+  const assigneeId = taskAssigneeIdForRequest();
+  if (!hasAgentActivity.value) {
+    await $fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: {
+        title: taskForm.title,
+        description: taskForm.description,
+        columnId: taskForm.columnId,
+        ...placement,
+        assigneeId,
+        agentEnabled: taskForm.agentEnabled,
+        tags,
+      },
+    });
+  } else {
+    await $fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: { tags, ...placement, assigneeId, agentEnabled: taskForm.agentEnabled },
+    });
+  }
+
+  const files = [...taskAttachmentFiles.value];
+  if (files.length) {
+    const attachmentForm = new FormData();
+    await appendTaskFiles(attachmentForm, files);
+    await $fetch(`/api/tasks/${taskId}/attachments`, { method: 'POST', body: attachmentForm });
+    removePendingTaskFiles(files);
+  }
+}
+
+async function refreshPersistedTaskState(taskId: string) {
+  const detail = await $fetch<TaskDetail>(`/api/tasks/${taskId}`);
+  if (selectedTaskId.value !== taskId) return;
+  selectedTaskDetail.value = detail;
+  if (selectedProjectId.value) {
+    try {
+      await loadBoard(selectedProjectId.value);
+    } catch {
+      // Refreshing the board is presentational and must not prevent a saved
+      // task from entering refinement. The regular board refresh retries it.
+    }
+  }
+  syncTaskFormFromDetail(detail.task);
+  markTaskDetailsPersisted();
+  openTaskEventStream(taskId);
+}
+
+async function persistTaskBeforeRefinement() {
+  let taskId = selectedTaskId.value;
+  if (!taskId) {
+    const createdTask = await createTaskFromCurrentForm();
+    taskId = createdTask.id;
+    // Adopt the persisted task before any follow-up request. A retry after a
+    // transient detail/refinement failure must never create a duplicate task.
+    selectedTaskId.value = taskId;
+    await refreshPersistedTaskState(taskId);
+  } else if (taskDetailsDirty.value) {
+    await persistExistingTaskDetails(taskId);
+    await refreshPersistedTaskState(taskId);
+  }
+  return taskId;
+}
+
 const saveTaskAction = async () => {
   if (!selectedProjectId.value || taskSubmitting.value) return;
   if (!selectedTaskId.value && !taskForm.title.trim()) return;
@@ -1986,53 +2524,26 @@ const saveTaskAction = async () => {
   }
   errorMessage.value = null;
   taskSubmitting.value = true;
+  const keepOpenForRefinement = refinementDraftDirty.value;
   try {
-    const placement = parsePlacementId(taskForm.placementId);
     if (selectedTaskId.value) {
-      const tags = taskForm.tags;
-      const assigneeId = taskAssigneeIdForRequest();
-      if (!hasAgentActivity.value) {
-        await $fetch(`/api/tasks/${selectedTaskId.value}`, {
-          method: 'PATCH',
-          body: {
-            title: taskForm.title,
-            description: taskForm.description,
-            columnId: taskForm.columnId,
-            ...placement,
-            assigneeId,
-            agentEnabled: taskForm.agentEnabled,
-            tags,
-          },
-        });
-      } else {
-        await $fetch(`/api/tasks/${selectedTaskId.value}`, {
-          method: 'PATCH',
-          body: { tags, ...placement, assigneeId, agentEnabled: taskForm.agentEnabled },
-        });
+      const taskId = selectedTaskId.value;
+      await persistExistingTaskDetails(taskId);
+      if (keepOpenForRefinement) {
+        await refreshPersistedTaskState(taskId);
+        activeTaskTab.value = 'refinement';
+        return;
       }
-      if (taskAttachmentFiles.value.length) {
-        const attachmentForm = new FormData();
-        await appendTaskFiles(attachmentForm, taskAttachmentFiles.value);
-        await $fetch(`/api/tasks/${selectedTaskId.value}/attachments`, { method: 'POST', body: attachmentForm });
-      }
-      clearTaskFiles();
       closeTaskModalImmediately();
       await loadBoard(selectedProjectId.value);
     } else {
-      taskForm.swimlaneId = taskForm.swimlaneId || defaultSwimlaneId.value;
-      taskForm.placementId = taskForm.placementId || defaultPlacementId.value;
-      const form = new FormData();
-      form.append('title', taskForm.title);
-      if (taskForm.description) form.append('description', taskForm.description);
-      if (taskForm.columnId) form.append('columnId', taskForm.columnId);
-      if (taskForm.swimlaneId) form.append('swimlaneId', taskForm.swimlaneId);
-      form.append('oberthemaId', placement.oberthemaId);
-      if (placement.unterthemaId) form.append('unterthemaId', placement.unterthemaId);
-      form.append('assigneeId', taskAssigneeIdForRequest() ?? '');
-      form.append('agentEnabled', String(taskForm.agentEnabled));
-      form.append('tags', JSON.stringify(taskForm.tags));
-      await appendTaskFiles(form, taskAttachmentFiles.value);
-      await $fetch(`/api/projects/${selectedProjectId.value}/tasks`, { method: 'POST', body: form });
+      const createdTask = await createTaskFromCurrentForm();
+      if (keepOpenForRefinement) {
+        selectedTaskId.value = createdTask.id;
+        await refreshPersistedTaskState(createdTask.id);
+        activeTaskTab.value = 'refinement';
+        return;
+      }
       closeTaskModalImmediately();
       await nextTick();
       Object.assign(taskForm, {
@@ -2041,7 +2552,7 @@ const saveTaskAction = async () => {
         columnId: backlogColumn.value?.id ?? '',
         placementId: defaultPlacementId.value,
         swimlaneId: defaultSwimlaneId.value,
-        assigneeId: user.value?.id ?? UNASSIGNED_ID,
+        assigneeId: defaultTaskAssigneeId.value,
         agentEnabled: false,
         priority: 'normal',
         tags: [],
@@ -2063,9 +2574,12 @@ const sendCommentAction = async () => {
   try {
     selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/comments`, {
       method: 'POST',
-      body: { body: commentMessage.value },
+      body: {
+        body: commentMessage.value,
+        mentionUserIds: commentMentionUserIds.value,
+      },
     });
-    commentMessage.value = '';
+    resetCommentComposer();
   } catch (error) {
     errorMessage.value = humanError(error);
   } finally {
@@ -2152,7 +2666,7 @@ const confirmDeleteTaskAction = async () => {
     selectedTaskDetail.value = null;
     clearTaskFiles();
     taskMessage.value = '';
-    commentMessage.value = '';
+    resetCommentComposer();
     followUpMessage.value = '';
     await loadBoard(selectedProjectId.value);
   } catch (error) {
@@ -2733,7 +3247,19 @@ const columnIcon = (column: BoardColumn) => ({
 
 const assigneeForTask = (task: Task) => board.value?.members.find((member) => member.id === task.assigneeId) ?? null;
 const taskAssigneeLabel = (task: Task) => assigneeForTask(task)?.name ?? t.value.unassigned;
-const taskCardLabel = (task: Task) => [task.key, task.title, taskHierarchyLabel(task), `${t.value.assignee}: ${taskAssigneeLabel(task)}`].filter(Boolean).join(' · ');
+const taskMentionNotificationLabel = (task: Task) => {
+  const count = task.unreadMentionCount ?? 0;
+  return count === 1
+    ? t.value.commentMentionNotificationSingle
+    : t.value.commentMentionNotification.replace('{count}', String(count));
+};
+const taskCardLabel = (task: Task) => [
+  task.key,
+  task.title,
+  taskHierarchyLabel(task),
+  `${t.value.assignee}: ${taskAssigneeLabel(task)}`,
+  task.unreadMentionCount ? taskMentionNotificationLabel(task) : null,
+].filter(Boolean).join(' · ');
 const plainTextDescription = (value: string | null) => (value ?? '')
   .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
   .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
@@ -2757,11 +3283,37 @@ const taskStatusLabel = (status: Task['agentStatus']) => {
 
 const projectSidebarText = (project: Project) => project.description?.trim() || t.value.openBoard;
 
-const latestTextUpdate = (events: TaskEvent[]) => {
+const latestAgentTimelineUpdate = (events: TaskEvent[]) => {
   for (const event of [...events].reverse()) {
-    if (event.action !== 'codex_text_update') continue;
-    const body = metadataString(parseMetadata(event.metadata).body);
-    if (body) return { body, createdAt: event.createdAt };
+    if (event.action === 'codex_failed') {
+      const rawError = metadataString(parseMetadata(event.metadata).error) ?? 'Unknown error';
+      const error = rawError.includes('task_worktree_branch_mismatch')
+        ? t.value.agentWorktreeResumeFailed
+        : rawError;
+      return {
+        body: t.value.agentRunFailed.replace('{error}', error),
+        createdAt: event.createdAt,
+        tone: 'error' as const,
+      };
+    }
+    if (event.action === 'codex_completed') {
+      return {
+        body: t.value.agentRunCompleted,
+        createdAt: event.createdAt,
+        tone: 'success' as const,
+      };
+    }
+    if (event.action === 'codex_started') {
+      return {
+        body: t.value.agentRunStarted,
+        createdAt: event.createdAt,
+        tone: 'info' as const,
+      };
+    }
+    if (event.action === 'codex_text_update') {
+      const body = metadataString(parseMetadata(event.metadata).body);
+      if (body) return { body, createdAt: event.createdAt, tone: 'neutral' as const };
+    }
   }
   return null;
 };
@@ -3876,6 +4428,7 @@ defineShortcuts(computed(() => ({
   meta_enter: taskModalOpen.value
     && !keyboardHintMode.value
     && !discardTaskModalOpen.value
+    && !refinementOverwriteModalOpen.value
     && !deleteTaskModalOpen.value
     && !deleteAttachmentModalOpen.value
     && !annotationModalOpen.value
@@ -3932,10 +4485,23 @@ defineShortcuts(computed(() => ({
   } : false,
 })), { chainDelay: 900 });
 
+function errorStatusKey(error: unknown) {
+  const candidate = error as {
+    statusMessage?: string;
+    message?: string;
+    data?: { statusMessage?: string; message?: string };
+  };
+  return (candidate.data?.statusMessage
+    ?? candidate.data?.message
+    ?? candidate.statusMessage
+    ?? candidate.message
+    ?? '')
+    .trim()
+    .toLowerCase();
+}
+
 const humanError = (error: unknown) => {
-  const candidate = error as { statusMessage?: string; data?: { message?: string } };
-  const raw = candidate.data?.message ?? candidate.statusMessage ?? '';
-  const key = raw.trim().toLowerCase();
+  const key = errorStatusKey(error);
   const label = (en: string, de: string) => locale.value === 'de' ? de : en;
   const messages: Record<string, { en: string; de: string }> = {
     invalid_credentials: { en: 'Email or password is incorrect.', de: 'E-Mail oder Passwort ist nicht korrekt.' },
@@ -3952,6 +4518,8 @@ const humanError = (error: unknown) => {
     task_closed_for_attachments: { en: 'Files can no longer be added to this task.', de: 'Zu dieser Aufgabe können keine Dateien mehr hinzugefügt werden.' },
     task_not_accepting_steering: { en: 'This task is not accepting new guidance right now.', de: 'Diese Aufgabe nimmt im Moment keine neuen Hinweise an.' },
     empty_message: { en: 'Please enter a message.', de: 'Bitte gib eine Nachricht ein.' },
+    invalid_comment_mention: { en: 'Only active members of this project can be mentioned.', de: 'Es können nur aktive Mitglieder dieses Projekts erwähnt werden.' },
+    too_many_mentions: { en: 'A comment can mention up to 25 people.', de: 'Ein Kommentar kann höchstens 25 Personen erwähnen.' },
     missing_backlog_column: { en: 'The board is missing its first task area.', de: 'Dem Board fehlt der erste Aufgabenbereich.' },
     missing_todo_column: { en: 'The board is missing its work queue.', de: 'Dem Board fehlt die Bearbeitungs-Warteschlange.' },
     invalid_column: { en: 'Please choose a valid board area.', de: 'Bitte wähle einen gültigen Board-Bereich.' },
@@ -3969,8 +4537,9 @@ const humanError = (error: unknown) => {
     refinement_already_active: { en: 'This task already has a refinement in progress.', de: 'Für diese Aufgabe läuft bereits ein Refinement.' },
     refinement_not_awaiting_input: { en: 'This refinement is not waiting for answers.', de: 'Dieses Refinement wartet aktuell nicht auf Antworten.' },
     refinement_not_completed: { en: 'The refinement is not completed yet.', de: 'Das Refinement ist noch nicht abgeschlossen.' },
-    refinement_source_changed: { en: 'The task changed after refinement started. Start a new refinement to avoid overwriting newer work.', de: 'Die Aufgabe wurde nach dem Start des Refinements geändert. Starte ein neues Refinement, damit neuere Änderungen nicht überschrieben werden.' },
-    source_changed: { en: 'The task changed after refinement started. Start a new refinement to avoid overwriting newer work.', de: 'Die Aufgabe wurde nach dem Start des Refinements geändert. Starte ein neues Refinement, damit neuere Änderungen nicht überschrieben werden.' },
+    refinement_description_changed: { en: 'The description changed after refinement started. You can review the warning and still apply the result.', de: 'Die Beschreibung wurde nach dem Start des Refinements geändert. Du kannst den Hinweis prüfen und das Ergebnis trotzdem übernehmen.' },
+    refinement_source_changed: { en: 'The task changed while the refinement was being applied. Please try again.', de: 'Die Aufgabe wurde während der Übernahme geändert. Bitte versuche es erneut.' },
+    source_changed: { en: 'The task changed while the refinement was being applied. Please try again.', de: 'Die Aufgabe wurde während der Übernahme geändert. Bitte versuche es erneut.' },
     refinement_already_applied: { en: 'This refinement has already been applied.', de: 'Dieses Refinement wurde bereits übernommen.' },
     refinement_answers_incomplete: { en: 'Please answer every required challenge question.', de: 'Bitte beantworte alle erforderlichen Challenge-Fragen.' },
     refinement_timeout: { en: 'Codex took too long to finish this refinement. You can try again.', de: 'Codex hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.' },
@@ -4815,6 +5384,7 @@ const humanError = (error: unknown) => {
                               :style="{ '--task-accent': topicAccent(topic) }"
                               :class="{
                                 'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running',
+                                'ak-task-card-mentioned': Boolean(task.unreadMentionCount),
                                 'opacity-50': draggedTaskId === task.id,
                               }"
                               :ui="{ body: 'p-2.5 sm:p-2.5' }"
@@ -4837,13 +5407,23 @@ const humanError = (error: unknown) => {
                             >
                               <div class="mb-2 flex items-center justify-between gap-2">
                                 <UBadge variant="subtle" color="neutral" class="shrink-0 whitespace-nowrap">{{ task.key }}</UBadge>
-                                <span
-                                  class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
-                                  :class="task.agentEnabled ? 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'"
-                                >
-                                  <UIcon :name="task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round'" class="size-3" />
-                                  {{ task.agentEnabled ? t.aiTaskShort : t.humanTaskShort }}
-                                </span>
+                                <div class="flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    v-if="task.unreadMentionCount"
+                                    class="inline-flex shrink-0 items-center gap-1 rounded-md bg-teal-100 px-2 py-1 text-[10px] font-bold text-teal-800 dark:bg-teal-950 dark:text-teal-200"
+                                    :title="taskMentionNotificationLabel(task)"
+                                  >
+                                    <UIcon name="i-lucide-at-sign" class="size-3" />
+                                    {{ task.unreadMentionCount }}
+                                  </span>
+                                  <span
+                                    class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
+                                    :class="task.agentEnabled ? 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300' : 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300'"
+                                  >
+                                    <UIcon :name="task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round'" class="size-3" />
+                                    {{ task.agentEnabled ? t.aiTaskShort : t.humanTaskShort }}
+                                  </span>
+                                </div>
                               </div>
                               <h3 class="text-sm font-semibold leading-snug">{{ task.title }}</h3>
                               <p v-if="task.description" class="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ plainTextDescription(task.description) }}</p>
@@ -5125,14 +5705,13 @@ const humanError = (error: unknown) => {
 
         <template #body>
           <div class="min-w-0">
-            <div v-if="errorMessage" class="px-4 pt-4 sm:px-6">
+            <div v-if="errorMessage && activeTaskTab !== 'refinement'" class="px-4 pt-4 sm:px-6">
               <UAlert color="error" variant="soft" icon="i-lucide-alert-circle" :description="errorMessage" />
             </div>
 
             <nav
-              v-if="selectedTaskId"
               class="overflow-x-auto border-b border-zinc-200 bg-white px-3 sm:px-6 dark:border-zinc-800 dark:bg-zinc-950"
-              :aria-label="t.editTask"
+              :aria-label="selectedTaskId ? t.editTask : t.createTask"
             >
               <div role="tablist" class="flex min-w-max items-center gap-1">
                 <button
@@ -5148,6 +5727,7 @@ const humanError = (error: unknown) => {
                   :aria-selected="activeTaskTab === tab.key"
                   :aria-controls="'task-panel-' + tab.key"
                   :tabindex="activeTaskTab === tab.key ? 0 : -1"
+                  :disabled="refinementBusy || taskSubmitting"
                   @click="tab.key === 'refinement' ? openTaskRefinementTab() : (activeTaskTab = tab.key)"
                   @keydown="handleTaskTabKeydown($event, tab.key)"
                 >
@@ -5169,6 +5749,18 @@ const humanError = (error: unknown) => {
                   >
                     {{ commentCount }}
                   </UBadge>
+                  <UBadge
+                    v-if="tab.key === 'comments' && unreadCommentMentionCount"
+                    color="primary"
+                    variant="soft"
+                    size="sm"
+                    icon="i-lucide-at-sign"
+                    :title="unreadCommentMentionCount === 1
+                      ? t.commentMentionNotificationSingle
+                      : t.commentMentionNotification.replace('{count}', String(unreadCommentMentionCount))"
+                  >
+                    {{ unreadCommentMentionCount }}
+                  </UBadge>
                   <span
                     class="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-teal-600 transition-opacity dark:bg-teal-400"
                     :class="activeTaskTab === tab.key ? 'opacity-100' : 'opacity-0'"
@@ -5178,15 +5770,15 @@ const humanError = (error: unknown) => {
             </nav>
 
             <form
-              v-if="!selectedTaskId || activeTaskTab === 'task'"
+              v-show="activeTaskTab === 'task'"
               id="task-form"
               class="min-w-0"
               @submit.prevent="saveTaskAction"
             >
             <section
-              :id="selectedTaskId ? 'task-panel-task' : undefined"
-              :role="selectedTaskId ? 'tabpanel' : undefined"
-              :aria-labelledby="selectedTaskId ? 'task-tab-task' : undefined"
+              id="task-panel-task"
+              role="tabpanel"
+              aria-labelledby="task-tab-task"
               class="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_19rem]"
             >
               <div class="min-w-0 p-4 sm:p-6 lg:p-7">
@@ -5275,10 +5867,7 @@ const humanError = (error: unknown) => {
                   />
                 </template>
 
-                <div
-                  v-if="selectedTaskId"
-                  class="mt-6 flex flex-col gap-3 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 sm:flex-row sm:items-center sm:justify-between dark:bg-teal-950/20 dark:ring-teal-900/60"
-                >
+                <div class="mt-6 flex flex-col gap-3 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 sm:flex-row sm:items-center sm:justify-between dark:bg-teal-950/20 dark:ring-teal-900/60">
                   <div class="flex min-w-0 items-start gap-3">
                     <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-teal-100 dark:bg-zinc-950 dark:text-teal-300 dark:ring-teal-900/70">
                       <UIcon name="i-lucide-wand-sparkles" class="size-4" />
@@ -5601,14 +6190,40 @@ const humanError = (error: unknown) => {
                       <p class="text-sm font-semibold text-zinc-950 dark:text-white">{{ t.latestUpdate }}</p>
                       <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.activityReadableHint }}</p>
                     </div>
-                    <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-600 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-teal-300 dark:ring-zinc-700">
-                      <UIcon name="i-lucide-sparkles" class="size-4" />
+                    <span
+                      class="grid size-8 shrink-0 place-items-center rounded-lg ring-1"
+                      :class="{
+                        'bg-red-50 text-red-700 ring-red-200 dark:bg-red-950/50 dark:text-red-300 dark:ring-red-900': latestAgentUpdate?.tone === 'error',
+                        'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:ring-emerald-900': latestAgentUpdate?.tone === 'success',
+                        'bg-teal-50 text-teal-700 ring-teal-200 dark:bg-teal-950/50 dark:text-teal-300 dark:ring-teal-900': latestAgentUpdate?.tone === 'info',
+                        'bg-white text-teal-600 ring-zinc-200 dark:bg-zinc-950 dark:text-teal-300 dark:ring-zinc-700': !latestAgentUpdate || latestAgentUpdate.tone === 'neutral',
+                      }"
+                    >
+                      <UIcon
+                        :name="latestAgentUpdate?.tone === 'error'
+                          ? 'i-lucide-circle-alert'
+                          : latestAgentUpdate?.tone === 'success'
+                            ? 'i-lucide-circle-check'
+                            : latestAgentUpdate?.tone === 'info'
+                              ? 'i-lucide-loader-circle'
+                              : 'i-lucide-sparkles'"
+                        class="size-4"
+                      />
                     </span>
                   </div>
 
-                  <div v-if="latestAgentUpdate" class="rounded-lg bg-white p-4 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:ring-zinc-800">
+                  <div
+                    v-if="latestAgentUpdate"
+                    class="rounded-lg p-4 ring-1"
+                    :class="{
+                      'bg-red-50/70 text-red-950 ring-red-200 dark:bg-red-950/25 dark:text-red-100 dark:ring-red-900': latestAgentUpdate.tone === 'error',
+                      'bg-emerald-50/70 text-emerald-950 ring-emerald-200 dark:bg-emerald-950/25 dark:text-emerald-100 dark:ring-emerald-900': latestAgentUpdate.tone === 'success',
+                      'bg-teal-50/70 text-teal-950 ring-teal-200 dark:bg-teal-950/25 dark:text-teal-100 dark:ring-teal-900': latestAgentUpdate.tone === 'info',
+                      'bg-white text-zinc-700 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-200 dark:ring-zinc-800': latestAgentUpdate.tone === 'neutral',
+                    }"
+                  >
                     <time class="mb-2 block text-xs text-zinc-500 dark:text-zinc-400">{{ formatActivityTime(latestAgentUpdate.createdAt) }}</time>
-                    <p class="whitespace-pre-wrap break-words text-sm leading-6 text-zinc-700 dark:text-zinc-200">{{ latestAgentUpdate.body }}</p>
+                    <p class="whitespace-pre-wrap break-words text-sm leading-6">{{ latestAgentUpdate.body }}</p>
                   </div>
                   <p v-else class="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
                     {{ t.noAgentUpdate }}
@@ -5618,7 +6233,7 @@ const humanError = (error: unknown) => {
             </section>
 
             <section
-              v-if="activeTaskTab === 'refinement'"
+              v-show="activeTaskTab === 'refinement'"
               id="task-panel-refinement"
               role="tabpanel"
               aria-labelledby="task-tab-refinement"
@@ -5627,15 +6242,19 @@ const humanError = (error: unknown) => {
               <TaskRefinementPanel
                 :runs="refinementPanelRuns"
                 :current-run="selectedRefinementPanelRun"
-                :busy="refinementBusy"
+                :busy="refinementBusy || taskSubmitting"
+                :create-on-start="!selectedTaskId"
+                :task-ready="Boolean(taskForm.title.trim())"
+                :description-changed="selectedRefinementDescriptionChanged"
                 :action-error="errorMessage"
                 :locale="locale === 'de' ? 'de-CH' : 'en-US'"
                 @start="startTaskRefinement"
                 @submit-answers="submitRefinementAnswers"
-                @apply="applyTaskRefinement"
+                @apply="requestApplyTaskRefinement"
                 @retry="retryTaskRefinement"
                 @select-run="selectTaskRefinement"
                 @dirty-change="refinementDraftDirty = $event"
+                @request-task-details="focusTaskTitleForRefinement"
               >
                 <template #result="{ markdown }">
                   <UEditor
@@ -5665,38 +6284,145 @@ const humanError = (error: unknown) => {
                     <p class="text-base font-semibold text-zinc-950 dark:text-white">{{ t.comments }}</p>
                     <p class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{{ commentCount }} {{ t.total }}</p>
                   </div>
-                  <span class="grid size-9 place-items-center rounded-lg bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+                  <UBadge
+                    v-if="unreadCommentMentionCount"
+                    color="primary"
+                    variant="soft"
+                    icon="i-lucide-at-sign"
+                  >
+                    {{ unreadCommentMentionCount === 1
+                      ? t.commentMentionNotificationSingle
+                      : t.commentMentionNotification.replace('{count}', String(unreadCommentMentionCount)) }}
+                  </UBadge>
+                  <span v-else class="grid size-9 place-items-center rounded-lg bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
                     <UIcon name="i-lucide-messages-square" class="size-4" />
                   </span>
                 </div>
 
-                <div class="grid gap-3 rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end dark:bg-zinc-900/55 dark:ring-zinc-800">
+                <div ref="commentComposerEl" class="grid gap-3 rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 dark:bg-zinc-900/55 dark:ring-zinc-800">
                   <UFormField :label="t.commentPlaceholder" size="lg">
-                    <UTextarea v-model="commentMessage" class="w-full" :rows="3" size="lg" :placeholder="t.commentPlaceholder" />
+                    <UTextarea
+                      v-model="commentMessage"
+                      class="w-full"
+                      :rows="3"
+                      size="lg"
+                      :placeholder="t.commentPlaceholder"
+                      aria-autocomplete="list"
+                      :aria-expanded="commentMentionOpen"
+                      aria-controls="comment-mention-suggestions"
+                      :aria-activedescendant="commentMentionOpen && commentMentionSuggestions[commentMentionActiveIndex]
+                        ? `comment-mention-${commentMentionSuggestions[commentMentionActiveIndex]?.id}`
+                        : undefined"
+                      @input="handleCommentInput"
+                      @keydown="handleCommentMentionKeydown"
+                    />
                   </UFormField>
-                  <UButton
-                    class="disabled:opacity-40 disabled:saturate-50"
-                    type="button"
-                    icon="i-lucide-send"
-                    :loading="taskSubmitting"
-                    :disabled="!commentMessage.trim()"
-                    @click="sendCommentAction"
+
+                  <div
+                    v-if="commentMentionOpen && commentMentionSuggestions.length"
+                    id="comment-mention-suggestions"
+                    role="listbox"
+                    :aria-label="t.commentMentionSuggestions"
+                    class="grid gap-1 rounded-lg bg-white p-1.5 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:ring-zinc-700"
                   >
-                    {{ t.sendComment }}
-                  </UButton>
+                    <button
+                      v-for="(member, index) in commentMentionSuggestions"
+                      :id="`comment-mention-${member.id}`"
+                      :key="member.id"
+                      type="button"
+                      role="option"
+                      :aria-selected="index === commentMentionActiveIndex"
+                      class="flex min-h-10 items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors"
+                      :class="index === commentMentionActiveIndex
+                        ? 'bg-teal-50 text-teal-950 dark:bg-teal-950/60 dark:text-teal-100'
+                        : 'text-zinc-700 hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-900'"
+                      @mousedown.prevent
+                      @click="selectCommentMention(member)"
+                    >
+                      <span class="grid size-7 shrink-0 place-items-center rounded-md bg-zinc-100 text-xs font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                        {{ member.name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase() }}
+                      </span>
+                      <span class="min-w-0">
+                        <span class="block truncate text-sm font-medium">{{ member.name }}</span>
+                        <span class="block truncate text-xs text-zinc-500 dark:text-zinc-400">{{ member.email }}</span>
+                      </span>
+                    </button>
+                  </div>
+
+                  <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <p class="inline-flex items-start gap-1.5 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                        <UIcon name="i-lucide-at-sign" class="mt-0.5 size-3.5 shrink-0 text-teal-600 dark:text-teal-400" />
+                        <span>{{ t.commentMentionHint }}</span>
+                      </p>
+                      <div v-if="selectedCommentMentionMembers.length" class="mt-2 flex flex-wrap gap-1.5">
+                        <span
+                          v-for="member in selectedCommentMentionMembers"
+                          :key="member.id"
+                          class="inline-flex items-center gap-1 rounded-md bg-teal-100 px-2 py-1 text-xs font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-200"
+                        >
+                          @{{ member.name }}
+                          <button
+                            type="button"
+                            class="grid size-4 place-items-center rounded text-teal-700 hover:bg-teal-200 dark:text-teal-300 dark:hover:bg-teal-900"
+                            :aria-label="`${t.clear}: ${member.name}`"
+                            @click="removeCommentMention(member)"
+                          >
+                            <UIcon name="i-lucide-x" class="size-3" />
+                          </button>
+                        </span>
+                      </div>
+                    </div>
+                    <UButton
+                      class="shrink-0 disabled:opacity-40 disabled:saturate-50"
+                      type="button"
+                      icon="i-lucide-send"
+                      :loading="taskSubmitting"
+                      :disabled="!commentMessage.trim()"
+                      @click="sendCommentAction"
+                    >
+                      {{ t.sendComment }}
+                    </UButton>
+                  </div>
                 </div>
 
                 <div class="grid gap-3">
                   <article
                     v-for="comment in teamComments"
                     :key="comment.id"
-                    class="rounded-xl bg-white p-4 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:ring-zinc-800"
+                    :data-comment-id="comment.id"
+                    :data-unread-mention="String(comment.unreadMention)"
+                    class="rounded-xl p-4 ring-1 transition-colors"
+                    :class="comment.unreadMention
+                      ? 'ak-unread-mention-comment bg-teal-50/70 ring-teal-300 dark:bg-teal-950/25 dark:ring-teal-800'
+                      : 'bg-white ring-zinc-200 dark:bg-zinc-950 dark:ring-zinc-800'"
                   >
                     <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <p class="text-sm font-semibold text-zinc-950 dark:text-white">{{ comment.userName }}</p>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <p class="text-sm font-semibold text-zinc-950 dark:text-white">{{ comment.userName }}</p>
+                        <UBadge
+                          v-if="comment.mentionedCurrentUser"
+                          color="primary"
+                          variant="soft"
+                          size="sm"
+                          icon="i-lucide-at-sign"
+                        >
+                          {{ t.commentMentionedYou }}
+                        </UBadge>
+                      </div>
                       <time class="text-xs text-zinc-500 dark:text-zinc-400">{{ formatActivityTime(comment.createdAt) }}</time>
                     </div>
-                    <p class="whitespace-pre-wrap break-words text-sm leading-6 text-zinc-700 dark:text-zinc-200">{{ comment.body }}</p>
+                    <p class="whitespace-pre-wrap break-words text-sm leading-6 text-zinc-700 dark:text-zinc-200">
+                      <span
+                        v-for="(segment, index) in commentSegments(comment)"
+                        :key="`${comment.id}-${index}`"
+                        :class="segment.mention
+                          ? segment.currentUser
+                            ? 'rounded bg-teal-200/80 px-1 font-semibold text-teal-950 dark:bg-teal-800 dark:text-teal-50'
+                            : 'rounded bg-zinc-100 px-1 font-medium text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100'
+                          : ''"
+                      >{{ segment.text }}</span>
+                    </p>
                   </article>
                   <p v-if="!teamComments.length" class="rounded-xl border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
                     {{ t.noComments }}
@@ -5720,9 +6446,9 @@ const humanError = (error: unknown) => {
             :title="t.deleteTask"
             @click.prevent.stop="requestDeleteTask"
           />
-          <UButton color="neutral" variant="ghost" type="button" @click="requestCloseTaskModal">{{ t.cancel }}</UButton>
+          <UButton color="neutral" variant="ghost" type="button" @click="requestCloseTaskModal">{{ selectedTaskId ? t.close : t.cancel }}</UButton>
           <UButton
-            v-if="!selectedTaskId || activeTaskTab === 'task'"
+            v-if="activeTaskTab === 'task'"
             class="disabled:opacity-40 disabled:saturate-50"
             :icon="selectedTaskId ? 'i-lucide-save' : 'i-lucide-plus'"
             type="submit"
@@ -5757,6 +6483,41 @@ const humanError = (error: unknown) => {
             <UButton color="error" variant="soft" icon="i-lucide-log-out" type="button" @click="discardTaskChanges">
               {{ t.discardChanges }}
             </UButton>
+          </div>
+        </template>
+      </UModal>
+
+      <UModal
+        v-if="refinementOverwriteModalOpen"
+        v-model:open="refinementOverwriteModalOpen"
+        :title="t.refinementOverwriteTitle"
+        :ui="{ content: 'max-w-md' }"
+      >
+        <template #close="{ ui }">
+          <UButton
+            :aria-label="t.close"
+            :class="ui.close()"
+            color="neutral"
+            variant="ghost"
+            icon="i-lucide-x"
+            :disabled="refinementBusy"
+            @click="cancelRefinementOverwrite"
+          />
+        </template>
+        <template #body>
+          <div class="grid gap-5">
+            <div class="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+              <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-5 shrink-0 text-amber-700 dark:text-amber-300" />
+              <p class="text-sm leading-6">{{ t.refinementOverwriteDescription }}</p>
+            </div>
+            <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <UButton color="neutral" variant="ghost" type="button" :disabled="refinementBusy" @click="cancelRefinementOverwrite">
+                {{ t.keepEditing }}
+              </UButton>
+              <UButton color="warning" icon="i-lucide-file-pen-line" type="button" :loading="refinementBusy" @click="confirmApplyTaskRefinement">
+                {{ t.refinementOverwriteConfirm }}
+              </UButton>
+            </div>
           </div>
         </template>
       </UModal>

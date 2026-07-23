@@ -4,7 +4,10 @@ import { startRefinementWorker } from '../lib/refinement-worker';
 
 export default defineNitroPlugin((nitroApp) => {
   ensureDatabase();
-  startLocalTaskDispatcher();
+  const taskDispatcher = startLocalTaskDispatcher();
   const refinementWorker = startRefinementWorker();
-  nitroApp.hooks.hook('close', () => refinementWorker.stop());
+  nitroApp.hooks.hook('close', async () => {
+    taskDispatcher.stop();
+    await refinementWorker.stop();
+  });
 });

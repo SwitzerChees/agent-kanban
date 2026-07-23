@@ -1,9 +1,10 @@
-import { and, asc, count, desc, eq, gt, inArray, like, max } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, max } from 'drizzle-orm';
 import path from 'node:path';
-import { db, schema } from './db';
+import { appDataDir, db, schema } from './db';
 import { loadWorkflow } from './workflow';
 import { resolveServiceConfig } from './config';
 import { runCodexSession, type CodexSteeringBatch, type CodexUserInput } from './codex';
+import { prepareTaskWorktree } from './git-workspaces';
 import { runtimeLogger } from './logger';
 import { logTaskActivity } from './kanban';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
@@ -27,6 +28,7 @@ class LocalTaskDispatcher {
   start() {
     if (this.timer) return;
     this.requeueInterruptedTasks();
+    reconcileFailedTaskColumns();
     this.timer = setInterval(() => {
       void this.tick();
     }, Number.parseInt(process.env.KANBAN_AGENT_POLL_MS ?? '5000', 10));
@@ -96,6 +98,9 @@ class LocalTaskDispatcher {
     const inProgressColumn = db.select().from(schema.columns)
       .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_progress')))
       .get();
+    const reviewColumn = db.select().from(schema.columns)
+      .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_review')))
+      .get();
     db.update(schema.tasks).set({
       agentStatus: 'running',
       columnId: inProgressColumn?.id ?? queued.columnId,
@@ -109,10 +114,24 @@ class LocalTaskDispatcher {
       const workflow = await loadWorkflow();
       const config = resolveServiceConfig(workflow);
       const issue = taskToIssue(queued, inProgressColumn?.nameEn ?? queuedColumn.nameEn);
-      const agentsContext = await loadAgentsContext(project.folderPath);
-      const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : project.folderPath;
+      const taskWorktree = await prepareTaskWorktree({
+        projectPath: project.folderPath,
+        worktreePath: appDataDir('worktrees', project.id, queued.id, 'tree'),
+        taskId: queued.id,
+        taskKey: queued.key,
+      });
+      issue.branch_name = taskWorktree.branchName;
+      const agentsContext = await loadAgentsContext(taskWorktree.projectPath);
+      const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : taskWorktree.projectPath;
       const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
       const runStartedAt = new Date().toISOString();
+      logTaskActivity(queued.projectId, queued.id, null, 'codex_worktree_ready', {
+        workspacePath,
+        worktreeRoot: taskWorktree.worktreeRoot,
+        branch: taskWorktree.branchName,
+        revision: taskWorktree.revision,
+        createdNow: taskWorktree.createdNow,
+      });
       logTaskActivity(queued.projectId, queued.id, null, agentsContext.path ? 'agents_context_loaded' : 'agents_context_missing', {
         path: agentsContext.path,
         workspacePath,
@@ -122,6 +141,7 @@ class LocalTaskDispatcher {
       let seenAttachmentAt = runStartedAt;
       let agentMessageBuffer = '';
       let lastAgentUpdateLogMs = 0;
+      let agentBrowserEvidenceLogged = false;
       const flushAgentUpdate = (force = false) => {
         const body = normalizeAgentMessage(agentMessageBuffer);
         if (!body) return;
@@ -148,6 +168,14 @@ class LocalTaskDispatcher {
             session_id: event.session_id,
             message: event.message,
           });
+          const browserEvidence = agentBrowserEvidenceMessage(event);
+          if (browserEvidence && !agentBrowserEvidenceLogged) {
+            agentBrowserEvidenceLogged = true;
+            logTaskActivity(queued.projectId, queued.id, null, 'codex_browser_evidence', {
+              event: event.event,
+              message: browserEvidence,
+            });
+          }
           if (event.event === 'item/agentMessage/delta') {
             const fragment = naturalAgentFragment(event.message);
             if (fragment) {
@@ -160,7 +188,6 @@ class LocalTaskDispatcher {
             flushAgentUpdate(true);
             agentMessageBuffer = '';
           }
-          logTaskActivity(queued.projectId, queued.id, null, 'codex_event', event);
         },
         refreshIssue: async () => {
           const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, queued.id)).get();
@@ -215,9 +242,6 @@ class LocalTaskDispatcher {
         }),
       });
 
-      const reviewColumn = db.select().from(schema.columns)
-        .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_review')))
-        .get();
       db.update(schema.tasks).set({
         agentStatus: 'done',
         columnId: reviewColumn?.id ?? queued.columnId,
@@ -226,11 +250,16 @@ class LocalTaskDispatcher {
       logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', { nextColumn: reviewColumn?.key ?? null });
       runtimeLogger.info('local codex task completed', { task_id: queued.id, task_key: queued.key });
     } catch (error) {
-      db.update(schema.tasks).set({ agentStatus: 'failed', updatedAt: new Date().toISOString() })
+      db.update(schema.tasks).set({
+        agentStatus: 'failed',
+        columnId: reviewColumn?.id ?? queued.columnId,
+        updatedAt: new Date().toISOString(),
+      })
         .where(eq(schema.tasks.id, queued.id))
         .run();
       logTaskActivity(queued.projectId, queued.id, null, 'codex_failed', {
         error: error instanceof Error ? error.message : String(error),
+        nextColumn: reviewColumn?.key ?? null,
       });
       runtimeLogger.warn('local codex task failed', {
         task_id: queued.id,
@@ -243,6 +272,38 @@ class LocalTaskDispatcher {
       else this.runningProjects.delete(queued.projectId);
     }
   }
+}
+
+export function reconcileFailedTaskColumns() {
+  const failedRows = db.select({ task: schema.tasks, column: schema.columns })
+    .from(schema.tasks)
+    .innerJoin(schema.columns, eq(schema.tasks.columnId, schema.columns.id))
+    .where(and(
+      eq(schema.tasks.agentStatus, 'failed'),
+      eq(schema.columns.key, 'in_progress'),
+    ))
+    .all();
+  const now = new Date().toISOString();
+
+  for (const row of failedRows) {
+    const reviewColumn = db.select().from(schema.columns)
+      .where(and(eq(schema.columns.projectId, row.task.projectId), eq(schema.columns.key, 'in_review')))
+      .get();
+    if (!reviewColumn) continue;
+    db.update(schema.tasks).set({ columnId: reviewColumn.id, updatedAt: now })
+      .where(and(eq(schema.tasks.id, row.task.id), eq(schema.tasks.agentStatus, 'failed')))
+      .run();
+    logTaskActivity(row.task.projectId, row.task.id, null, 'codex_failure_recovered', {
+      reason: 'failed_task_left_in_progress',
+      nextColumn: reviewColumn.key,
+    });
+    runtimeLogger.warn('moved failed local codex task to review', {
+      task_id: row.task.id,
+      task_key: row.task.key,
+    });
+  }
+
+  return failedRows.length;
 }
 
 function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Issue {
@@ -439,10 +500,16 @@ function hasAgentBrowserEvidence(taskId: string, after: string) {
     .where(and(
       eq(schema.activity.taskId, taskId),
       gt(schema.activity.createdAt, after),
-      like(schema.activity.metadata, '%agent-browser%'),
+      eq(schema.activity.action, 'codex_browser_evidence'),
     ))
     .get()?.value ?? 0;
   return value > 0;
+}
+
+function agentBrowserEvidenceMessage(event: { message?: string | null }) {
+  const message = event.message?.trim();
+  if (!message || !message.toLowerCase().includes('agent-browser')) return null;
+  return message.slice(0, 1000);
 }
 
 function defaultTaskPrompt() {

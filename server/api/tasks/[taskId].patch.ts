@@ -21,5 +21,5 @@ const schema = z.object({
 export default defineEventHandler(async (event) => {
   const user = requireUser(event);
   const taskId = getRouterParam(event, 'taskId')!;
-  return { task: updateTask(taskId, schema.parse(await readBody(event)), user) };
+  return { task: await updateTask(taskId, schema.parse(await readBody(event)), user) };
 });

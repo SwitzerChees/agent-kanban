@@ -98,6 +98,10 @@ export interface RefinementContext {
 const ACTIVE_STATUSES: RefinementStatus[] = ['queued', 'running', 'awaiting_input'];
 const DEFAULT_REFINEMENT_LEASE_MS = 90_000;
 
+const normalizeDescription = (value: string | null | undefined) => (value ?? '')
+  .replace(/\r\n/g, '\n')
+  .trimEnd();
+
 export function createTaskRefinement(taskId: string, input: {
   brief?: string | null;
   visualMode?: RefinementVisualMode;
@@ -262,6 +266,7 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   mode?: 'replace' | 'append';
   expectedTaskUpdatedAt?: string;
   markdown?: string;
+  allowDescriptionOverwrite?: boolean;
 }, user: User) {
   const { task } = authorizeTask(taskId, user);
   const refinement = requireTaskRefinement(taskId, refinementId);
@@ -274,13 +279,13 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   if (task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed') {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
-  if (task.updatedAt !== refinement.sourceTaskUpdatedAt
-    || (input.expectedTaskUpdatedAt !== undefined && task.updatedAt !== input.expectedTaskUpdatedAt)) {
+  const descriptionChanged = normalizeDescription(task.description) !== normalizeDescription(refinement.sourceDescription);
+  if (descriptionChanged && !input.allowDescriptionOverwrite) {
     throw createError({
       statusCode: 409,
-      statusMessage: 'refinement_source_changed',
+      statusMessage: 'refinement_description_changed',
       data: {
-        sourceTaskUpdatedAt: refinement.sourceTaskUpdatedAt,
+        descriptionChanged: true,
         currentTaskUpdatedAt: task.updatedAt,
       },
     });
@@ -316,6 +321,7 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
       version: refinement.version,
       mode,
       selectedResult: input.markdown !== undefined,
+      overwroteChangedDescription: descriptionChanged,
     }, now);
   });
 
@@ -428,6 +434,36 @@ export function setRefinementThread(refinementId: string, threadId: string, leas
   if (updated.changes !== 1) {
     throw createError({ statusCode: 409, statusMessage: 'refinement_state_changed' });
   }
+}
+
+export function recordRefinementWorkspaceSync(
+  refinementId: string,
+  revision: string,
+  leaseToken: string,
+  metadata: { branch: string; dirty: boolean },
+) {
+  const refinement = requireRefinement(refinementId);
+  if (refinement.status !== 'running') {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_not_running' });
+  }
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    const updated = tx.update(schema.taskRefinements).set({
+      sourceCodeRevision: revision,
+      updatedAt: now,
+    }).where(validClaimCondition(refinementId, leaseToken, now)).run();
+    if (updated.changes !== 1) {
+      throw createError({ statusCode: 409, statusMessage: 'refinement_state_changed' });
+    }
+    const task = requireTask(refinement.taskId);
+    insertActivity(tx, task.projectId, task.id, null, 'refinement_master_synced', {
+      refinementId,
+      revision,
+      branch: metadata.branch,
+      dirty: metadata.dirty,
+      round: refinement.round,
+    }, now);
+  });
 }
 
 export function requestRefinementInput(refinementId: string, input: {
@@ -848,6 +884,7 @@ function refinementPublicErrorCode(error: unknown) {
     : '';
   if (code === 'request_timeout' || code === 'turn_timeout') return 'refinement_timeout';
   if (code === 'invalid_output') return 'refinement_invalid_output';
+  if (code === 'refinement_master_sync_failed') return 'refinement_master_sync_failed';
 
   const name = error instanceof Error ? error.name : '';
   const message = error instanceof Error ? error.message : String(error ?? '');

@@ -7,6 +7,7 @@ const schema = z.object({
   mode: z.enum(['replace', 'append']).optional(),
   expectedTaskUpdatedAt: z.string().optional(),
   markdown: z.string().trim().min(1).max(200_000).optional(),
+  allowDescriptionOverwrite: z.boolean().optional(),
 });
 
 export default defineEventHandler(async (event) => {

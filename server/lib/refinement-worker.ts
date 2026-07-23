@@ -6,6 +6,7 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import { loadAgentsContext } from './agents-context';
+import { syncMasterForRefinement } from './git-workspaces';
 import { runRefinementCodexTurn } from './refinement-codex';
 import { resolveServiceConfig } from './config';
 import { storeTaskAttachment } from './kanban';
@@ -15,6 +16,7 @@ import {
   completeRefinement,
   failRefinement,
   heartbeatRefinementLease,
+  recordRefinementWorkspaceSync,
   releaseRefinementLease,
   requeueStaleRefinements,
   requestRefinementInput,
@@ -301,6 +303,25 @@ export class RefinementWorker {
 }
 
 export async function processClaimedRefinement(context: RefinementContext, signal: AbortSignal) {
+  runtimeLogger.info('refinement master sync started', {
+    refinement_id: context.id,
+    task_id: context.taskId,
+    task_key: context.taskKey,
+    round: context.round,
+  });
+  const syncedWorkspace = await syncMasterForRefinement(context.projectFolderPath, signal);
+  recordRefinementWorkspaceSync(context.id, syncedWorkspace.revision, context.leaseToken, {
+    branch: syncedWorkspace.branchName,
+    dirty: syncedWorkspace.dirty,
+  });
+  context.sourceCodeRevision = syncedWorkspace.revision;
+  runtimeLogger.info('refinement master sync completed', {
+    refinement_id: context.id,
+    task_id: context.taskId,
+    revision: syncedWorkspace.revision,
+    dirty: syncedWorkspace.dirty,
+  });
+
   const workflow = await loadWorkflow();
   const config = resolveServiceConfig(workflow);
   const agentsContext = await loadAgentsContext(context.projectFolderPath);

@@ -126,6 +126,7 @@ export function ensureDatabase() {
       priority TEXT NOT NULL DEFAULT 'normal',
       position INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL REFERENCES users(id),
+      client_request_id TEXT,
       assignee_id TEXT REFERENCES users(id),
       agent_enabled INTEGER NOT NULL DEFAULT 0,
       agent_status TEXT NOT NULL DEFAULT 'idle',
@@ -203,6 +204,15 @@ export function ensureDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS comment_mentions (
+      comment_id TEXT NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      seen_at TEXT,
+      PRIMARY KEY(comment_id, user_id)
+    );
+
     CREATE TABLE IF NOT EXISTS activity (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -221,7 +231,18 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_project_tags_project ON project_tags(project_id);
     CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
     CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id);
+    CREATE INDEX IF NOT EXISTS idx_comment_mentions_task_user ON comment_mentions(task_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_comment_mentions_unread ON comment_mentions(user_id, seen_at);
+    CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity(task_id, created_at);
   `);
+
+  // Older builds persisted the complete Codex protocol stream, including
+  // command-output deltas. Those internal diagnostics reached tens of
+  // megabytes per task and were never part of the user-facing history.
+  const removedRawCodexEvents = sqlite.prepare("DELETE FROM activity WHERE action = 'codex_event'").run().changes;
+  if (removedRawCodexEvents > 0) {
+    runtimeLogger.info('removed legacy raw codex activity', { rows: removedRawCodexEvents });
+  }
 
   sqlite.exec(`
     UPDATE columns SET name_de = 'In Prüfung' WHERE key = 'in_review' AND name_de = 'In Pruefung';
@@ -243,6 +264,14 @@ export function ensureDatabase() {
     sqlite.exec('ALTER TABLE tasks ADD COLUMN agent_enabled INTEGER NOT NULL DEFAULT 0;');
     sqlite.exec("UPDATE tasks SET agent_status = 'idle' WHERE agent_status = 'queued';");
   }
+  if (!taskColumns.some((column) => column.name === 'client_request_id')) {
+    sqlite.exec('ALTER TABLE tasks ADD COLUMN client_request_id TEXT;');
+  }
+  sqlite.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request
+    ON tasks(project_id, created_by, client_request_id)
+    WHERE client_request_id IS NOT NULL;
+  `);
 
   // `task_refinements` was introduced without a migration framework. Keep the
   // bootstrap idempotent for databases created by development/intermediate

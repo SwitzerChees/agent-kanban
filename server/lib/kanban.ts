@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, count, desc, eq, inArray, isNull, max, notInArray, sql } from 'drizzle-orm';
 import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
+import { removeTaskWorktree } from './git-workspaces';
 import type { User } from './db/schema';
 
 const DEFAULT_COLUMNS = [
@@ -217,6 +218,22 @@ export function getBoard(projectId: string, user: User) {
   const taskTags = taskIds.length
     ? db.select().from(schema.taskTags).where(inArray(schema.taskTags.taskId, taskIds)).orderBy(asc(schema.taskTags.name)).all()
     : [];
+  const unreadMentionRows = taskIds.length
+    ? db.select({
+      taskId: schema.commentMentions.taskId,
+      count: count(),
+      latestAt: max(schema.commentMentions.createdAt),
+    })
+      .from(schema.commentMentions)
+      .where(and(
+        inArray(schema.commentMentions.taskId, taskIds),
+        eq(schema.commentMentions.userId, user.id),
+        isNull(schema.commentMentions.seenAt),
+      ))
+      .groupBy(schema.commentMentions.taskId)
+      .all()
+    : [];
+  const unreadMentionsByTaskId = new Map(unreadMentionRows.map((row) => [row.taskId, row]));
   const projectTags = getProjectTags(projectId);
   const members = db.select({ user: schema.users })
     .from(schema.projectUsers)
@@ -240,6 +257,8 @@ export function getBoard(projectId: string, user: User) {
         .filter((attachment) => attachment.taskId === task.id)
         .map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
       tags: taskTags.filter((tag) => tag.taskId === task.id).map((tag) => tag.name),
+      unreadMentionCount: unreadMentionsByTaskId.get(task.id)?.count ?? 0,
+      latestUnreadMentionAt: unreadMentionsByTaskId.get(task.id)?.latestAt ?? null,
     })),
   };
 }
@@ -366,9 +385,7 @@ export function getCommandPaletteIndex(user: User) {
 }
 
 export function getTaskDetail(taskId: string, user: User) {
-  const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
-  if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
-  const project = getProject(task.projectId, user);
+  const { task, project } = authorizeTaskAccess(taskId, user);
   const attachments = db.select().from(schema.attachments)
     .where(eq(schema.attachments.taskId, taskId))
     .orderBy(asc(schema.attachments.createdAt))
@@ -395,8 +412,28 @@ export function getTaskDetail(taskId: string, user: User) {
     .where(eq(schema.comments.taskId, taskId))
     .orderBy(asc(schema.comments.createdAt))
     .all();
+  const commentMentions = db.select({
+    commentId: schema.commentMentions.commentId,
+    userId: schema.commentMentions.userId,
+    userName: schema.users.name,
+    seenAt: schema.commentMentions.seenAt,
+  })
+    .from(schema.commentMentions)
+    .innerJoin(schema.users, eq(schema.commentMentions.userId, schema.users.id))
+    .where(eq(schema.commentMentions.taskId, taskId))
+    .orderBy(asc(schema.commentMentions.createdAt), asc(schema.users.name))
+    .all();
+  const mentionsByCommentId = new Map<string, typeof commentMentions>();
+  for (const mention of commentMentions) {
+    const mentions = mentionsByCommentId.get(mention.commentId) ?? [];
+    mentions.push(mention);
+    mentionsByCommentId.set(mention.commentId, mentions);
+  }
   const events = db.select().from(schema.activity)
-    .where(eq(schema.activity.taskId, taskId))
+    .where(and(
+      eq(schema.activity.taskId, taskId),
+      notInArray(schema.activity.action, ['codex_event']),
+    ))
     .orderBy(asc(schema.activity.createdAt))
     .all();
 
@@ -409,9 +446,25 @@ export function getTaskDetail(taskId: string, user: User) {
       attachments: attachments.map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
       tags,
     },
-    comments,
+    comments: comments.map((comment) => {
+      const mentions = mentionsByCommentId.get(comment.id) ?? [];
+      const currentUserMention = mentions.find((mention) => mention.userId === user.id);
+      return {
+        ...comment,
+        mentions: mentions.map(({ userId, userName }) => ({ userId, userName })),
+        mentionedCurrentUser: Boolean(currentUserMention),
+        unreadMention: Boolean(currentUserMention && !currentUserMention.seenAt),
+      };
+    }),
+    unreadMentionCount: commentMentions.filter((mention) => mention.userId === user.id && !mention.seenAt).length,
     events,
   };
+}
+
+export function authorizeTaskAccess(taskId: string, user: User) {
+  const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+  if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
+  return { task, project: getProject(task.projectId, user) };
 }
 
 export async function createSwimlane(projectId: string, input: { nameEn: string; nameDe?: string }, user: User) {
@@ -613,7 +666,7 @@ export function reorderHierarchy(projectId: string, input: {
   return getBoard(projectId, user);
 }
 
-export async function createTask(projectId: string, input: {
+type CreateTaskInput = {
   title: string;
   description?: string | null;
   columnId?: string | null;
@@ -622,11 +675,73 @@ export async function createTask(projectId: string, input: {
   unterthemaId?: string | null;
   assigneeId?: string | null;
   agentEnabled?: boolean;
+  clientRequestId?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
   files?: UploadedTaskFile[];
-}, user: User) {
+};
+
+type BoardTask = ReturnType<typeof getBoard>['tasks'][number];
+
+const TASK_CREATION_WAIT_MS = 5_000;
+const TASK_CREATION_STALE_MS = 2 * 60_000;
+const inFlightTaskCreations = new Map<string, Promise<BoardTask>>();
+
+export async function createTask(projectId: string, input: CreateTaskInput, user: User) {
   const project = getProject(projectId, user);
+  const clientRequestId = input.clientRequestId;
+  if (!clientRequestId) return createTaskOnce(projectId, input, user, project);
+  const idempotentInput = { ...input, clientRequestId };
+
+  const requestKey = `${projectId}:${user.id}:${clientRequestId}`;
+  const activeCreation = inFlightTaskCreations.get(requestKey);
+  if (activeCreation) return activeCreation;
+
+  const creation = createTaskIdempotently(projectId, idempotentInput, user, project);
+  inFlightTaskCreations.set(requestKey, creation);
+  void creation.then(
+    () => clearInFlightTaskCreation(requestKey, creation),
+    () => clearInFlightTaskCreation(requestKey, creation),
+  );
+  return creation;
+}
+
+async function createTaskIdempotently(
+  projectId: string,
+  input: CreateTaskInput & { clientRequestId: string },
+  user: User,
+  project: ReturnType<typeof getProject>,
+) {
+  const existingTask = findTaskByClientRequest(projectId, user.id, input.clientRequestId);
+  if (existingTask) {
+    if (isTaskCreationComplete(existingTask.id)) {
+      return getBoardTask(projectId, existingTask.id, user);
+    }
+
+    if (!isTaskCreationStale(existingTask.createdAt)) {
+      // A second Node process may still be finishing its local file writes.
+      // Wait briefly, but never delete a fresh creation owned by that process.
+      const completedTask = await waitForCompletedTaskCreation(projectId, existingTask.id, user);
+      if (completedTask) return completedTask;
+      if (completedTask === undefined) {
+        throw createError({ statusCode: 409, statusMessage: 'task_creation_in_progress' });
+      }
+    } else {
+      // A server crash can leave an old task row behind before the completion
+      // marker was written. Only an explicitly stale request may be reclaimed.
+      await rollbackCreatedTask(existingTask.id);
+    }
+  }
+
+  return createTaskOnce(projectId, input, user, project);
+}
+
+async function createTaskOnce(
+  projectId: string,
+  input: CreateTaskInput,
+  user: User,
+  project: ReturnType<typeof getProject>,
+): Promise<BoardTask> {
   const assigneeId = resolveTaskAssignee(projectId, input.assigneeId, user.id);
   const now = new Date().toISOString();
   const columnId = defaultBacklogColumn(projectId);
@@ -636,27 +751,30 @@ export async function createTask(projectId: string, input: {
   const taskId = randomUUID();
   const taskKey = nextTaskKey(project.key);
 
-  db.insert(schema.tasks).values({
-    id: taskId,
-    projectId,
-    oberthemaId: placement.oberthemaId,
-    unterthemaId: placement.unterthemaId,
-    columnId,
-    swimlaneId: input.swimlaneId || null,
-    key: taskKey,
-    title: input.title.trim(),
-    description: input.description?.trim() || null,
-    priority: input.priority ?? 'normal',
-    position,
-    createdBy: user.id,
-    assigneeId,
-    agentEnabled: input.agentEnabled ?? false,
-    agentStatus: 'idle',
-    createdAt: now,
-    updatedAt: now,
-  }).run();
-
+  let inserted = false;
   try {
+    db.insert(schema.tasks).values({
+      id: taskId,
+      projectId,
+      oberthemaId: placement.oberthemaId,
+      unterthemaId: placement.unterthemaId,
+      columnId,
+      swimlaneId: input.swimlaneId || null,
+      key: taskKey,
+      title: input.title.trim(),
+      description: input.description?.trim() || null,
+      priority: input.priority ?? 'normal',
+      position,
+      createdBy: user.id,
+      clientRequestId: input.clientRequestId || null,
+      assigneeId,
+      agentEnabled: input.agentEnabled ?? false,
+      agentStatus: 'idle',
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+    inserted = true;
+
     if (input.tags?.length) {
       setTaskTags(taskId, input.tags, projectId);
     }
@@ -672,14 +790,66 @@ export async function createTask(projectId: string, input: {
     }
     logTaskActivity(projectId, taskId, user.id, 'task_created', { columnKey: column.key, tags: normalizeTags(input.tags ?? []) });
 
-    return getBoard(projectId, user).tasks.find((task) => task.id === taskId);
+    return getBoardTask(projectId, taskId, user);
   } catch (error) {
-    await rollbackCreatedTask(taskId);
+    if (inserted) {
+      await rollbackCreatedTask(taskId);
+    } else if (input.clientRequestId) {
+      const duplicate = findTaskByClientRequest(projectId, user.id, input.clientRequestId);
+      if (duplicate) {
+        const completedTask = await waitForCompletedTaskCreation(projectId, duplicate.id, user);
+        if (completedTask) return completedTask;
+        if (completedTask === null) return createTaskOnce(projectId, input, user, project);
+        throw createError({ statusCode: 409, statusMessage: 'task_creation_in_progress' });
+      }
+    }
     throw error;
   }
 }
 
-export function updateTask(taskId: string, input: {
+function clearInFlightTaskCreation(requestKey: string, creation: Promise<BoardTask>) {
+  if (inFlightTaskCreations.get(requestKey) === creation) inFlightTaskCreations.delete(requestKey);
+}
+
+function findTaskByClientRequest(projectId: string, userId: string, clientRequestId: string) {
+  return db.select({ id: schema.tasks.id, createdAt: schema.tasks.createdAt }).from(schema.tasks).where(and(
+    eq(schema.tasks.projectId, projectId),
+    eq(schema.tasks.createdBy, userId),
+    eq(schema.tasks.clientRequestId, clientRequestId),
+  )).get();
+}
+
+function isTaskCreationComplete(taskId: string) {
+  return Boolean(db.select({ id: schema.activity.id }).from(schema.activity).where(and(
+    eq(schema.activity.taskId, taskId),
+    eq(schema.activity.action, 'task_created'),
+  )).get());
+}
+
+function getBoardTask(projectId: string, taskId: string, user: User) {
+  const task = getBoard(projectId, user).tasks.find((item) => item.id === taskId);
+  if (!task) throw createError({ statusCode: 500, statusMessage: 'created_task_not_found' });
+  return task;
+}
+
+async function waitForCompletedTaskCreation(projectId: string, taskId: string, user: User) {
+  const deadline = Date.now() + TASK_CREATION_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (isTaskCreationComplete(taskId)) return getBoardTask(projectId, taskId, user);
+    const taskStillExists = db.select({ id: schema.tasks.id }).from(schema.tasks)
+      .where(eq(schema.tasks.id, taskId)).get();
+    if (!taskStillExists) return null;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return undefined;
+}
+
+function isTaskCreationStale(createdAt: string) {
+  const createdAtMs = Date.parse(createdAt);
+  return !Number.isFinite(createdAtMs) || Date.now() - createdAtMs >= TASK_CREATION_STALE_MS;
+}
+
+export async function updateTask(taskId: string, input: {
   title?: string;
   description?: string | null;
   columnId?: string;
@@ -695,7 +865,9 @@ export function updateTask(taskId: string, input: {
 }, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
-  getProject(task.projectId, user);
+  const project = getProject(task.projectId, user);
+  const currentColumn = getProjectColumn(task.projectId, task.columnId);
+  let targetColumn = currentColumn;
   if ((task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed') && (input.title !== undefined || input.description !== undefined)) {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
@@ -724,7 +896,7 @@ export function updateTask(taskId: string, input: {
   const placementChanged = nextPlacement.oberthemaId !== task.oberthemaId
     || nextPlacement.unterthemaId !== task.unterthemaId;
   if (input.columnId) {
-    const targetColumn = getProjectColumn(task.projectId, input.columnId);
+    targetColumn = getProjectColumn(task.projectId, input.columnId);
     if (targetColumn.key === 'todo' && nextAgentEnabled && task.agentStatus !== 'running') {
       nextAgentStatus = 'queued';
     } else if (task.agentStatus === 'queued' && targetColumn.key !== 'todo') {
@@ -775,6 +947,9 @@ export function updateTask(taskId: string, input: {
   });
   if (nextAgentStatus === 'queued' && task.agentStatus !== 'queued') {
     logTaskActivity(task.projectId, taskId, user.id, 'codex_queued', { reason: 'moved_to_todo' });
+  }
+  if (!currentColumn.done && targetColumn.done && (task.agentEnabled || ['done', 'failed'].includes(task.agentStatus))) {
+    await cleanupCompletedTaskWorktree(task, project.folderPath, user.id);
   }
   return updated;
 }
@@ -958,13 +1133,52 @@ export async function saveAttachmentAnnotation(taskId: string, attachmentId: str
   return getTaskDetail(taskId, user);
 }
 
-export function addTaskComment(taskId: string, body: string, user: User) {
+export function addTaskComment(taskId: string, body: string, mentionUserIds: string[], user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
+  const mentionedUsers = resolveCommentMentionUsers(task.projectId, mentionUserIds, user.id);
   const comment = insertTaskComment(taskId, body, user, 'comment');
-  logTaskActivity(task.projectId, taskId, user.id, 'comment_added', { body: comment.body });
-  return comment;
+  if (mentionedUsers.length) {
+    db.insert(schema.commentMentions).values(mentionedUsers.map((mentionedUser) => ({
+      commentId: comment.id,
+      taskId,
+      userId: mentionedUser.id,
+      createdAt: comment.createdAt,
+      seenAt: null,
+    }))).run();
+  }
+  logTaskActivity(task.projectId, taskId, user.id, 'comment_added', {
+    body: comment.body,
+    mentionCount: mentionedUsers.length,
+  });
+  return {
+    ...comment,
+    mentions: mentionedUsers.map((mentionedUser) => ({
+      userId: mentionedUser.id,
+      userName: mentionedUser.name,
+    })),
+    mentionedCurrentUser: false,
+    unreadMention: false,
+  };
+}
+
+export function markTaskMentionsSeen(taskId: string, commentIds: string[], user: User) {
+  const { task } = authorizeTaskAccess(taskId, user);
+  const now = new Date().toISOString();
+  const result = db.update(schema.commentMentions)
+    .set({ seenAt: now })
+    .where(and(
+      eq(schema.commentMentions.taskId, taskId),
+      eq(schema.commentMentions.userId, user.id),
+      inArray(schema.commentMentions.commentId, [...new Set(commentIds)]),
+      isNull(schema.commentMentions.seenAt),
+    ))
+    .run();
+  if (result.changes > 0) {
+    logTaskActivity(task.projectId, taskId, user.id, 'comment_mentions_seen', { count: result.changes });
+  }
+  return { ok: true, count: result.changes, seenAt: now };
 }
 
 export function addTaskMessage(taskId: string, body: string, user: User) {
@@ -1041,6 +1255,54 @@ function insertTaskComment(taskId: string, body: string, user: User, kind: 'comm
     ...comment,
     userName: user.name,
   };
+}
+
+function resolveCommentMentionUsers(projectId: string, mentionUserIds: string[], commentingUserId: string) {
+  const uniqueIds = [...new Set(mentionUserIds)].filter((userId) => userId !== commentingUserId);
+  if (!uniqueIds.length) return [];
+  if (uniqueIds.length > 25) {
+    throw createError({ statusCode: 400, statusMessage: 'too_many_mentions' });
+  }
+  const mentionedUsers = db.select({
+    id: schema.users.id,
+    name: schema.users.name,
+  })
+    .from(schema.projectUsers)
+    .innerJoin(schema.users, eq(schema.projectUsers.userId, schema.users.id))
+    .where(and(
+      eq(schema.projectUsers.projectId, projectId),
+      inArray(schema.projectUsers.userId, uniqueIds),
+      eq(schema.users.active, true),
+    ))
+    .all();
+  if (mentionedUsers.length !== uniqueIds.length) {
+    throw createError({ statusCode: 400, statusMessage: 'invalid_comment_mention' });
+  }
+  return mentionedUsers;
+}
+
+async function cleanupCompletedTaskWorktree(
+  task: typeof schema.tasks.$inferSelect,
+  projectPath: string,
+  userId: string,
+) {
+  try {
+    const cleanup = await removeTaskWorktree({
+      projectPath,
+      worktreePath: appDataDir('worktrees', task.projectId, task.id, 'tree'),
+    });
+    if (cleanup.reason === 'missing') return;
+    logTaskActivity(task.projectId, task.id, userId, cleanup.removed
+      ? 'codex_worktree_removed'
+      : 'codex_worktree_cleanup_deferred', {
+      branch: cleanup.branchName,
+      reason: cleanup.reason,
+    });
+  } catch (error) {
+    logTaskActivity(task.projectId, task.id, userId, 'codex_worktree_cleanup_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function requeueTaskForFollowUp(task: typeof schema.tasks.$inferSelect, userId: string, body: string) {

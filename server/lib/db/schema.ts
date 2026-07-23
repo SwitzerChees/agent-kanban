@@ -100,6 +100,7 @@ export const tasks = sqliteTable('tasks', {
   priority: text('priority', { enum: ['low', 'normal', 'high', 'urgent'] }).notNull().default('normal'),
   position: integer('position').notNull().default(0),
   createdBy: text('created_by').notNull().references(() => users.id),
+  clientRequestId: text('client_request_id'),
   assigneeId: text('assignee_id').references(() => users.id),
   agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
   agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'failed', 'done'] }).notNull().default('idle'),
@@ -176,6 +177,16 @@ export const comments = sqliteTable('comments', {
   body: text('body').notNull(),
   createdAt: text('created_at').notNull(),
 });
+
+export const commentMentions = sqliteTable('comment_mentions', {
+  commentId: text('comment_id').notNull().references(() => comments.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: text('created_at').notNull(),
+  seenAt: text('seen_at'),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.commentId, table.userId] }),
+}));
 
 export const activity = sqliteTable('activity', {
   id: text('id').primaryKey(),

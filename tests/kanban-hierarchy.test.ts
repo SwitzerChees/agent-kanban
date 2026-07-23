@@ -12,11 +12,13 @@ process.env.KANBAN_ADMIN_PASSWORD = 'hierarchy-test-password';
 
 let dbModule: typeof import('../server/lib/db');
 let kanban: typeof import('../server/lib/kanban');
+let localDispatcher: typeof import('../server/lib/local-dispatcher');
 let admin: User;
 
 beforeAll(async () => {
   dbModule = await import('../server/lib/db');
   kanban = await import('../server/lib/kanban');
+  localDispatcher = await import('../server/lib/local-dispatcher');
   const seededAdmin = dbModule.db.select().from(dbModule.schema.users).get();
   if (!seededAdmin) throw new Error('seeded_admin_missing');
   admin = seededAdmin;
@@ -70,9 +72,9 @@ describe('project topic hierarchy', () => {
     });
 
     const todoColumn = initialBoard.columns.find((column) => column.key === 'todo')!;
-    expect(kanban.updateTask(directTask!.id, { columnId: todoColumn.id }, admin)?.agentStatus).toBe('idle');
-    expect(kanban.updateTask(directTask!.id, { agentEnabled: true }, admin)).toMatchObject({ agentEnabled: true, agentStatus: 'queued' });
-    expect(kanban.updateTask(directTask!.id, { agentEnabled: false }, admin)).toMatchObject({ agentEnabled: false, agentStatus: 'idle' });
+    expect((await kanban.updateTask(directTask!.id, { columnId: todoColumn.id }, admin))?.agentStatus).toBe('idle');
+    await expect(kanban.updateTask(directTask!.id, { agentEnabled: true }, admin)).resolves.toMatchObject({ agentEnabled: true, agentStatus: 'queued' });
+    await expect(kanban.updateTask(directTask!.id, { agentEnabled: false }, admin)).resolves.toMatchObject({ agentEnabled: false, agentStatus: 'idle' });
 
     expectStatusMessage(
       () => kanban.createOberthema(project.id, { name: 'delivery' }, admin),
@@ -84,8 +86,47 @@ describe('project topic hierarchy', () => {
     );
 
     const fallback = initialBoard.unterthemen[0]!;
-    kanban.updateTask(task!.id, { unterthemaId: fallback.id }, admin);
+    await kanban.updateTask(task!.id, { unterthemaId: fallback.id }, admin);
     expect(kanban.deleteUnterthema(subtopic.id, admin)).toMatchObject({ ok: true });
+  });
+
+  test('keeps raw Codex protocol events out of task details and recovers failed task placement', async () => {
+    const project = await kanban.createProject({
+      name: 'Compact Activity Project',
+      key: 'COMPACT',
+      folderPath: path.join(testRoot, 'workspace-compact-activity'),
+    }, admin);
+    const board = kanban.getBoard(project.id, admin);
+    const inProgress = board.columns.find((column) => column.key === 'in_progress')!;
+    const inReview = board.columns.find((column) => column.key === 'in_review')!;
+    const task = await kanban.createTask(project.id, {
+      title: 'Do not load protocol noise',
+      agentEnabled: true,
+    }, admin);
+
+    kanban.logTaskActivity(project.id, task!.id, null, 'codex_event', {
+      raw: 'x'.repeat(100_000),
+    });
+    kanban.logTaskActivity(project.id, task!.id, null, 'codex_text_update', {
+      body: 'A useful progress update',
+    });
+
+    const detail = kanban.getTaskDetail(task!.id, admin);
+    expect(detail.events.map((event) => event.action)).toContain('codex_text_update');
+    expect(detail.events.map((event) => event.action)).not.toContain('codex_event');
+    expect(JSON.stringify(detail).length).toBeLessThan(20_000);
+
+    dbModule.db.update(dbModule.schema.tasks).set({
+      agentStatus: 'failed',
+      columnId: inProgress.id,
+    }).where(eq(dbModule.schema.tasks.id, task!.id)).run();
+
+    expect(localDispatcher.reconcileFailedTaskColumns()).toBeGreaterThanOrEqual(1);
+    expect(dbModule.db.select().from(dbModule.schema.tasks)
+      .where(eq(dbModule.schema.tasks.id, task!.id)).get()).toMatchObject({
+      agentStatus: 'failed',
+      columnId: inReview.id,
+    });
   });
 
   test('rejects hierarchy moves and task assignments across projects', async () => {
@@ -141,11 +182,53 @@ describe('project topic hierarchy', () => {
       agentEnabled: true,
     }, admin);
     expect(aiTask).toMatchObject({ assigneeId: member.id, agentEnabled: true });
-    expect(kanban.updateTask(aiTask!.id, { assigneeId: null }, admin)).toMatchObject({
+    await expect(kanban.updateTask(aiTask!.id, { assigneeId: null }, admin)).resolves.toMatchObject({
       assigneeId: null,
       agentEnabled: true,
     });
-    expect(kanban.updateTask(aiTask!.id, { assigneeId: member.id }, admin)?.assigneeId).toBe(member.id);
+    expect((await kanban.updateTask(aiTask!.id, { assigneeId: member.id }, admin))?.assigneeId).toBe(member.id);
+
+    const [idempotentTask, idempotentRetry] = await Promise.all([
+      kanban.createTask(project.id, {
+        title: 'Create once',
+        clientRequestId: '51b5cc91-d9e5-4e40-b9ab-d336a817bb36',
+        files: [{
+          fileName: 'context.txt',
+          mimeType: 'text/plain',
+          data: Buffer.from('refinement context'),
+        }],
+      }, admin),
+      kanban.createTask(project.id, {
+        title: 'Do not create this duplicate',
+        clientRequestId: '51b5cc91-d9e5-4e40-b9ab-d336a817bb36',
+      }, admin),
+    ]);
+    expect(idempotentRetry?.id).toBe(idempotentTask?.id);
+    expect(idempotentRetry?.title).toBe('Create once');
+    expect(kanban.getTaskDetail(idempotentTask!.id, admin).task.attachments).toHaveLength(1);
+
+    const completedRetry = await kanban.createTask(project.id, {
+      title: 'Still do not create a duplicate',
+      clientRequestId: '51b5cc91-d9e5-4e40-b9ab-d336a817bb36',
+    }, admin);
+    expect(completedRetry?.id).toBe(idempotentTask?.id);
+
+    const storedIdempotentAttachment = dbModule.db.select().from(dbModule.schema.attachments)
+      .where(eq(dbModule.schema.attachments.taskId, idempotentTask!.id)).get()!;
+    dbModule.db.delete(dbModule.schema.activity)
+      .where(eq(dbModule.schema.activity.taskId, idempotentTask!.id)).run();
+    dbModule.db.update(dbModule.schema.tasks)
+      .set({ createdAt: '2000-01-01T00:00:00.000Z' })
+      .where(eq(dbModule.schema.tasks.id, idempotentTask!.id)).run();
+
+    const recoveredTask = await kanban.createTask(project.id, {
+      title: 'Recover stale creation',
+      clientRequestId: '51b5cc91-d9e5-4e40-b9ab-d336a817bb36',
+    }, admin);
+    expect(recoveredTask?.id).not.toBe(idempotentTask?.id);
+    expect(recoveredTask?.title).toBe('Recover stale creation');
+    expect(existsSync(storedIdempotentAttachment.storagePath)).toBe(false);
+
     await kanban.updateProject(project.id, { userIds: [] }, admin);
     expect(kanban.getBoard(project.id, admin).tasks.find((task) => task.id === aiTask?.id)?.assigneeId).toBeNull();
 
@@ -153,6 +236,57 @@ describe('project topic hierarchy', () => {
       title: 'Invalid responsibility',
       assigneeId: outsider.id,
     }, admin)).rejects.toMatchObject({ statusMessage: 'invalid_assignee' });
+  });
+
+  test('keeps comment mentions unread per user until each mentioned comment is viewed', async () => {
+    const project = await kanban.createProject({
+      name: 'Mention Project',
+      key: 'MENTION',
+      folderPath: path.join(testRoot, 'workspace-mentions'),
+    }, admin);
+    const mentionedMember = insertUser('mentioned-member', 'Mentioned Member');
+    const outsider = insertUser('mention-outsider', 'Mention Outsider');
+    kanban.addProjectUser(project.id, mentionedMember.id, admin);
+    const task = await kanban.createTask(project.id, { title: 'Review the mentions' }, admin);
+
+    const firstComment = kanban.addTaskComment(
+      task!.id,
+      'Please review this, @Mentioned Member.',
+      [mentionedMember.id],
+      admin,
+    );
+    const secondComment = kanban.addTaskComment(
+      task!.id,
+      'And this follow-up, @Mentioned Member.',
+      [mentionedMember.id],
+      admin,
+    );
+
+    expect(firstComment.mentions).toEqual([{
+      userId: mentionedMember.id,
+      userName: mentionedMember.name,
+    }]);
+    expect(kanban.getBoard(project.id, mentionedMember).tasks.find((item) => item.id === task!.id))
+      .toMatchObject({ unreadMentionCount: 2 });
+    expect(kanban.getBoard(project.id, admin).tasks.find((item) => item.id === task!.id))
+      .toMatchObject({ unreadMentionCount: 0 });
+
+    const unreadDetail = kanban.getTaskDetail(task!.id, mentionedMember);
+    expect(unreadDetail.unreadMentionCount).toBe(2);
+    expect(unreadDetail.comments.filter((comment) => comment.unreadMention)).toHaveLength(2);
+
+    expect(kanban.markTaskMentionsSeen(task!.id, [firstComment.id], mentionedMember))
+      .toMatchObject({ ok: true, count: 1 });
+    expect(kanban.getBoard(project.id, mentionedMember).tasks.find((item) => item.id === task!.id))
+      .toMatchObject({ unreadMentionCount: 1 });
+    expect(kanban.markTaskMentionsSeen(task!.id, [secondComment.id], mentionedMember))
+      .toMatchObject({ ok: true, count: 1 });
+    expect(kanban.getTaskDetail(task!.id, mentionedMember)).toMatchObject({ unreadMentionCount: 0 });
+
+    expectStatusMessage(
+      () => kanban.addTaskComment(task!.id, '@Mention Outsider', [outsider.id], admin),
+      'invalid_comment_mention',
+    );
   });
 
   test('reorders parent and sub-topics atomically, including moves between parents', async () => {
@@ -294,7 +428,7 @@ describe('project topic hierarchy', () => {
         data: Buffer.from('Attachment content must not be indexed'),
       }],
     }, admin);
-    const visibleTask = kanban.updateTask(createdVisibleTask!.id, { columnId: visibleTodo.id }, admin)!;
+    const visibleTask = (await kanban.updateTask(createdVisibleTask!.id, { columnId: visibleTodo.id }, admin))!;
 
     const hiddenBoard = kanban.getBoard(secondProject.id, admin);
     const hiddenTask = await kanban.createTask(secondProject.id, {

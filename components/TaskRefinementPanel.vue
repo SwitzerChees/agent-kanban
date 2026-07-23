@@ -31,6 +31,7 @@ export interface TaskRefinementRun {
   status: TaskRefinementStatus | (string & {});
   createdAt?: string | null;
   updatedAt?: string | null;
+  sourceDescription?: string | null;
   sourceCodeRevision?: string | null;
   resultCodeRevision?: string | null;
   summary?: string | null;
@@ -49,6 +50,10 @@ export interface TaskRefinementLabels {
   briefPlaceholder: string;
   briefHint: string;
   start: string;
+  createAndStart: string;
+  createOnStartHint: string;
+  saveOnStartHint: string;
+  titleRequired: string;
   queuedTitle: string;
   queuedDescription: string;
   runningTitle: string;
@@ -62,6 +67,8 @@ export interface TaskRefinementLabels {
   submitAnswers: string;
   resultTitle: string;
   resultDescription: string;
+  descriptionChangedTitle: string;
+  descriptionChangedHint: string;
   apply: string;
   applied: string;
   newRun: string;
@@ -98,6 +105,10 @@ const defaultLabels: TaskRefinementLabels = {
   briefPlaceholder: 'Zum Beispiel: Die Projektübersicht um eine kompakte Zeitplanung erweitern …',
   briefHint: 'Ein bis zwei Sätze reichen. Codex berücksichtigt Code, Projektstruktur und vorhandene Anhänge.',
   start: 'Refinement starten',
+  createAndStart: 'Aufgabe erstellen und Refinement starten',
+  createOnStartHint: 'Beim Start wird die Aufgabe gespeichert und bleibt geöffnet.',
+  saveOnStartHint: 'Offene Aufgabenänderungen werden vor dem Refinement automatisch gespeichert.',
+  titleRequired: 'Gib der Aufgabe im Reiter „Auftrag“ zuerst einen Titel. Dein Refinement-Text bleibt erhalten.',
   queuedTitle: 'Refinement ist vorgemerkt',
   queuedDescription: 'Der Lauf startet, sobald ein Agent verfügbar ist.',
   runningTitle: 'Codex untersucht den Task',
@@ -111,6 +122,8 @@ const defaultLabels: TaskRefinementLabels = {
   submitAnswers: 'Antworten senden und fortfahren',
   resultTitle: 'Refinement abgeschlossen',
   resultDescription: 'Das Ergebnis ist versioniert und kann in die Aufgabenbeschreibung übernommen werden.',
+  descriptionChangedTitle: 'Beschreibung wurde inzwischen geändert',
+  descriptionChangedHint: 'Dieses Refinement basiert auf einer früheren Beschreibung. Du kannst es trotzdem übernehmen; die aktuelle Beschreibung wird dabei ersetzt.',
   apply: 'In Beschreibung übernehmen',
   applied: 'In Beschreibung übernommen',
   newRun: 'Neues Refinement',
@@ -147,6 +160,10 @@ const englishLabels: TaskRefinementLabels = {
   briefPlaceholder: 'For example: Add a compact timeline to the project overview …',
   briefHint: 'One or two sentences are enough. Codex considers the code, project structure, and existing attachments.',
   start: 'Start refinement',
+  createAndStart: 'Create task and start refinement',
+  createOnStartHint: 'Starting creates the task and keeps it open.',
+  saveOnStartHint: 'Unsaved task changes are saved automatically before refinement starts.',
+  titleRequired: 'Add a title in the Task brief tab first. Your refinement text will be kept.',
   queuedTitle: 'Refinement is queued',
   queuedDescription: 'The run starts as soon as an agent is available.',
   runningTitle: 'Codex is investigating the task',
@@ -160,6 +177,8 @@ const englishLabels: TaskRefinementLabels = {
   submitAnswers: 'Send answers and continue',
   resultTitle: 'Refinement completed',
   resultDescription: 'The result is versioned and can be applied to the task description.',
+  descriptionChangedTitle: 'The description has changed',
+  descriptionChangedHint: 'This refinement is based on an earlier description. You can still apply it; the current description will be replaced.',
   apply: 'Apply to description',
   applied: 'Applied to description',
   newRun: 'New refinement',
@@ -199,6 +218,9 @@ const props = withDefaults(defineProps<{
   errorMessage?: string | null;
   actionError?: string | null;
   busy?: boolean;
+  createOnStart?: boolean;
+  taskReady?: boolean;
+  descriptionChanged?: boolean;
   initialBrief?: string;
   labels?: Partial<TaskRefinementLabels>;
   locale?: string;
@@ -213,6 +235,9 @@ const props = withDefaults(defineProps<{
   errorMessage: null,
   actionError: null,
   busy: false,
+  createOnStart: false,
+  taskReady: true,
+  descriptionChanged: false,
   initialBrief: '',
   labels: () => ({}),
   locale: 'de-CH',
@@ -225,6 +250,7 @@ const emit = defineEmits<{
   retry: [runId: string];
   selectRun: [runId: string];
   dirtyChange: [dirty: boolean];
+  requestTaskDetails: [];
 }>();
 
 const t = computed<TaskRefinementLabels>(() => ({
@@ -236,6 +262,7 @@ const answers = reactive<Record<string, string>>({});
 const newRunOpen = ref(false);
 const pendingStartFromRunId = ref<string | null>(null);
 const startRequestPending = ref(false);
+const createRequestPending = ref(false);
 
 const activeRun = computed(() => props.currentRun || props.latest || props.runs[0] || null);
 const activeStatus = computed(() => props.status || activeRun.value?.status || 'idle');
@@ -248,6 +275,7 @@ const localizedFailureMessage = computed(() => {
     ? {
         refinement_timeout: 'Codex hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.',
         refinement_invalid_output: 'Codex hat ein unvollständiges Refinement geliefert. Du kannst es erneut versuchen.',
+        refinement_master_sync_failed: 'Der Projekt-Master konnte vor dem Refinement nicht aktualisiert werden. Prüfe Branch, Remote und mögliche Pull-Konflikte und versuche es erneut.',
         refinement_security_policy: 'Das Refinement wurde gestoppt, weil eine Regel für den Projektzugriff nicht erfüllt war.',
         refinement_question_limit: 'Die maximale Anzahl Challenge-Runden wurde erreicht. Starte mit den gesammelten Antworten einen neuen Lauf.',
         refinement_failed: 'Das Refinement konnte nicht abgeschlossen werden. Die Aufgabe wurde nicht verändert.',
@@ -255,6 +283,7 @@ const localizedFailureMessage = computed(() => {
     : {
         refinement_timeout: 'Codex took too long to finish this refinement. You can try again.',
         refinement_invalid_output: 'Codex returned an incomplete refinement. You can try again.',
+        refinement_master_sync_failed: 'The project master branch could not be updated before refinement. Check the branch, remote, and possible pull conflicts, then try again.',
         refinement_security_policy: 'The refinement stopped because a project access rule was not satisfied.',
         refinement_question_limit: 'The maximum number of challenge rounds was reached. Start a new run with the gathered answers.',
         refinement_failed: 'The refinement could not be completed. The task was not changed.',
@@ -335,6 +364,7 @@ watch(draftDirty, (dirty) => emit('dirtyChange', dirty), { immediate: true });
 watch(() => activeRun.value?.id ?? null, (runId) => {
   if (!startRequestPending.value || runId === pendingStartFromRunId.value) return;
   startRequestPending.value = false;
+  createRequestPending.value = false;
   pendingStartFromRunId.value = null;
   newRunOpen.value = false;
 });
@@ -344,6 +374,7 @@ watch(() => props.busy, (busy, previousBusy) => {
   // A failed request keeps the brief and form open. A successful request is
   // closed by the active-run watcher above.
   startRequestPending.value = false;
+  createRequestPending.value = false;
   pendingStartFromRunId.value = null;
 });
 
@@ -352,8 +383,13 @@ onBeforeUnmount(() => emit('dirtyChange', false));
 const startRefinement = () => {
   const value = brief.value.trim();
   if (!value || props.busy) return;
+  if (!props.taskReady) {
+    emit('requestTaskDetails');
+    return;
+  }
   pendingStartFromRunId.value = activeRun.value?.id ?? null;
   startRequestPending.value = true;
+  createRequestPending.value = props.createOnStart;
   emit('start', { brief: value, visualMode: 'auto' });
 };
 
@@ -437,6 +473,15 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
     </header>
 
     <div class="min-w-0 p-4 sm:p-6">
+      <UAlert
+        v-if="props.actionError"
+        class="mx-auto mb-5 max-w-4xl"
+        color="error"
+        variant="soft"
+        icon="i-lucide-circle-alert"
+        :description="props.actionError"
+      />
+
       <form v-if="normalizedStatus === 'idle' || newRunOpen" class="mx-auto max-w-3xl" @submit.prevent="startRefinement">
         <div class="mb-5 flex items-start gap-3 rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:ring-zinc-800">
           <UIcon name="i-lucide-scan-search" class="mt-0.5 size-5 shrink-0 text-teal-700 dark:text-teal-300" />
@@ -444,6 +489,15 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
             {{ t.intro }}
           </p>
         </div>
+
+        <UAlert
+          v-if="!props.taskReady"
+          class="mb-5"
+          color="warning"
+          variant="soft"
+          icon="i-lucide-heading-1"
+          :description="t.titleRequired"
+        />
 
         <UFormField :label="t.briefLabel" :description="t.briefHint" required size="lg">
           <UTextarea
@@ -454,23 +508,20 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
             :maxlength="4000"
             size="xl"
             autoresize
-            autofocus
+            :disabled="props.busy"
             @keydown.meta.enter.prevent="startRefinement"
             @keydown.ctrl.enter.prevent="startRefinement"
           />
         </UFormField>
 
-        <UAlert
-          v-if="props.actionError"
-          class="mt-4"
-          color="error"
-          variant="soft"
-          icon="i-lucide-circle-alert"
-          :description="props.actionError"
-        />
-
-        <div class="mt-4 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p class="text-xs text-zinc-500 dark:text-zinc-400">{{ brief.length }}/4000 · {{ t.shortcutHint }}</p>
+        <div class="mt-4 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div class="space-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+            <p>{{ brief.length }}/4000 · {{ t.shortcutHint }}</p>
+            <p v-if="props.taskReady" class="inline-flex items-center gap-1.5">
+              <UIcon name="i-lucide-save" class="size-3.5 shrink-0" />
+              {{ props.createOnStart || createRequestPending ? t.createOnStartHint : t.saveOnStartHint }}
+            </p>
+          </div>
           <div class="flex flex-col-reverse gap-2 sm:flex-row">
             <UButton
               v-if="newRunOpen"
@@ -490,7 +541,7 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
               :disabled="!brief.trim()"
               :loading="props.busy"
             >
-              {{ t.start }}
+              {{ props.createOnStart || createRequestPending ? t.createAndStart : t.start }}
             </UButton>
           </div>
         </div>
@@ -529,15 +580,6 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
             <p class="mt-1 text-sm leading-5 text-amber-900/80 dark:text-amber-200/80">{{ t.questionsDescription }}</p>
           </div>
         </div>
-
-        <UAlert
-          v-if="props.actionError"
-          class="mb-5"
-          color="error"
-          variant="soft"
-          icon="i-lucide-circle-alert"
-          :description="props.actionError"
-        />
 
         <div class="divide-y divide-zinc-200 dark:divide-zinc-800">
           <UFormField
@@ -585,59 +627,61 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
       </form>
 
       <div v-else-if="normalizedStatus === 'completed'" class="mx-auto max-w-4xl">
-        <div class="flex flex-col gap-4 border-b border-zinc-200 pb-5 sm:flex-row sm:items-start sm:justify-between dark:border-zinc-800">
-          <div class="min-w-0">
-            <div class="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
-              <UIcon name="i-lucide-circle-check" class="size-5" />
-              <h3 class="text-base font-semibold text-zinc-950 dark:text-white">{{ t.resultTitle }}</h3>
+        <div class="border-b border-zinc-200 pb-5 dark:border-zinc-800">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 text-emerald-700 dark:text-emerald-300">
+                <UIcon name="i-lucide-circle-check" class="size-5" />
+                <h3 class="text-base font-semibold text-zinc-950 dark:text-white">{{ t.resultTitle }}</h3>
+              </div>
+              <p class="mt-1 max-w-2xl text-sm leading-5 text-zinc-600 dark:text-zinc-400">{{ t.resultDescription }}</p>
+              <div v-if="activeRun?.sourceCodeRevision || activeRun?.resultCodeRevision" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                <p v-if="activeRun?.resultCodeRevision" class="inline-flex min-w-0 items-center gap-1.5">
+                  <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 shrink-0" />
+                  <span>{{ t.resultRevision }}:</span>
+                  <span class="truncate font-mono">{{ activeRun.resultCodeRevision }}</span>
+                </p>
+                <p v-if="activeRun?.sourceCodeRevision && activeRun.sourceCodeRevision !== activeRun.resultCodeRevision" class="inline-flex min-w-0 items-center gap-1.5">
+                  <UIcon name="i-lucide-history" class="size-3.5 shrink-0" />
+                  <span>{{ t.sourceRevision }}:</span>
+                  <span class="truncate font-mono">{{ activeRun.sourceCodeRevision }}</span>
+                </p>
+              </div>
             </div>
-            <p class="mt-1 max-w-2xl text-sm leading-5 text-zinc-600 dark:text-zinc-400">{{ t.resultDescription }}</p>
-            <div v-if="activeRun?.sourceCodeRevision || activeRun?.resultCodeRevision" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-              <p v-if="activeRun?.resultCodeRevision" class="inline-flex min-w-0 items-center gap-1.5">
-                <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 shrink-0" />
-                <span>{{ t.resultRevision }}:</span>
-                <span class="truncate font-mono">{{ activeRun.resultCodeRevision }}</span>
-              </p>
-              <p v-if="activeRun?.sourceCodeRevision && activeRun.sourceCodeRevision !== activeRun.resultCodeRevision" class="inline-flex min-w-0 items-center gap-1.5">
-                <UIcon name="i-lucide-history" class="size-3.5 shrink-0" />
-                <span>{{ t.sourceRevision }}:</span>
-                <span class="truncate font-mono">{{ activeRun.sourceCodeRevision }}</span>
-              </p>
+            <div class="flex shrink-0 flex-col gap-2 sm:items-end">
+              <UButton
+                :icon="activeRun?.appliedAt ? 'i-lucide-check' : 'i-lucide-file-pen-line'"
+                size="lg"
+                class="justify-center"
+                :disabled="!activeResult || !activeRun?.id || Boolean(activeRun?.appliedAt)"
+                :loading="props.busy"
+                @click="activeRun?.id && emit('apply', activeRun.id)"
+              >
+                {{ activeRun?.appliedAt ? t.applied : t.apply }}
+              </UButton>
+              <UButton
+                type="button"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                icon="i-lucide-plus"
+                :disabled="hasActiveRun"
+                @click="newRunOpen = true"
+              >
+                {{ t.newRun }}
+              </UButton>
             </div>
           </div>
-          <div class="flex shrink-0 flex-col gap-2 sm:items-end">
-            <UButton
-              :icon="activeRun?.appliedAt ? 'i-lucide-check' : 'i-lucide-file-pen-line'"
-              size="lg"
-              class="justify-center"
-              :disabled="!activeResult || !activeRun?.id || Boolean(activeRun?.appliedAt)"
-              :loading="props.busy"
-              @click="activeRun?.id && emit('apply', activeRun.id)"
-            >
-              {{ activeRun?.appliedAt ? t.applied : t.apply }}
-            </UButton>
-            <UButton
-              type="button"
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              icon="i-lucide-plus"
-              :disabled="hasActiveRun"
-              @click="newRunOpen = true"
-            >
-              {{ t.newRun }}
-            </UButton>
-          </div>
+          <UAlert
+            v-if="props.descriptionChanged && !activeRun?.appliedAt"
+            class="mt-4"
+            color="warning"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            :title="t.descriptionChangedTitle"
+            :description="t.descriptionChangedHint"
+          />
         </div>
-
-        <UAlert
-          v-if="props.actionError"
-          class="mt-5"
-          color="error"
-          variant="soft"
-          icon="i-lucide-circle-alert"
-          :description="props.actionError"
-        />
 
         <article class="ak-refinement-result py-6 text-sm leading-7 text-zinc-700 dark:text-zinc-300">
           <slot name="result" :markdown="activeResult" :run="activeRun">

@@ -68,6 +68,11 @@ describe('task refinements', () => {
       round: 1,
       threadId: null,
     });
+    refinements.recordRefinementWorkspaceSync(first.id, 'latest-master-revision', claimed!.leaseToken, {
+      branch: 'master',
+      dirty: false,
+    });
+    expect(refinements.getTaskRefinement(task!.id, first.id, admin).sourceCodeRevision).toBe('latest-master-revision');
     const waiting = refinements.requestRefinementInput(first.id, {
       threadId: 'thread-refinement-1',
       questions: [{
@@ -157,6 +162,7 @@ describe('task refinements', () => {
 
     const sanitizedCases = [
       { error: Object.assign(new Error('untrusted malformed payload'), { code: 'invalid_output' }), code: 'refinement_invalid_output' },
+      { error: Object.assign(new Error('private git failure detail'), { code: 'refinement_master_sync_failed' }), code: 'refinement_master_sync_failed' },
       { error: Object.assign(new Error('workspace policy rejected a path'), { code: 'security_violation' }), code: 'refinement_security_policy' },
       { error: new Error('refinement_max_question_rounds_exceeded'), code: 'refinement_question_limit' },
     ];
@@ -167,7 +173,7 @@ describe('task refinements', () => {
     }
   });
 
-  test('enforces project access and detects task changes before applying', async () => {
+  test('ignores metadata changes and confirms before replacing a changed description', async () => {
     const project = await kanban.createProject({
       name: 'Protected Refinement Project',
       key: 'PROTECTED',
@@ -193,12 +199,35 @@ describe('task refinements', () => {
       resultMarkdown: 'Refined description',
     }, claimed!.leaseToken);
     dbModule.db.update(dbModule.schema.tasks).set({
-      description: 'Changed while refinement was running',
+      title: 'A harmless title update',
       updatedAt: '2099-01-01T00:00:00.000Z',
     }).where(eq(dbModule.schema.tasks.id, task!.id)).run();
 
-    expect(() => refinements.applyTaskRefinement(task!.id, refinement.id, {}, member))
-      .toThrowError(expect.objectContaining({ statusMessage: 'refinement_source_changed' }));
+    const appliedAfterTitleChange = refinements.applyTaskRefinement(task!.id, refinement.id, {}, member);
+    expect(appliedAfterTitleChange.task).toMatchObject({
+      title: 'A harmless title update',
+      description: 'Refined description',
+    });
+
+    const changedDescriptionRefinement = refinements.createTaskRefinement(task!.id, {}, member);
+    const secondClaim = refinements.claimNextQueuedRefinement();
+    expect(secondClaim?.id).toBe(changedDescriptionRefinement.id);
+    refinements.completeRefinement(changedDescriptionRefinement.id, {
+      complexity: 'simple',
+      resultMarkdown: 'A newer refined description',
+    }, secondClaim!.leaseToken);
+    dbModule.db.update(dbModule.schema.tasks).set({
+      description: 'Changed while refinement was running',
+      updatedAt: '2099-01-02T00:00:00.000Z',
+    }).where(eq(dbModule.schema.tasks.id, task!.id)).run();
+
+    expect(() => refinements.applyTaskRefinement(task!.id, changedDescriptionRefinement.id, {}, member))
+      .toThrowError(expect.objectContaining({ statusMessage: 'refinement_description_changed' }));
+
+    const confirmed = refinements.applyTaskRefinement(task!.id, changedDescriptionRefinement.id, {
+      allowDescriptionOverwrite: true,
+    }, member);
+    expect(confirmed.task.description).toBe('A newer refined description');
   });
 
   test('fences concurrent workers and only recovers expired leases', async () => {

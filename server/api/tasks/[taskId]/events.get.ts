@@ -1,13 +1,13 @@
 import { getRouterParam } from 'h3';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gt, notInArray } from 'drizzle-orm';
 import { db, schema } from '../../../lib/db';
-import { getTaskDetail } from '../../../lib/kanban';
+import { authorizeTaskAccess } from '../../../lib/kanban';
 import { requireUser } from '../../../lib/security/auth';
 
 export default defineEventHandler((event) => {
   const user = requireUser(event);
   const taskId = getRouterParam(event, 'taskId')!;
-  getTaskDetail(taskId, user);
+  authorizeTaskAccess(taskId, user);
 
   const response = event.node.res;
   response.writeHead(200, {
@@ -26,16 +26,30 @@ export default defineEventHandler((event) => {
 
   return new Promise<void>((resolve) => {
     const timer = setInterval(() => {
-      const rows = db.select().from(schema.activity)
-        .where(eq(schema.activity.taskId, taskId))
+      const rows = db.select({
+        action: schema.activity.action,
+        createdAt: schema.activity.createdAt,
+      }).from(schema.activity)
+        .where(and(
+          eq(schema.activity.taskId, taskId),
+          gt(schema.activity.createdAt, lastCreatedAt),
+          notInArray(schema.activity.action, ['codex_event']),
+        ))
         .orderBy(asc(schema.activity.createdAt))
-        .all()
-        .filter((row) => row.createdAt > lastCreatedAt);
+        .all();
 
-      for (const row of rows) {
-        lastCreatedAt = row.createdAt;
-        write('activity', row);
-      }
+      const latest = rows.at(-1);
+      if (!latest) return;
+      lastCreatedAt = latest.createdAt;
+      // The client only needs one invalidation signal per polling interval.
+      // Sending every low-level event used to trigger hundreds of concurrent
+      // detail reloads during active Codex turns.
+      write('activity', {
+        taskId,
+        count: rows.length,
+        latestAction: latest.action,
+        createdAt: latest.createdAt,
+      });
     }, 1000);
 
     event.node.req.on('close', () => {
