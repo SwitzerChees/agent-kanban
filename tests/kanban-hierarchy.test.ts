@@ -73,6 +73,19 @@ describe('project topic hierarchy', () => {
       unterthema: null,
     });
 
+    dbModule.ensureTaskHierarchy();
+    expect(dbModule.db.select().from(dbModule.schema.tasks)
+      .where(eq(dbModule.schema.tasks.id, directTask!.id)).get()).toMatchObject({
+      oberthemaId: parent.id,
+      unterthemaId: null,
+    });
+
+    const fallback = initialBoard.unterthemen[0]!;
+    expect(() => dbModule.db.update(dbModule.schema.tasks).set({
+      oberthemaId: parent.id,
+      unterthemaId: fallback.id,
+    }).where(eq(dbModule.schema.tasks.id, directTask!.id)).run()).toThrow(/invalid_task_hierarchy/);
+
     const todoColumn = initialBoard.columns.find((column) => column.key === 'todo')!;
     expect((await kanban.updateTask(directTask!.id, { columnId: todoColumn.id }, admin))?.agentStatus).toBe('idle');
     await expect(kanban.updateTask(directTask!.id, { agentEnabled: true }, admin)).resolves.toMatchObject({ agentEnabled: true, agentStatus: 'queued' });
@@ -87,7 +100,6 @@ describe('project topic hierarchy', () => {
       'unterthema_not_empty',
     );
 
-    const fallback = initialBoard.unterthemen[0]!;
     await kanban.updateTask(task!.id, { unterthemaId: fallback.id }, admin);
     expect(kanban.deleteUnterthema(subtopic.id, admin)).toMatchObject({ ok: true });
   });

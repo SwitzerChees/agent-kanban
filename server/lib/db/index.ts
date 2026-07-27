@@ -422,6 +422,23 @@ export function ensureDatabase() {
       WHERE status IN ('queued', 'running', 'awaiting_input');
   `);
 
+  ensureTaskHierarchy();
+
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tasks_unterthema ON tasks(unterthema_id);');
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tasks_oberthema ON tasks(oberthema_id);');
+
+  sqlite.exec(`
+    INSERT OR IGNORE INTO project_tags (project_id, name, created_at)
+    SELECT tasks.project_id, task_tags.name, MIN(task_tags.created_at)
+    FROM task_tags
+    INNER JOIN tasks ON tasks.id = task_tags.task_id
+    GROUP BY tasks.project_id, task_tags.name;
+  `);
+
+  seedAdmin();
+}
+
+export function ensureTaskHierarchy() {
   const hierarchyNow = new Date().toISOString();
   const createDefaultHierarchy = sqlite.transaction(() => {
     const projectRows = sqlite.prepare('SELECT id FROM projects').all() as Array<{ id: string }>;
@@ -442,7 +459,16 @@ export function ensureDatabase() {
       INSERT INTO unterthemen (id, oberthema_id, name, description, position, created_at, updated_at)
       VALUES (?, ?, 'Allgemeine Aufgaben', 'Aufgaben ohne bisherige Themenzuordnung', 0, ?, ?)
     `);
-    const assignTasks = sqlite.prepare('UPDATE tasks SET unterthema_id = ? WHERE project_id = ? AND unterthema_id IS NULL');
+    // Only migrate genuinely legacy tasks that predate both hierarchy columns.
+    // A current direct task deliberately has an oberthema_id and a null
+    // unterthema_id and must stay directly inside its selected parent topic.
+    const assignTasks = sqlite.prepare(`
+      UPDATE tasks
+      SET unterthema_id = ?
+      WHERE project_id = ?
+        AND unterthema_id IS NULL
+        AND oberthema_id IS NULL
+    `);
 
     for (const project of projectRows) {
       let oberthema = findOberthema.get(project.id) as { id: string } | undefined;
@@ -470,18 +496,46 @@ export function ensureDatabase() {
     WHERE oberthema_id IS NULL;
   `);
 
-  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tasks_unterthema ON tasks(unterthema_id);');
-  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tasks_oberthema ON tasks(oberthema_id);');
-
   sqlite.exec(`
-    INSERT OR IGNORE INTO project_tags (project_id, name, created_at)
-    SELECT tasks.project_id, task_tags.name, MIN(task_tags.created_at)
-    FROM task_tags
-    INNER JOIN tasks ON tasks.id = task_tags.task_id
-    GROUP BY tasks.project_id, task_tags.name;
-  `);
+    CREATE TRIGGER IF NOT EXISTS trg_tasks_hierarchy_insert
+    BEFORE INSERT ON tasks
+    WHEN NEW.unterthema_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM unterthemen
+        INNER JOIN oberthemen ON oberthemen.id = unterthemen.oberthema_id
+        WHERE unterthemen.id = NEW.unterthema_id
+          AND unterthemen.oberthema_id = NEW.oberthema_id
+          AND oberthemen.project_id = NEW.project_id
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid_task_hierarchy');
+    END;
 
-  seedAdmin();
+    CREATE TRIGGER IF NOT EXISTS trg_tasks_hierarchy_update
+    BEFORE UPDATE OF project_id, oberthema_id, unterthema_id ON tasks
+    WHEN NEW.unterthema_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM unterthemen
+        INNER JOIN oberthemen ON oberthemen.id = unterthemen.oberthema_id
+        WHERE unterthemen.id = NEW.unterthema_id
+          AND unterthemen.oberthema_id = NEW.oberthema_id
+          AND oberthemen.project_id = NEW.project_id
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid_task_hierarchy');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_unterthemen_parent_task_sync
+    AFTER UPDATE OF oberthema_id ON unterthemen
+    WHEN OLD.oberthema_id <> NEW.oberthema_id
+    BEGIN
+      UPDATE tasks
+      SET oberthema_id = NEW.oberthema_id
+      WHERE unterthema_id = NEW.id;
+    END;
+  `);
 }
 
 export function appDataDir(...parts: string[]) {
