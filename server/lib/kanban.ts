@@ -6,6 +6,7 @@ import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
 import { removeTaskWorktree } from './git-workspaces';
 import { hashPassword } from './security/password';
+import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSource } from './task-description';
 import type { User } from './db/schema';
 
 const DEFAULT_COLUMNS = [
@@ -253,7 +254,7 @@ export function getBoard(projectId: string, user: User) {
     swimlanes: lanes,
     members,
     tasks: taskRows.map((task) => ({
-      ...task,
+      ...publicTaskDescription(task),
       attachments: taskAttachments
         .filter((attachment) => attachment.taskId === task.id)
         .map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
@@ -329,7 +330,7 @@ export function getCommandPaletteIndex(user: User) {
         projectName: project.name,
         key: task.key,
         title: task.title,
-        description: task.description,
+        description: activeTaskDescription(task),
         priority: task.priority,
         columnId: task.columnId,
         columnKey: column?.key ?? null,
@@ -443,7 +444,7 @@ export function getTaskDetail(taskId: string, user: User) {
     projectTags: getProjectTags(project.id),
     hierarchy: getTaskHierarchy(task.oberthemaId, task.unterthemaId),
     task: {
-      ...task,
+      ...publicTaskDescription(task),
       attachments: attachments.map((attachment) => decorateAttachment(attachment, annotations.find((annotation) => annotation.attachmentId === attachment.id))),
       tags,
     },
@@ -853,6 +854,7 @@ function isTaskCreationStale(createdAt: string) {
 export async function updateTask(taskId: string, input: {
   title?: string;
   description?: string | null;
+  descriptionSource?: TaskDescriptionSource;
   columnId?: string;
   swimlaneId?: string | null;
   oberthemaId?: string;
@@ -869,8 +871,12 @@ export async function updateTask(taskId: string, input: {
   const project = getProject(task.projectId, user);
   const currentColumn = getProjectColumn(task.projectId, task.columnId);
   let targetColumn = currentColumn;
-  if ((task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed') && (input.title !== undefined || input.description !== undefined)) {
+  if ((task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed')
+    && (input.title !== undefined || input.description !== undefined || input.descriptionSource !== undefined)) {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
+  }
+  if (input.descriptionSource === 'refined' && !task.refinedDescription?.trim()) {
+    throw createError({ statusCode: 409, statusMessage: 'refined_description_missing' });
   }
   if (task.agentStatus === 'running' && input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_agent_mode_locked' });
@@ -914,6 +920,7 @@ export async function updateTask(taskId: string, input: {
   db.update(schema.tasks).set({
     title: input.title?.trim() || undefined,
     description: input.description === undefined ? undefined : input.description?.trim() || null,
+    descriptionSource: input.descriptionSource,
     columnId: input.columnId,
     oberthemaId: placementRequested ? nextPlacement.oberthemaId : undefined,
     unterthemaId: placementRequested ? nextPlacement.unterthemaId : undefined,
@@ -942,6 +949,7 @@ export async function updateTask(taskId: string, input: {
     columnChanged: input.columnId !== undefined,
     hierarchyChanged: placementChanged,
     tagsChanged: input.tags !== undefined,
+    descriptionSourceChanged: input.descriptionSource !== undefined && input.descriptionSource !== task.descriptionSource,
     agentModeChanged: input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled,
     assigneeChanged: input.assigneeId !== undefined && nextAssigneeId !== task.assigneeId,
     agentStatus: nextAgentStatus,
@@ -952,7 +960,7 @@ export async function updateTask(taskId: string, input: {
   if (!currentColumn.done && targetColumn.done && (task.agentEnabled || ['done', 'failed'].includes(task.agentStatus))) {
     await cleanupCompletedTaskWorktree(task, project.folderPath, user.id);
   }
-  return updated;
+  return updated ? publicTaskDescription(updated) : updated;
 }
 
 export async function deleteTask(taskId: string, user: User) {

@@ -6,6 +6,7 @@ import { updateTask } from '../../lib/kanban';
 const schema = z.object({
   title: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
+  descriptionSource: z.enum(['original', 'refined']).optional(),
   columnId: z.string().optional(),
   swimlaneId: z.string().optional().nullable(),
   oberthemaId: z.string().optional(),

@@ -5,6 +5,7 @@ import { createError } from 'h3';
 import { db, schema } from './db';
 import type { TaskRefinement, User } from './db/schema';
 import { getProject } from './kanban';
+import { activeTaskDescription, publicTaskDescription } from './task-description';
 
 export type RefinementStatus = 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed';
 export type RefinementComplexity = 'simple' | 'moderate' | 'complex';
@@ -136,7 +137,7 @@ export function createTaskRefinement(taskId: string, input: {
         requestedBy: user.id,
         brief,
         visualMode: input.visualMode ?? 'auto',
-        sourceDescription: task.description,
+        sourceDescription: activeTaskDescription(task),
         sourceTaskUpdatedAt: task.updatedAt,
         sourceCodeRevision,
         resultCodeRevision: null,
@@ -279,7 +280,8 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   if (task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed') {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
-  const descriptionChanged = normalizeDescription(task.description) !== normalizeDescription(refinement.sourceDescription);
+  const currentDescription = activeTaskDescription(task);
+  const descriptionChanged = normalizeDescription(currentDescription) !== normalizeDescription(refinement.sourceDescription);
   if (descriptionChanged && !input.allowDescriptionOverwrite) {
     throw createError({
       statusCode: 409,
@@ -294,12 +296,16 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   const now = new Date().toISOString();
   const mode = input.mode ?? 'replace';
   const appliedMarkdown = input.markdown?.trim() || refinement.resultMarkdown.trim();
-  const description = mode === 'append' && task.description?.trim()
-    ? `${task.description.trim()}\n\n---\n\n${appliedMarkdown}`
+  const description = mode === 'append' && currentDescription?.trim()
+    ? `${currentDescription.trim()}\n\n---\n\n${appliedMarkdown}`
     : appliedMarkdown;
 
   db.transaction((tx) => {
-    const taskUpdate = tx.update(schema.tasks).set({ description, updatedAt: now })
+    const taskUpdate = tx.update(schema.tasks).set({
+      refinedDescription: description,
+      descriptionSource: 'refined',
+      updatedAt: now,
+    })
       .where(and(eq(schema.tasks.id, taskId), eq(schema.tasks.updatedAt, task.updatedAt)))
       .run();
     if (taskUpdate.changes !== 1) {
@@ -322,12 +328,13 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
       mode,
       selectedResult: input.markdown !== undefined,
       overwroteChangedDescription: descriptionChanged,
+      previousDescriptionSource: task.descriptionSource,
     }, now);
   });
 
   return {
     refinement: requirePublicRefinement(refinementId),
-    task: requireTask(taskId),
+    task: publicTaskDescription(requireTask(taskId)),
   };
 }
 

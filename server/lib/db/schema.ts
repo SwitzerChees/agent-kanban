@@ -97,6 +97,8 @@ export const tasks = sqliteTable('tasks', {
   key: text('key').notNull().unique(),
   title: text('title').notNull(),
   description: text('description'),
+  refinedDescription: text('refined_description'),
+  descriptionSource: text('description_source', { enum: ['original', 'refined'] }).notNull().default('original'),
   priority: text('priority', { enum: ['low', 'normal', 'high', 'urgent'] }).notNull().default('normal'),
   position: integer('position').notNull().default(0),
   createdBy: text('created_by').notNull().references(() => users.id),

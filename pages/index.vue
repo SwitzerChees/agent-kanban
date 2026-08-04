@@ -5,6 +5,7 @@ import Fuse from 'fuse.js';
 type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'comments';
+type TaskDescriptionSource = 'original' | 'refined';
 
 interface User {
   id: string;
@@ -73,6 +74,9 @@ interface Task {
   key: string;
   title: string;
   description: string | null;
+  originalDescription: string | null;
+  refinedDescription: string | null;
+  descriptionSource: TaskDescriptionSource;
   priority: 'low' | 'normal' | 'high' | 'urgent';
   position: number;
   columnId: string;
@@ -356,6 +360,13 @@ const dictionary = {
     projectKeyHelp: 'Short label shown on task cards, for example APP.',
     projectFolderHelp: "Where this project's files are stored.",
     description: 'Description',
+    originalDescription: 'Original',
+    refinedDescription: 'Refinement',
+    descriptionVersions: 'Description versions',
+    originalDescriptionHint: 'Your human-written description stays preserved here, even after applying a refinement.',
+    refinedDescriptionHint: 'The applied refinement is stored separately and can be selected for execution.',
+    activeDescription: 'Used for execution',
+    useDescription: 'Use this version',
     assignedUsers: 'Assigned users',
     newTask: 'New task',
     title: 'Title',
@@ -413,8 +424,8 @@ const dictionary = {
     refinementCtaHint: 'Turn the current idea into an implementation-ready brief. Open changes are saved when refinement starts.',
     refinementTitleRequired: 'Add a title to the task first. Your refinement text has been kept.',
     refinementCreatedButNotStarted: 'The task was saved, but refinement did not start. Try again; no duplicate task will be created.',
-    refinementOverwriteTitle: 'Replace the current description?',
-    refinementOverwriteDescription: 'This refinement was created from an earlier description. Applying it replaces the current description. The title and all other task details stay unchanged.',
+    refinementOverwriteTitle: 'Apply from an earlier version?',
+    refinementOverwriteDescription: 'This refinement was created from an earlier active text. Applying it stores a new refined version and selects it for execution. Your original description stays intact.',
     refinementOverwriteConfirm: 'Apply anyway',
     commentsTab: 'Comments',
     readonlyTask: 'This is the original task brief. It stays unchanged once work has started.',
@@ -625,6 +636,13 @@ const dictionary = {
     projectKeyHelp: 'Kurzes Kürzel auf Aufgabenkarten, zum Beispiel APP.',
     projectFolderHelp: 'Ort, an dem die Projektdateien gespeichert sind.',
     description: 'Beschreibung',
+    originalDescription: 'Original',
+    refinedDescription: 'Refinement',
+    descriptionVersions: 'Beschreibungsvarianten',
+    originalDescriptionHint: 'Deine von Hand geschriebene Beschreibung bleibt hier erhalten – auch nach einem Refinement.',
+    refinedDescriptionHint: 'Das übernommene Refinement wird separat gespeichert und kann für die Ausführung ausgewählt werden.',
+    activeDescription: 'Wird für die Ausführung verwendet',
+    useDescription: 'Diese Fassung verwenden',
     assignedUsers: 'Zugewiesene Benutzer',
     newTask: 'Neue Aufgabe',
     title: 'Titel',
@@ -682,8 +700,8 @@ const dictionary = {
     refinementCtaHint: 'Die Idee mit Projekt- und Codekontext ausarbeiten. Offene Änderungen werden beim Start automatisch gespeichert.',
     refinementTitleRequired: 'Gib der Aufgabe zuerst einen Titel. Dein Refinement-Text wurde beibehalten.',
     refinementCreatedButNotStarted: 'Die Aufgabe wurde gespeichert, das Refinement aber nicht gestartet. Versuche es erneut; es wird keine doppelte Aufgabe erstellt.',
-    refinementOverwriteTitle: 'Aktuelle Beschreibung ersetzen?',
-    refinementOverwriteDescription: 'Dieses Refinement wurde mit einer früheren Beschreibung erstellt. Beim Übernehmen wird die aktuelle Beschreibung ersetzt. Titel und alle anderen Aufgabendaten bleiben unverändert.',
+    refinementOverwriteTitle: 'Refinement aus früherem Stand übernehmen?',
+    refinementOverwriteDescription: 'Dieses Refinement wurde mit einem früheren aktiven Text erstellt. Beim Übernehmen wird es separat gespeichert und für die Ausführung ausgewählt. Deine Originalbeschreibung bleibt erhalten.',
     refinementOverwriteConfirm: 'Trotzdem übernehmen',
     commentsTab: 'Kommentare',
     readonlyTask: 'Das ist der ursprüngliche Auftrag. Er bleibt unverändert, sobald die Bearbeitung begonnen hat.',
@@ -879,6 +897,7 @@ const commentMentionActiveIndex = ref(0);
 const commentComposerEl = ref<HTMLElement | null>(null);
 const followUpMessage = ref('');
 const activeTaskTab = ref<TaskTab>('activity');
+const taskDescriptionView = ref<TaskDescriptionSource>('original');
 const tagDropdownOpen = ref(false);
 const boardFilterPopoverOpen = ref(false);
 const boardSearchQuery = ref('');
@@ -923,6 +942,7 @@ let annotationResizeObserver: ResizeObserver | null = null;
 let annotationResizeFrame: number | null = null;
 const DONE_RETENTION_MS = 30 * 60 * 1000;
 const UNASSIGNED_ID = '__unassigned__';
+const descriptionSources: TaskDescriptionSource[] = ['original', 'refined'];
 
 const loginForm = reactive({ email: '', password: '' });
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
@@ -1494,10 +1514,26 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
   appliedAt: run.appliedAt,
 })));
 const selectedRefinementPanelRun = computed(() => refinementPanelRuns.value.find((run) => run.id === selectedTaskRefinement.value?.id) ?? null);
+const selectedTaskHasRefinement = computed(() => Boolean(selectedTaskDetail.value?.task.refinedDescription?.trim()));
+const selectedTaskDescriptionSource = computed<TaskDescriptionSource>(() => selectedTaskDetail.value?.task.descriptionSource ?? 'original');
+const selectedTaskVisibleDescription = computed(() => taskDescriptionView.value === 'refined'
+  ? selectedTaskDetail.value?.task.refinedDescription ?? ''
+  : taskForm.description);
+const selectedTaskDescriptionViewIsActive = computed(() => taskDescriptionView.value === selectedTaskDescriptionSource.value);
+const selectedTaskDescriptionLabel = computed(() => {
+  if (!selectedTaskHasRefinement.value) return t.value.description;
+  return taskDescriptionView.value === 'refined' ? t.value.refinedDescription : t.value.originalDescription;
+});
+const selectedTaskDescriptionHint = computed(() => taskDescriptionView.value === 'refined'
+  ? t.value.refinedDescriptionHint
+  : t.value.originalDescriptionHint);
+const selectedTaskActiveDescription = computed(() => selectedTaskDescriptionSource.value === 'refined'
+  ? selectedTaskDetail.value?.task.refinedDescription ?? ''
+  : taskForm.description);
 const selectedRefinementDescriptionChanged = computed(() => {
   const run = selectedTaskRefinement.value;
   if (!run || run.status !== 'completed' || run.appliedAt) return false;
-  return normalizeEditorMarkdown(taskForm.description) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
+  return normalizeEditorMarkdown(selectedTaskActiveDescription.value) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
 });
 
 function cancelRefinementOverwrite() {
@@ -2220,7 +2256,7 @@ async function submitRefinementAnswers(payload: { runId: string; answers: Record
 function refinementDescriptionChangedFor(runId: string) {
   const run = taskRefinements.value.find((item) => item.id === runId);
   if (!run) return false;
-  return normalizeEditorMarkdown(taskForm.description) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
+  return normalizeEditorMarkdown(selectedTaskActiveDescription.value) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
 }
 
 function requestApplyTaskRefinement(runId: string) {
@@ -2250,7 +2286,8 @@ async function applyTaskRefinement(runId: string, allowDescriptionOverwrite = fa
       body: { mode: 'replace', allowDescriptionOverwrite },
     });
     selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${taskId}`);
-    taskForm.description = selectedTaskDetail.value.task.description ?? '';
+    syncTaskFormFromDetail(selectedTaskDetail.value.task);
+    taskDescriptionView.value = 'refined';
     await loadTaskRefinements(taskId, { silent: true });
     if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
     activeTaskTab.value = 'task';
@@ -2286,10 +2323,10 @@ function selectTaskRefinement(runId: string) {
   selectedRefinementId.value = runId;
 }
 
-function syncTaskFormFromDetail(detailTask: Task) {
+function syncTaskFormFromDetail(detailTask: Task, resetDescriptionView = false) {
   Object.assign(taskForm, {
     title: detailTask.title,
-    description: detailTask.description ?? '',
+    description: detailTask.originalDescription ?? '',
     columnId: detailTask.columnId,
     placementId: placementIdFor(detailTask),
     swimlaneId: detailTask.swimlaneId ?? defaultSwimlaneId.value,
@@ -2298,6 +2335,32 @@ function syncTaskFormFromDetail(detailTask: Task) {
     priority: detailTask.priority,
     tags: detailTask.tags,
   });
+  if (resetDescriptionView || !detailTask.refinedDescription?.trim()) {
+    taskDescriptionView.value = detailTask.refinedDescription?.trim()
+      ? detailTask.descriptionSource
+      : 'original';
+  }
+}
+
+async function activateTaskDescription(source: TaskDescriptionSource) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || taskSubmitting.value || hasAgentActivity.value || source === selectedTaskDescriptionSource.value) return;
+  if (source === 'refined' && !selectedTaskHasRefinement.value) return;
+  taskSubmitting.value = true;
+  errorMessage.value = null;
+  try {
+    if (taskDetailsDirty.value) await persistExistingTaskDetails(taskId);
+    await $fetch(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: { descriptionSource: source },
+    });
+    await refreshPersistedTaskState(taskId);
+    taskDescriptionView.value = source;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    taskSubmitting.value = false;
+  }
 }
 
 const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
@@ -2315,6 +2378,7 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   followUpMessage.value = '';
   tagDropdownOpen.value = false;
   activeTaskTab.value = 'task';
+  taskDescriptionView.value = 'original';
   Object.assign(taskForm, {
     title: '',
     description: '',
@@ -2358,7 +2422,7 @@ const openTaskDetail = async (task: Task) => {
     : hasAgentActivity.value
       ? 'activity'
       : 'task';
-  syncTaskFormFromDetail(selectedTaskDetail.value.task);
+  syncTaskFormFromDetail(selectedTaskDetail.value.task, true);
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
   scheduleRefinementPolling();
@@ -4625,6 +4689,7 @@ const humanError = (error: unknown) => {
     project_forbidden: { en: 'You do not have access to this project.', de: 'Du hast keinen Zugriff auf dieses Projekt.' },
     task_not_found: { en: 'The task could not be found.', de: 'Die Aufgabe wurde nicht gefunden.' },
     task_locked_after_agent_start: { en: 'This task is already being worked on. Title and description cannot be changed anymore.', de: 'Diese Aufgabe wird bereits bearbeitet. Titel und Beschreibung können nicht mehr geändert werden.' },
+    refined_description_missing: { en: 'This task does not have an applied refinement yet.', de: 'Für diese Aufgabe wurde noch kein Refinement übernommen.' },
     task_running_cannot_delete: { en: 'This task is in progress and cannot be deleted.', de: 'Diese Aufgabe wird gerade bearbeitet und kann nicht gelöscht werden.' },
     task_running_cannot_delete_attachment: { en: 'Files cannot be deleted while the AI agent is working on this task.', de: 'Während der KI-Agent an dieser Aufgabe arbeitet, können Dateien nicht gelöscht werden.' },
     attachment_not_found: { en: 'The attached file could not be found.', de: 'Die angehängte Datei wurde nicht gefunden.' },
@@ -6059,10 +6124,45 @@ const humanError = (error: unknown) => {
                       <h3 class="text-lg font-semibold leading-7 text-zinc-950 dark:text-white">{{ taskForm.title }}</h3>
                     </div>
                     <div>
-                      <p class="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ t.description }}</p>
+                      <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionLabel }}</p>
+                        <div
+                          v-if="selectedTaskHasRefinement"
+                          class="inline-flex rounded-lg bg-zinc-100 p-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-800"
+                          role="tablist"
+                          :aria-label="t.descriptionVersions"
+                        >
+                          <button
+                            v-for="source in descriptionSources"
+                            :id="`task-description-tab-${source}`"
+                            :key="source"
+                            type="button"
+                            role="tab"
+                            :aria-selected="taskDescriptionView === source"
+                            :aria-controls="`task-description-panel-${source}`"
+                            class="inline-flex min-h-8 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+                            :class="taskDescriptionView === source
+                              ? 'bg-white text-zinc-950 shadow-sm dark:bg-zinc-800 dark:text-white'
+                              : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'"
+                            @click="taskDescriptionView = source"
+                          >
+                            <UIcon v-if="selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-3.5 text-teal-600 dark:text-teal-400" />
+                            {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
+                          </button>
+                        </div>
+                      </div>
+                      <div v-if="selectedTaskHasRefinement" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <p class="max-w-2xl leading-5 text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionHint }}</p>
+                        <UBadge v-if="selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
+                          {{ t.activeDescription }}
+                        </UBadge>
+                      </div>
                       <UEditor
-                        v-if="taskForm.description"
-                        :model-value="taskForm.description"
+                        v-if="selectedTaskVisibleDescription"
+                        :id="`task-description-panel-${taskDescriptionView}`"
+                        :aria-labelledby="selectedTaskHasRefinement ? `task-description-tab-${taskDescriptionView}` : undefined"
+                        role="tabpanel"
+                        :model-value="selectedTaskVisibleDescription"
                         content-type="markdown"
                         :editable="false"
                         :image="false"
@@ -6088,8 +6188,58 @@ const humanError = (error: unknown) => {
                       />
                     </UFormField>
 
-                    <UFormField :label="t.description" :description="t.markdownEditorHelp" size="lg">
-                      <div class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950">
+                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasRefinement ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
+                      <div
+                        v-if="selectedTaskHasRefinement"
+                        class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div
+                          class="inline-flex self-start rounded-lg bg-zinc-100 p-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-800"
+                          role="tablist"
+                          :aria-label="t.descriptionVersions"
+                        >
+                          <button
+                            v-for="source in descriptionSources"
+                            :id="`task-description-tab-${source}`"
+                            :key="source"
+                            type="button"
+                            role="tab"
+                            :aria-selected="taskDescriptionView === source"
+                            :aria-controls="`task-description-panel-${source}`"
+                            class="inline-flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"
+                            :class="taskDescriptionView === source
+                              ? 'bg-white text-zinc-950 shadow-sm dark:bg-zinc-800 dark:text-white'
+                              : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'"
+                            @click="taskDescriptionView = source"
+                          >
+                            <UIcon v-if="selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-4 text-teal-600 dark:text-teal-400" />
+                            {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
+                          </button>
+                        </div>
+                        <UBadge v-if="selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
+                          {{ t.activeDescription }}
+                        </UBadge>
+                        <UButton
+                          v-else
+                          type="button"
+                          color="neutral"
+                          variant="soft"
+                          size="sm"
+                          icon="i-lucide-mouse-pointer-click"
+                          :loading="taskSubmitting"
+                          @click="activateTaskDescription(taskDescriptionView)"
+                        >
+                          {{ t.useDescription }}
+                        </UButton>
+                      </div>
+
+                      <div
+                        v-if="taskDescriptionView === 'original'"
+                        id="task-description-panel-original"
+                        role="tabpanel"
+                        :aria-labelledby="selectedTaskHasRefinement ? 'task-description-tab-original' : undefined"
+                        class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950"
+                      >
                         <UEditor
                           v-slot="{ editor }"
                           v-model="taskForm.description"
@@ -6108,6 +6258,25 @@ const humanError = (error: unknown) => {
                             class="ak-editor-toolbar border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
                           />
                         </UEditor>
+                      </div>
+
+                      <div
+                        v-else
+                        id="task-description-panel-refined"
+                        role="tabpanel"
+                        aria-labelledby="task-description-tab-refined"
+                        class="rounded-xl bg-zinc-50 px-4 py-3 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:ring-zinc-800"
+                      >
+                        <UEditor
+                          v-if="selectedTaskVisibleDescription"
+                          :model-value="selectedTaskVisibleDescription"
+                          content-type="markdown"
+                          :editable="false"
+                          :image="false"
+                          :mention="false"
+                          class="ak-markdown-readonly text-sm leading-6 text-zinc-700 dark:text-zinc-300"
+                          :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-700 dark:text-zinc-300' }"
+                        />
                       </div>
                     </UFormField>
                   </div>

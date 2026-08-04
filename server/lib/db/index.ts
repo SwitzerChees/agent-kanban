@@ -123,6 +123,8 @@ export function ensureDatabase() {
       key TEXT NOT NULL UNIQUE,
       title TEXT NOT NULL,
       description TEXT,
+      refined_description TEXT,
+      description_source TEXT NOT NULL DEFAULT 'original',
       priority TEXT NOT NULL DEFAULT 'normal',
       position INTEGER NOT NULL DEFAULT 0,
       created_by TEXT NOT NULL REFERENCES users(id),
@@ -267,6 +269,18 @@ export function ensureDatabase() {
   if (!taskColumns.some((column) => column.name === 'client_request_id')) {
     sqlite.exec('ALTER TABLE tasks ADD COLUMN client_request_id TEXT;');
   }
+  if (!taskColumns.some((column) => column.name === 'refined_description')) {
+    sqlite.exec('ALTER TABLE tasks ADD COLUMN refined_description TEXT;');
+  }
+  if (!taskColumns.some((column) => column.name === 'description_source')) {
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN description_source TEXT NOT NULL DEFAULT 'original';");
+  }
+  sqlite.exec(`
+    UPDATE tasks
+    SET description_source = 'original'
+    WHERE description_source NOT IN ('original', 'refined')
+       OR description_source IS NULL;
+  `);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request
     ON tasks(project_id, created_by, client_request_id)
@@ -420,6 +434,32 @@ export function ensureDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_refinements_active
       ON task_refinements(task_id)
       WHERE status IN ('queued', 'running', 'awaiting_input');
+  `);
+
+  // Older versions replaced tasks.description when a refinement was applied.
+  // Preserve that current text as the refined variant and restore the first
+  // human-authored source snapshot as the task's original description. The
+  // refined_description predicate makes this migration safe to rerun after a
+  // user deliberately switches the active source back to the original.
+  sqlite.exec(`
+    UPDATE tasks
+    SET refined_description = description,
+        description = (
+          SELECT first_applied.source_description
+          FROM task_refinements AS first_applied
+          WHERE first_applied.task_id = tasks.id
+            AND first_applied.applied_at IS NOT NULL
+          ORDER BY first_applied.version ASC, first_applied.applied_at ASC
+          LIMIT 1
+        ),
+        description_source = 'refined'
+    WHERE refined_description IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM task_refinements AS applied
+        WHERE applied.task_id = tasks.id
+          AND applied.applied_at IS NOT NULL
+      );
   `);
 
   ensureTaskHierarchy();

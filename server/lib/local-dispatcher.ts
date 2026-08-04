@@ -9,6 +9,7 @@ import { runtimeLogger } from './logger';
 import { logTaskActivity } from './kanban';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { checkAgentsCompletionGate } from './completion-gate';
+import { activeTaskDescription } from './task-description';
 import type { Issue } from './types';
 
 let dispatcher: LocalTaskDispatcher | null = null;
@@ -340,7 +341,7 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
     .all();
   const agentUpdates = latestAgentUpdates(task.id);
   const detailBlocks = [
-    task.description,
+    activeTaskDescription(task),
     oberthema ? `Hierarchy: ${oberthema.name}${unterthema ? ` > ${unterthema.name}` : ''}` : null,
     tags.length ? `Tags: ${tags.map((tag) => `#${tag}`).join(', ')}` : null,
     attachments.length

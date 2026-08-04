@@ -41,6 +41,8 @@ describe('task refinements', () => {
       title: 'A rough product idea',
       description: 'Add a useful overview.',
     }, admin);
+    await expect(kanban.updateTask(task!.id, { descriptionSource: 'refined' }, admin))
+      .rejects.toMatchObject({ statusMessage: 'refined_description_missing' });
 
     const first = refinements.createTaskRefinement(task!.id, {
       brief: 'Challenge the navigation and propose an implementation.',
@@ -133,7 +135,24 @@ describe('task refinements', () => {
 
     const applied = refinements.applyTaskRefinement(task!.id, first.id, { mode: 'replace' }, admin);
     expect(applied.refinement.appliedBy).toBe(admin.id);
-    expect(applied.task.description).toContain('Create a contributor-focused overview.');
+    expect(applied.task).toMatchObject({
+      description: expect.stringContaining('Create a contributor-focused overview.'),
+      originalDescription: 'Add a useful overview.',
+      refinedDescription: expect.stringContaining('Create a contributor-focused overview.'),
+      descriptionSource: 'refined',
+    });
+    const originalSelected = await kanban.updateTask(task!.id, { descriptionSource: 'original' }, admin);
+    expect(originalSelected).toMatchObject({
+      description: 'Add a useful overview.',
+      originalDescription: 'Add a useful overview.',
+      descriptionSource: 'original',
+    });
+    const refinedSelected = await kanban.updateTask(task!.id, { descriptionSource: 'refined' }, admin);
+    expect(refinedSelected).toMatchObject({
+      description: expect.stringContaining('Create a contributor-focused overview.'),
+      originalDescription: 'Add a useful overview.',
+      descriptionSource: 'refined',
+    });
     expect(() => refinements.applyTaskRefinement(task!.id, first.id, {}, admin))
       .toThrowError(expect.objectContaining({ statusMessage: 'refinement_already_applied' }));
 
@@ -207,6 +226,9 @@ describe('task refinements', () => {
     expect(appliedAfterTitleChange.task).toMatchObject({
       title: 'A harmless title update',
       description: 'Refined description',
+      originalDescription: 'Original description',
+      refinedDescription: 'Refined description',
+      descriptionSource: 'refined',
     });
 
     const changedDescriptionRefinement = refinements.createTaskRefinement(task!.id, {}, member);
@@ -217,7 +239,7 @@ describe('task refinements', () => {
       resultMarkdown: 'A newer refined description',
     }, secondClaim!.leaseToken);
     dbModule.db.update(dbModule.schema.tasks).set({
-      description: 'Changed while refinement was running',
+      refinedDescription: 'Changed while refinement was running',
       updatedAt: '2099-01-02T00:00:00.000Z',
     }).where(eq(dbModule.schema.tasks.id, task!.id)).run();
 
@@ -227,7 +249,20 @@ describe('task refinements', () => {
     const confirmed = refinements.applyTaskRefinement(task!.id, changedDescriptionRefinement.id, {
       allowDescriptionOverwrite: true,
     }, member);
-    expect(confirmed.task.description).toBe('A newer refined description');
+    expect(confirmed.task).toMatchObject({
+      description: 'A newer refined description',
+      originalDescription: 'Original description',
+      refinedDescription: 'A newer refined description',
+      descriptionSource: 'refined',
+    });
+
+    const restored = await kanban.updateTask(task!.id, { descriptionSource: 'original' }, member);
+    expect(restored).toMatchObject({
+      description: 'Original description',
+      originalDescription: 'Original description',
+      refinedDescription: 'A newer refined description',
+      descriptionSource: 'original',
+    });
   });
 
   test('fences concurrent workers and only recovers expired leases', async () => {
