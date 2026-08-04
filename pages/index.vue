@@ -6157,19 +6157,22 @@ const humanError = (error: unknown) => {
                           {{ t.activeDescription }}
                         </UBadge>
                       </div>
-                      <UEditor
+                      <div
                         v-if="selectedTaskVisibleDescription"
                         :id="`task-description-panel-${taskDescriptionView}`"
                         :aria-labelledby="selectedTaskHasRefinement ? `task-description-tab-${taskDescriptionView}` : undefined"
                         role="tabpanel"
-                        :model-value="selectedTaskVisibleDescription"
-                        content-type="markdown"
-                        :editable="false"
-                        :image="false"
-                        :mention="false"
-                        class="ak-markdown-readonly text-sm leading-6 text-zinc-700 dark:text-zinc-300"
-                        :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-700 dark:text-zinc-300' }"
-                      />
+                      >
+                        <UEditor
+                          :model-value="selectedTaskVisibleDescription"
+                          content-type="markdown"
+                          :editable="false"
+                          :image="false"
+                          :mention="false"
+                          class="ak-markdown-readonly text-sm leading-6 text-zinc-700 dark:text-zinc-300"
+                          :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-700 dark:text-zinc-300' }"
+                        />
+                      </div>
                       <p v-else class="text-sm text-zinc-500 dark:text-zinc-400">—</p>
                     </div>
                   </div>
