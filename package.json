@@ -13,6 +13,7 @@
   "dependencies": {
     "@nuxt/ui": "^4.7.1",
     "@vitejs/plugin-vue": "latest",
+    "archiver": "^8.0.0",
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
     "fuse.js": "^7.5.0",
@@ -27,8 +28,10 @@
   },
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.108",
+    "@types/archiver": "^8.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "latest",
+    "fflate": "^0.8.3",
     "typescript": "latest",
     "vitest": "latest",
     "vue-tsc": "latest"

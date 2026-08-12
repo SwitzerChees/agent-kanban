@@ -389,6 +389,8 @@ const dictionary = {
     openAttachment: 'Open file',
     downloadAttachment: 'Download file',
     downloadAttachmentError: 'The file could not be downloaded.',
+    downloadTaskExport: 'Download task ZIP',
+    downloadTaskExportError: 'The task ZIP could not be prepared.',
     attachedFiles: 'Attached files',
     unsavedTaskChanges: 'Discard unsaved changes?',
     unsavedTaskChangesDescription: 'Your current changes will be lost if you close this task.',
@@ -665,6 +667,8 @@ const dictionary = {
     openAttachment: 'Datei öffnen',
     downloadAttachment: 'Datei herunterladen',
     downloadAttachmentError: 'Die Datei konnte nicht heruntergeladen werden.',
+    downloadTaskExport: 'Task als ZIP',
+    downloadTaskExportError: 'Das Task-ZIP konnte nicht vorbereitet werden.',
     attachedFiles: 'Angehängte Dateien',
     unsavedTaskChanges: 'Ungespeicherte Änderungen verwerfen?',
     unsavedTaskChangesDescription: 'Wenn du die Aufgabe schließt, gehen deine aktuellen Änderungen verloren.',
@@ -872,6 +876,7 @@ const userSubmitting = ref(false);
 const annotationSubmitting = ref(false);
 const attachmentSubmitting = ref(false);
 const downloadingAttachmentId = ref<string | null>(null);
+const taskExportDownloading = ref(false);
 const sidebarCollapsed = ref(false);
 const isMobileViewport = ref(false);
 const editingProjectId = ref<string | null>(null);
@@ -2869,6 +2874,30 @@ const downloadTaskAttachment = async (attachment: Attachment) => {
     errorMessage.value = t.value.downloadAttachmentError;
   } finally {
     downloadingAttachmentId.value = null;
+  }
+};
+
+const downloadTaskExport = async () => {
+  const taskId = selectedTaskId.value;
+  if (!taskId || taskExportDownloading.value || !import.meta.client) return;
+  taskExportDownloading.value = true;
+  errorMessage.value = null;
+  try {
+    if (taskDetailsDirty.value) {
+      await persistExistingTaskDetails(taskId);
+      await refreshPersistedTaskState(taskId);
+    }
+    const link = document.createElement('a');
+    link.href = `/api/tasks/${taskId}/export`;
+    link.download = '';
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } catch {
+    errorMessage.value = t.value.downloadTaskExportError;
+  } finally {
+    taskExportDownloading.value = false;
   }
 };
 
@@ -6866,18 +6895,30 @@ const humanError = (error: unknown) => {
         </template>
 
         <template #footer>
-          <UButton
-            v-if="selectedTaskId && editingTask?.agentStatus !== 'running'"
-            class="mr-auto"
-            color="error"
-            variant="ghost"
-            icon="i-lucide-trash-2"
-            type="button"
-            :loading="taskSubmitting"
-            :aria-label="t.deleteTask"
-            :title="t.deleteTask"
-            @click.prevent.stop="requestDeleteTask"
-          />
+          <div v-if="selectedTaskId" class="mr-auto flex items-center gap-1.5">
+            <UButton
+              v-if="editingTask?.agentStatus !== 'running'"
+              color="error"
+              variant="ghost"
+              icon="i-lucide-trash-2"
+              type="button"
+              :loading="taskSubmitting"
+              :aria-label="t.deleteTask"
+              :title="t.deleteTask"
+              @click.prevent.stop="requestDeleteTask"
+            />
+            <UButton
+              color="neutral"
+              variant="soft"
+              icon="i-lucide-file-archive"
+              type="button"
+              :loading="taskExportDownloading"
+              :disabled="taskSubmitting || refinementBusy"
+              @click="downloadTaskExport"
+            >
+              {{ t.downloadTaskExport }}
+            </UButton>
+          </div>
           <UButton color="neutral" variant="ghost" type="button" @click="requestCloseTaskModal">{{ selectedTaskId ? t.close : t.cancel }}</UButton>
           <UButton
             v-if="activeTaskTab === 'task'"
