@@ -8,6 +8,7 @@ import { removeTaskWorktree } from './git-workspaces';
 import { hashPassword } from './security/password';
 import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSource } from './task-description';
 import type { User } from './db/schema';
+import type { AgentHarness, ReasoningEffort } from './agent-harness';
 
 const DEFAULT_COLUMNS = [
   { key: 'backlog', nameEn: 'Backlog', nameDe: 'Backlog', position: 0, done: false },
@@ -677,6 +678,8 @@ type CreateTaskInput = {
   unterthemaId?: string | null;
   assigneeId?: string | null;
   agentEnabled?: boolean;
+  agentHarness?: AgentHarness;
+  reasoningEffort?: ReasoningEffort;
   clientRequestId?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
@@ -772,6 +775,8 @@ async function createTaskOnce(
       assigneeId,
       agentEnabled: input.agentEnabled ?? false,
       agentStatus: input.agentEnabled && column.key === 'todo' ? 'queued' : 'idle',
+      agentHarness: input.agentHarness ?? 'codex',
+      reasoningEffort: input.reasoningEffort ?? 'xhigh',
       createdAt: now,
       updatedAt: now,
     }).run();
@@ -864,6 +869,8 @@ export async function updateTask(taskId: string, input: {
   unterthemaId?: string | null;
   assigneeId?: string | null;
   agentEnabled?: boolean;
+  agentHarness?: AgentHarness;
+  reasoningEffort?: ReasoningEffort;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
   position?: number;
@@ -883,6 +890,12 @@ export async function updateTask(taskId: string, input: {
   }
   if (task.agentStatus === 'running' && input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_agent_mode_locked' });
+  }
+  if (task.agentStatus === 'running' && (
+    (input.agentHarness !== undefined && input.agentHarness !== task.agentHarness)
+    || (input.reasoningEffort !== undefined && input.reasoningEffort !== task.reasoningEffort)
+  )) {
+    throw createError({ statusCode: 409, statusMessage: 'task_running_agent_runtime_locked' });
   }
   const nextAssigneeId = input.assigneeId === undefined
     ? undefined
@@ -930,6 +943,8 @@ export async function updateTask(taskId: string, input: {
     swimlaneId: input.swimlaneId === undefined ? undefined : input.swimlaneId,
     assigneeId: nextAssigneeId,
     agentEnabled: input.agentEnabled,
+    agentHarness: input.agentHarness,
+    reasoningEffort: input.reasoningEffort,
     priority: input.priority,
     position: input.position ?? (placementChanged
       ? nextTaskPosition(
@@ -954,6 +969,10 @@ export async function updateTask(taskId: string, input: {
     tagsChanged: input.tags !== undefined,
     descriptionSourceChanged: input.descriptionSource !== undefined && input.descriptionSource !== task.descriptionSource,
     agentModeChanged: input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled,
+    agentRuntimeChanged: (input.agentHarness !== undefined && input.agentHarness !== task.agentHarness)
+      || (input.reasoningEffort !== undefined && input.reasoningEffort !== task.reasoningEffort),
+    agentHarness: input.agentHarness ?? task.agentHarness,
+    reasoningEffort: input.reasoningEffort ?? task.reasoningEffort,
     assigneeChanged: input.assigneeId !== undefined && nextAssigneeId !== task.assigneeId,
     agentStatus: nextAgentStatus,
   });

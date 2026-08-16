@@ -6,6 +6,7 @@ import { db, schema } from './db';
 import type { TaskRefinement, User } from './db/schema';
 import { getProject } from './kanban';
 import { activeTaskDescription, publicTaskDescription } from './task-description';
+import type { AgentHarness, ReasoningEffort } from './agent-harness';
 
 export type RefinementStatus = 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed';
 export type RefinementComplexity = 'simple' | 'moderate' | 'complex';
@@ -70,6 +71,8 @@ export interface RefinementContext {
   taskKey: string;
   taskTitle: string;
   taskDescription: string | null;
+  agentHarness: AgentHarness;
+  reasoningEffort: ReasoningEffort;
   projectId: string;
   projectKey: string;
   projectName: string;
@@ -401,6 +404,8 @@ export function getRefinementForWorker(refinementId: string): RefinementContext 
     taskKey: task.key,
     taskTitle: task.title,
     taskDescription: refinement.sourceDescription,
+    agentHarness: task.agentHarness,
+    reasoningEffort: task.reasoningEffort,
     projectId: project.id,
     projectKey: project.key,
     projectName: project.name,

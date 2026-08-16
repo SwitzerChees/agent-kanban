@@ -101,6 +101,8 @@ function sampleContext(overrides: Partial<RefinementContext> = {}): RefinementCo
     taskKey: 'TASK-1',
     taskTitle: 'Refine the project overview',
     taskDescription: 'Add an overview grounded in existing project data.',
+    agentHarness: 'codex',
+    reasoningEffort: 'xhigh',
     projectId: 'project-id',
     projectKey: 'PROJECT',
     projectName: 'Project',

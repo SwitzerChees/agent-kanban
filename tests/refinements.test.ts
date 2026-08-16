@@ -66,6 +66,8 @@ describe('task refinements', () => {
       taskKey: task!.key,
       taskTitle: task!.title,
       taskDescription: task!.description,
+      agentHarness: 'codex',
+      reasoningEffort: 'xhigh',
       projectFolderPath: project.folderPath,
       round: 1,
       threadId: null,

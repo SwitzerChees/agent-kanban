@@ -39,9 +39,25 @@ describe('external agent task controls', () => {
       title: 'Run through the API',
       columnId: todo.id,
       agentEnabled: true,
+      agentHarness: 'opencode',
+      reasoningEffort: 'medium',
     }, admin);
 
-    expect(task).toMatchObject({ columnId: todo.id, agentEnabled: true, agentStatus: 'queued' });
+    expect(task).toMatchObject({
+      columnId: todo.id,
+      agentEnabled: true,
+      agentStatus: 'queued',
+      agentHarness: 'opencode',
+      reasoningEffort: 'medium',
+    });
+
+    await expect(kanban.updateTask(task!.id, {
+      agentHarness: 'prime-agent',
+      reasoningEffort: 'xhigh',
+    }, admin)).resolves.toMatchObject({
+      agentHarness: 'prime-agent',
+      reasoningEffort: 'xhigh',
+    });
 
     expect(kanban.cancelTaskAgent(task!.id, admin).task).toMatchObject({
       columnId: todo.id,
@@ -65,6 +81,7 @@ describe('external agent task controls', () => {
       folderPath: path.join(testRoot, 'private-workspace'),
     }, admin);
     const task = await kanban.createTask(project.id, { title: 'Private task' }, admin);
+    expect(task).toMatchObject({ agentHarness: 'codex', reasoningEffort: 'xhigh' });
     const now = new Date().toISOString();
     const outsider: User = {
       id: 'api-outsider',

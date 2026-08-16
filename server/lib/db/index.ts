@@ -144,6 +144,8 @@ export function ensureDatabase() {
       assignee_id TEXT REFERENCES users(id),
       agent_enabled INTEGER NOT NULL DEFAULT 0,
       agent_status TEXT NOT NULL DEFAULT 'idle',
+      agent_harness TEXT NOT NULL DEFAULT 'codex',
+      reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -288,11 +290,28 @@ export function ensureDatabase() {
   if (!taskColumns.some((column) => column.name === 'description_source')) {
     sqlite.exec("ALTER TABLE tasks ADD COLUMN description_source TEXT NOT NULL DEFAULT 'original';");
   }
+  if (!taskColumns.some((column) => column.name === 'agent_harness')) {
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_harness TEXT NOT NULL DEFAULT 'codex';");
+  }
+  if (!taskColumns.some((column) => column.name === 'reasoning_effort')) {
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'xhigh';");
+  }
   sqlite.exec(`
     UPDATE tasks
     SET description_source = 'original'
     WHERE description_source NOT IN ('original', 'refined')
        OR description_source IS NULL;
+  `);
+  sqlite.exec(`
+    UPDATE tasks
+    SET agent_harness = 'codex'
+    WHERE agent_harness NOT IN ('codex', 'opencode', 'prime-agent')
+       OR agent_harness IS NULL;
+
+    UPDATE tasks
+    SET reasoning_effort = 'xhigh'
+    WHERE reasoning_effort NOT IN ('low', 'medium', 'xhigh')
+       OR reasoning_effort IS NULL;
   `);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request

@@ -18,6 +18,10 @@ describe('external harness OpenAPI contract', () => {
     expect(document.paths['/api/tasks/{taskId}/agent/cancel']?.post?.operationId).toBe('cancelTaskAgent');
     expect(document.paths['/api/tasks/{taskId}/agent/retry']?.post?.operationId).toBe('retryTaskAgent');
     expect(document.components.schemas.TaskUpdate?.properties).not.toHaveProperty('agentStatus');
+    expect(document.components.schemas.TaskCreate?.properties).toMatchObject({
+      agentHarness: { $ref: '#/components/schemas/AgentHarness' },
+      reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' },
+    });
 
     const operationIds = Object.values(document.paths)
       .flatMap((pathItem) => Object.values(pathItem).map((operation) => operation.operationId))

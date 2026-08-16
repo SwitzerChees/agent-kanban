@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { loadAgentsContext } from './agents-context';
 import { syncMasterForRefinement } from './git-workspaces';
 import { runRefinementCodexTurn } from './refinement-codex';
+import { runExternalRefinementTurn } from './external-agent';
+import { CODEX_MODEL } from './agent-harness';
 import { resolveServiceConfig } from './config';
 import { storeTaskAttachment } from './kanban';
 import { runtimeLogger } from './logger';
@@ -27,6 +29,7 @@ import {
   type RefinementVisual,
 } from './refinements';
 import { loadWorkflow } from './workflow';
+import type { CodexRuntimeEvent } from './types';
 
 const MAX_QUESTION_ROUNDS = 3;
 const MAX_GENERATED_VISUALS = 2;
@@ -339,39 +342,58 @@ export async function processClaimedRefinement(context: RefinementContext, signa
     task_key: context.taskKey,
     round: context.round,
     resumed: Boolean(context.threadId),
+    harness: context.agentHarness,
+    reasoning_effort: context.reasoningEffort,
   });
 
   let persistedThreadId = context.threadId;
-  const turn = await runRefinementCodexTurn<unknown>({
-    config: config.codex,
-    workspacePath: context.projectFolderPath,
-    prompt,
-    outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
-    threadId: context.threadId,
-    signal,
-    onEvent: (event) => {
-      if (
-        (event.event === 'refinement_thread_started' || event.event === 'refinement_thread_resumed')
-        && event.thread_id
-        && event.thread_id !== persistedThreadId
-      ) {
-        // Persist before turn/start. If the process dies during a long turn, a
-        // lease successor can resume this thread instead of starting another.
-        setRefinementThread(context.id, event.thread_id, context.leaseToken);
-        persistedThreadId = event.thread_id;
-        context.threadId = event.thread_id;
-      }
-      if (event.event === 'item/agentMessage/delta') return;
-      runtimeLogger.debug('refinement codex event', {
-        refinement_id: context.id,
-        event: event.event,
-        thread_id: event.thread_id,
-        turn_id: event.turn_id,
-        message: event.message,
+  const onEvent = (event: CodexRuntimeEvent) => {
+    if (
+      (event.event === 'refinement_thread_started' || event.event === 'refinement_thread_resumed')
+      && event.thread_id
+      && event.thread_id !== persistedThreadId
+    ) {
+      // Persist before turn/start. If the process dies during a long turn, a
+      // lease successor can resume this thread instead of starting another.
+      setRefinementThread(context.id, event.thread_id, context.leaseToken);
+      persistedThreadId = event.thread_id;
+      context.threadId = event.thread_id;
+    }
+    if (event.event === 'item/agentMessage/delta') return;
+    runtimeLogger.debug('refinement agent event', {
+      refinement_id: context.id,
+      harness: context.agentHarness,
+      event: event.event,
+      thread_id: event.thread_id,
+      turn_id: event.turn_id,
+      message: event.message,
+    });
+  };
+  const turn = context.agentHarness === 'codex'
+    ? await runRefinementCodexTurn<unknown>({
+        config: {
+          ...config.codex,
+          model: CODEX_MODEL,
+          reasoningEffort: context.reasoningEffort,
+        },
+        workspacePath: context.projectFolderPath,
+        prompt,
+        outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
+        threadId: context.threadId,
+        signal,
+        onEvent,
+      })
+    : await runExternalRefinementTurn({
+        harness: context.agentHarness,
+        reasoningEffort: context.reasoningEffort,
+        workspacePath: context.projectFolderPath,
+        prompt,
+        outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
+        signal,
+        timeoutMs: config.codex.turnTimeoutMs,
+        onEvent,
       });
-    },
-  });
-  if (turn.threadId !== persistedThreadId) {
+  if (turn.threadId && turn.threadId !== persistedThreadId) {
     setRefinementThread(context.id, turn.threadId, context.leaseToken);
     persistedThreadId = turn.threadId;
   }
@@ -412,6 +434,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
     thread_id: turn.threadId,
     complexity: output.complexity,
     visuals: visuals.length,
+    harness: context.agentHarness,
   });
 }
 

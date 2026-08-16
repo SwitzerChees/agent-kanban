@@ -4,6 +4,8 @@ import { appDataDir, db, schema } from './db';
 import { loadWorkflow } from './workflow';
 import { resolveServiceConfig } from './config';
 import { runCodexSession, type CodexSteeringBatch, type CodexUserInput } from './codex';
+import { runExternalAgentSession } from './external-agent';
+import { CODEX_MODEL, type AgentHarness, type ReasoningEffort } from './agent-harness';
 import { prepareTaskWorktree } from './git-workspaces';
 import { runtimeLogger } from './logger';
 import { logTaskActivity } from './kanban';
@@ -125,7 +127,11 @@ class LocalTaskDispatcher {
     })
       .where(eq(schema.tasks.id, queued.id))
       .run();
-    logTaskActivity(queued.projectId, queued.id, null, 'codex_started', { column: queuedColumn.key });
+    logTaskActivity(queued.projectId, queued.id, null, 'codex_started', {
+      column: queuedColumn.key,
+      harness: queued.agentHarness,
+      reasoningEffort: queued.reasoningEffort,
+    });
 
     try {
       const workflow = await loadWorkflow();
@@ -167,8 +173,16 @@ class LocalTaskDispatcher {
         lastAgentUpdateLogMs = nowMs;
         logTaskActivity(queued.projectId, queued.id, null, 'codex_text_update', { body });
       };
-      runtimeLogger.info('local codex task started', { task_id: queued.id, task_key: queued.key, project: project.key });
-      await runCodexSession({
+      runtimeLogger.info('local agent task started', {
+        task_id: queued.id,
+        task_key: queued.key,
+        project: project.key,
+        harness: queued.agentHarness,
+        reasoning_effort: queued.reasoningEffort,
+      });
+      await runTaskAgentHarness({
+        harness: queued.agentHarness,
+        reasoningEffort: queued.reasoningEffort,
         config: config.codex,
         workspacePath,
         issue,
@@ -178,9 +192,10 @@ class LocalTaskDispatcher {
         maxTurns: Math.min(config.agent.maxTurns, Number.parseInt(process.env.KANBAN_AGENT_MAX_TURNS ?? String(config.agent.maxTurns), 10)),
         signal: controller.signal,
         onEvent: (event) => {
-          runtimeLogger.info('local codex event', {
+          runtimeLogger.info('local agent event', {
             task_id: queued.id,
             task_key: queued.key,
+            harness: queued.agentHarness,
             event: event.event,
             session_id: event.session_id,
             message: event.message,
@@ -265,8 +280,15 @@ class LocalTaskDispatcher {
         columnId: reviewColumn?.id ?? queued.columnId,
         updatedAt: new Date().toISOString(),
       }).where(eq(schema.tasks.id, queued.id)).run();
-      logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', { nextColumn: reviewColumn?.key ?? null });
-      runtimeLogger.info('local codex task completed', { task_id: queued.id, task_key: queued.key });
+      logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', {
+        nextColumn: reviewColumn?.key ?? null,
+        harness: queued.agentHarness,
+      });
+      runtimeLogger.info('local agent task completed', {
+        task_id: queued.id,
+        task_key: queued.key,
+        harness: queued.agentHarness,
+      });
     } catch (error) {
       if (controller.signal.aborted) {
         logTaskActivity(queued.projectId, queued.id, null, 'codex_cancelled', {});
@@ -397,6 +419,41 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
     created_at: task.createdAt,
     updated_at: task.updatedAt,
   };
+}
+
+async function runTaskAgentHarness(options: Parameters<typeof runCodexSession>[0] & {
+  harness: AgentHarness;
+  reasoningEffort: ReasoningEffort;
+}) {
+  const { harness, reasoningEffort, config, loadSteering, ...common } = options;
+  if (harness === 'codex') {
+    return runCodexSession({
+      ...common,
+      loadSteering,
+      config: {
+        ...config,
+        model: CODEX_MODEL,
+        reasoningEffort,
+      },
+    });
+  }
+
+  return runExternalAgentSession({
+    harness,
+    reasoningEffort,
+    turnTimeoutMs: config.turnTimeoutMs,
+    workspacePath: common.workspacePath,
+    issue: common.issue,
+    promptTemplate: common.promptTemplate,
+    promptPrefix: common.promptPrefix,
+    attempt: common.attempt,
+    maxTurns: common.maxTurns,
+    signal: common.signal,
+    onEvent: common.onEvent,
+    refreshIssue: common.refreshIssue,
+    shouldContinue: common.shouldContinue,
+    completionCheck: common.completionCheck,
+  });
 }
 
 function buildLiveSteeringBatch(

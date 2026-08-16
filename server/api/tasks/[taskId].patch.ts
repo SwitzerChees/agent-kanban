@@ -13,6 +13,8 @@ const schema = z.object({
   unterthemaId: z.string().optional().nullable(),
   assigneeId: z.string().optional().nullable(),
   agentEnabled: z.boolean().optional(),
+  agentHarness: z.enum(['codex', 'opencode', 'prime-agent']).optional(),
+  reasoningEffort: z.enum(['low', 'medium', 'xhigh']).optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   tags: z.array(z.string()).optional(),
   position: z.number().int().optional(),

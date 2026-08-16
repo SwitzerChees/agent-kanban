@@ -118,6 +118,8 @@ export const tasks = sqliteTable('tasks', {
   assigneeId: text('assignee_id').references(() => users.id),
   agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
   agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'failed', 'done'] }).notNull().default('idle'),
+  agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('xhigh'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

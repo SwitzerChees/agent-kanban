@@ -501,6 +501,8 @@ components:
         unterthemaId: { type: [string, 'null'], format: uuid }
         assigneeId: { type: [string, 'null'], format: uuid }
         agentEnabled: { type: boolean, default: false }
+        agentHarness: { $ref: '#/components/schemas/AgentHarness' }
+        reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' }
         clientRequestId: { type: string, minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' }
         priority: { $ref: '#/components/schemas/Priority' }
         tags: { type: array, items: { type: string } }
@@ -515,6 +517,8 @@ components:
         unterthemaId: { type: [string, 'null'], format: uuid }
         assigneeId: { type: [string, 'null'], format: uuid }
         agentEnabled: { type: boolean }
+        agentHarness: { $ref: '#/components/schemas/AgentHarness' }
+        reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' }
         priority: { $ref: '#/components/schemas/Priority' }
         tags: { type: array, items: { type: string } }
         position: { type: integer }
@@ -532,6 +536,14 @@ components:
         name: { type: string, minLength: 1, maxLength: 120 }
         description: { type: [string, 'null'], maxLength: 1000 }
         position: { type: integer, minimum: 0 }
+    AgentHarness:
+      type: string
+      enum: [codex, opencode, prime-agent]
+      default: codex
+    ReasoningEffort:
+      type: string
+      enum: [low, medium, xhigh]
+      default: xhigh
     UserCreate:
       type: object
       required: [email, name, password]

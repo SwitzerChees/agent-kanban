@@ -6,6 +6,8 @@ type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
+type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
+type ReasoningEffort = 'low' | 'medium' | 'xhigh';
 
 interface User {
   id: string;
@@ -101,6 +103,8 @@ interface Task {
   assigneeId: string | null;
   agentEnabled: boolean;
   agentStatus: 'idle' | 'queued' | 'running' | 'failed' | 'done';
+  agentHarness: AgentHarness;
+  reasoningEffort: ReasoningEffort;
   attachments: Attachment[];
   tags: string[];
   unreadMentionCount?: number;
@@ -500,6 +504,23 @@ const dictionary = {
     humanTaskShort: 'Human',
     aiExecution: 'Let the AI agent execute this task',
     aiExecutionHelp: 'Off by default. Only enabled tasks are started automatically in To Do.',
+    aiRuntime: 'AI runtime',
+    aiRuntimeHelp: 'Used for both refinement and implementation.',
+    harness: 'Harness',
+    reasoningEffort: 'Reasoning effort',
+    fixedModel: 'Fixed model',
+    harnessCodex: 'Codex',
+    harnessOpenCode: 'OpenCode',
+    harnessPrimeAgent: 'Prime Agent',
+    effortLow: 'Low',
+    effortMedium: 'Medium',
+    effortXhigh: 'Extra high',
+    refineWithHarness: 'Refine with {harness}',
+    refinementAgentDescription: '{harness} reviews the idea in the current project context and turns it into an implementation-ready brief.',
+    refinementAgentIntro: '{harness} compares your idea with the existing application and identifies the integration path, impact, risks, and open decisions.',
+    refinementAgentBrief: 'What should {harness} investigate?',
+    refinementAgentRunning: '{harness} is investigating the task',
+    refinementAgentQuestions: '{harness} needs your input',
     noOberthemen: 'No parent topics yet',
     noUnterthemen: 'This parent topic has no sub-topics yet',
     scopeTasks: 'tasks in this view',
@@ -798,6 +819,23 @@ const dictionary = {
     humanTaskShort: 'Mensch',
     aiExecution: 'Diesen Task vom KI-Agenten bearbeiten lassen',
     aiExecutionHelp: 'Standardmäßig aus. Nur aktivierte Tasks starten in „Zu erledigen“ automatisch.',
+    aiRuntime: 'KI-Laufzeit',
+    aiRuntimeHelp: 'Gilt für Refinement und Umsetzung dieses Tasks.',
+    harness: 'Harness',
+    reasoningEffort: 'Reasoning-Aufwand',
+    fixedModel: 'Festes Modell',
+    harnessCodex: 'Codex',
+    harnessOpenCode: 'OpenCode',
+    harnessPrimeAgent: 'Prime Agent',
+    effortLow: 'Niedrig',
+    effortMedium: 'Mittel',
+    effortXhigh: 'Extra hoch',
+    refineWithHarness: 'Mit {harness} refinen',
+    refinementAgentDescription: '{harness} prüft die Idee im aktuellen Projektkontext und arbeitet sie zu einem belastbaren Auftrag aus.',
+    refinementAgentIntro: '{harness} gleicht deine Idee mit der bestehenden Anwendung ab und benennt Integrationsweg, Auswirkungen, Risiken und offene Entscheidungen.',
+    refinementAgentBrief: 'Was soll {harness} genauer untersuchen?',
+    refinementAgentRunning: '{harness} untersucht den Task',
+    refinementAgentQuestions: '{harness} braucht deine Einschätzung',
     noOberthemen: 'Noch keine Oberthemen',
     noUnterthemen: 'Dieses Oberthema hat noch keine Unterthemen',
     scopeTasks: 'Aufgaben in dieser Ansicht',
@@ -1025,6 +1063,8 @@ const taskForm = reactive({
   swimlaneId: '',
   assigneeId: UNASSIGNED_ID,
   agentEnabled: false,
+  agentHarness: 'codex' as AgentHarness,
+  reasoningEffort: 'xhigh' as ReasoningEffort,
   priority: 'normal' as Task['priority'],
   tags: [] as string[],
 });
@@ -1061,6 +1101,8 @@ function taskDetailsFingerprint() {
     swimlaneId: taskForm.swimlaneId,
     assigneeId: taskForm.assigneeId,
     agentEnabled: taskForm.agentEnabled,
+    agentHarness: taskForm.agentHarness,
+    reasoningEffort: taskForm.reasoningEffort,
     priority: taskForm.priority,
     tags: [...taskForm.tags].sort((left, right) => left.localeCompare(right)),
     files: pendingFileFingerprint(taskFiles.value.filter((item) => item.purpose === 'task')),
@@ -1166,6 +1208,32 @@ const taskModalModel = computed({
 const taskModalContentProps = { 'aria-modal': 'true' } as unknown as NonNullable<ModalProps['content']>;
 
 const t = computed(() => dictionary[locale.value]);
+const agentHarnessItems = computed(() => [
+  { label: t.value.harnessCodex, value: 'codex' },
+  { label: t.value.harnessOpenCode, value: 'opencode' },
+  { label: t.value.harnessPrimeAgent, value: 'prime-agent' },
+]);
+const reasoningEffortItems = computed(() => [
+  { label: t.value.effortLow, value: 'low' },
+  { label: t.value.effortMedium, value: 'medium' },
+  { label: t.value.effortXhigh, value: 'xhigh' },
+]);
+const selectedHarnessLabel = computed(() => agentHarnessItems.value.find((item) => item.value === taskForm.agentHarness)?.label ?? t.value.harnessCodex);
+const selectedHarnessModel = computed(() => taskForm.agentHarness === 'codex' ? 'gpt-5.6-sol' : 'Qwen/Qwen3.8-27B');
+const refineTaskLabel = computed(() => t.value.refineWithHarness.replace('{harness}', selectedHarnessLabel.value));
+const taskRefinementLabels = computed(() => ({
+  description: t.value.refinementAgentDescription.replace('{harness}', selectedHarnessLabel.value),
+  intro: t.value.refinementAgentIntro.replace('{harness}', selectedHarnessLabel.value),
+  briefLabel: t.value.refinementAgentBrief.replace('{harness}', selectedHarnessLabel.value),
+  briefHint: locale.value === 'de'
+    ? `Ein bis zwei Sätze reichen. ${selectedHarnessLabel.value} berücksichtigt Code, Projektstruktur und vorhandene Anhänge.`
+    : `One or two sentences are enough. ${selectedHarnessLabel.value} considers the code, project structure, and existing attachments.`,
+  runningTitle: t.value.refinementAgentRunning.replace('{harness}', selectedHarnessLabel.value),
+  questionsTitle: t.value.refinementAgentQuestions.replace('{harness}', selectedHarnessLabel.value),
+  visualsDescription: locale.value === 'de'
+    ? `${selectedHarnessLabel.value} hat Visualisierungen erzeugt, weil sie die vorgeschlagene Umsetzung verständlicher machen.`
+    : `${selectedHarnessLabel.value} created visuals because they make the proposed implementation easier to understand.`,
+}));
 const commandPaletteInputProps = computed(() => ({
   fixed: true,
   'aria-label': t.value.commandPalettePlaceholder,
@@ -2404,6 +2472,8 @@ function syncTaskFormFromDetail(detailTask: Task, resetDescriptionView = false) 
     swimlaneId: detailTask.swimlaneId ?? defaultSwimlaneId.value,
     assigneeId: detailTask.assigneeId ?? UNASSIGNED_ID,
     agentEnabled: detailTask.agentEnabled,
+    agentHarness: detailTask.agentHarness,
+    reasoningEffort: detailTask.reasoningEffort,
     priority: detailTask.priority,
     tags: detailTask.tags,
   });
@@ -2459,6 +2529,8 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
     swimlaneId: defaultSwimlaneId.value,
     assigneeId: defaultTaskAssigneeId.value,
     agentEnabled: false,
+    agentHarness: 'codex',
+    reasoningEffort: 'xhigh',
     priority: 'normal',
     tags: [],
   });
@@ -2737,6 +2809,8 @@ async function createTaskFromCurrentForm() {
   if (placement.unterthemaId) form.append('unterthemaId', placement.unterthemaId);
   form.append('assigneeId', taskAssigneeIdForRequest() ?? '');
   form.append('agentEnabled', String(taskForm.agentEnabled));
+  form.append('agentHarness', taskForm.agentHarness);
+  form.append('reasoningEffort', taskForm.reasoningEffort);
   form.append('clientRequestId', taskCreateRequestId.value);
   form.append('priority', taskForm.priority);
   form.append('tags', JSON.stringify(taskForm.tags));
@@ -2762,13 +2836,22 @@ async function persistExistingTaskDetails(taskId: string) {
         ...placement,
         assigneeId,
         agentEnabled: taskForm.agentEnabled,
+        agentHarness: taskForm.agentHarness,
+        reasoningEffort: taskForm.reasoningEffort,
         tags,
       },
     });
   } else {
     await $fetch(`/api/tasks/${taskId}`, {
       method: 'PATCH',
-      body: { tags, ...placement, assigneeId, agentEnabled: taskForm.agentEnabled },
+      body: {
+        tags,
+        ...placement,
+        assigneeId,
+        agentEnabled: taskForm.agentEnabled,
+        agentHarness: taskForm.agentHarness,
+        reasoningEffort: taskForm.reasoningEffort,
+      },
     });
   }
 
@@ -2854,6 +2937,8 @@ const saveTaskAction = async () => {
         swimlaneId: defaultSwimlaneId.value,
         assigneeId: defaultTaskAssigneeId.value,
         agentEnabled: false,
+        agentHarness: 'codex',
+        reasoningEffort: 'xhigh',
         priority: 'normal',
         tags: [],
       });
@@ -4852,6 +4937,7 @@ const humanError = (error: unknown) => {
     project_forbidden: { en: 'You do not have access to this project.', de: 'Du hast keinen Zugriff auf dieses Projekt.' },
     task_not_found: { en: 'The task could not be found.', de: 'Die Aufgabe wurde nicht gefunden.' },
     task_locked_after_agent_start: { en: 'This task is already being worked on. Title and description cannot be changed anymore.', de: 'Diese Aufgabe wird bereits bearbeitet. Titel und Beschreibung können nicht mehr geändert werden.' },
+    task_running_agent_runtime_locked: { en: 'Harness and reasoning effort cannot be changed while this task is running.', de: 'Harness und Reasoning-Aufwand können während der laufenden Bearbeitung nicht geändert werden.' },
     refined_description_missing: { en: 'This task does not have an applied refinement yet.', de: 'Für diese Aufgabe wurde noch kein Refinement übernommen.' },
     task_running_cannot_delete: { en: 'This task is in progress and cannot be deleted.', de: 'Diese Aufgabe wird gerade bearbeitet und kann nicht gelöscht werden.' },
     task_running_cannot_delete_attachment: { en: 'Files cannot be deleted while the AI agent is working on this task.', de: 'Während der KI-Agent an dieser Aufgabe arbeitet, können Dateien nicht gelöscht werden.' },
@@ -4884,8 +4970,8 @@ const humanError = (error: unknown) => {
     source_changed: { en: 'The task changed while the refinement was being applied. Please try again.', de: 'Die Aufgabe wurde während der Übernahme geändert. Bitte versuche es erneut.' },
     refinement_already_applied: { en: 'This refinement has already been applied.', de: 'Dieses Refinement wurde bereits übernommen.' },
     refinement_answers_incomplete: { en: 'Please answer every required challenge question.', de: 'Bitte beantworte alle erforderlichen Challenge-Fragen.' },
-    refinement_timeout: { en: 'Codex took too long to finish this refinement. You can try again.', de: 'Codex hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.' },
-    refinement_invalid_output: { en: 'Codex returned an incomplete refinement. You can try again without changing the task.', de: 'Codex hat ein unvollständiges Refinement geliefert. Du kannst es erneut versuchen, ohne dass die Aufgabe verändert wurde.' },
+    refinement_timeout: { en: 'The selected AI harness took too long to finish this refinement. You can try again.', de: 'Der gewählte KI-Harness hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.' },
+    refinement_invalid_output: { en: 'The selected AI harness returned an incomplete refinement. You can try again without changing the task.', de: 'Der gewählte KI-Harness hat ein unvollständiges Refinement geliefert. Du kannst es erneut versuchen, ohne dass die Aufgabe verändert wurde.' },
     refinement_security_policy: { en: 'The refinement stopped because a project access rule was not satisfied.', de: 'Das Refinement wurde gestoppt, weil eine Regel für den Projektzugriff nicht erfüllt war.' },
     refinement_question_limit: { en: 'The refinement reached its maximum number of challenge rounds. Start a new run with the gathered answers.', de: 'Das Refinement hat die maximale Anzahl Challenge-Runden erreicht. Starte mit den gesammelten Antworten einen neuen Lauf.' },
     refinement_failed: { en: 'The refinement could not be completed. The task was not changed.', de: 'Das Refinement konnte nicht abgeschlossen werden. Die Aufgabe wurde nicht verändert.' },
@@ -6609,7 +6695,7 @@ const humanError = (error: unknown) => {
                     class="shrink-0 justify-center"
                     @click="openTaskRefinementTab"
                   >
-                    {{ t.refineTask }}
+                    {{ refineTaskLabel }}
                   </UButton>
                 </div>
 
@@ -6746,6 +6832,47 @@ const humanError = (error: unknown) => {
                         icon="i-lucide-user-round-check"
                       />
                     </UFormField>
+                  </div>
+
+                  <div class="border-t border-zinc-200 pt-5 dark:border-zinc-800">
+                    <div class="flex items-start gap-3">
+                      <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-teal-300 dark:ring-zinc-700">
+                        <UIcon name="i-lucide-terminal-square" class="size-4" />
+                      </span>
+                      <div class="min-w-0">
+                        <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.aiRuntime }}</p>
+                        <p class="mt-0.5 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ t.aiRuntimeHelp }}</p>
+                      </div>
+                    </div>
+
+                    <div class="mt-4 grid gap-3">
+                      <UFormField :label="t.harness" size="sm">
+                        <USelect
+                          v-model="taskForm.agentHarness"
+                          data-testid="task-harness-select"
+                          class="w-full"
+                          :items="agentHarnessItems"
+                          size="lg"
+                          icon="i-lucide-bot"
+                          :disabled="editingTask?.agentStatus === 'running'"
+                        />
+                      </UFormField>
+                      <UFormField :label="t.reasoningEffort" size="sm">
+                        <USelect
+                          v-model="taskForm.reasoningEffort"
+                          data-testid="task-effort-select"
+                          class="w-full"
+                          :items="reasoningEffortItems"
+                          size="lg"
+                          icon="i-lucide-gauge"
+                          :disabled="editingTask?.agentStatus === 'running'"
+                        />
+                      </UFormField>
+                      <div class="flex items-center justify-between gap-3 rounded-lg bg-zinc-100/80 px-3 py-2 text-xs dark:bg-zinc-800/70">
+                        <span class="text-zinc-500 dark:text-zinc-400">{{ t.fixedModel }}</span>
+                        <span data-testid="task-model-label" class="min-w-0 truncate font-mono font-medium text-zinc-800 dark:text-zinc-200">{{ selectedHarnessModel }}</span>
+                      </div>
+                    </div>
                   </div>
 
                   <div class="border-t border-zinc-200 pt-5 dark:border-zinc-800">
@@ -6969,6 +7096,7 @@ const humanError = (error: unknown) => {
               <TaskRefinementPanel
                 :runs="refinementPanelRuns"
                 :current-run="selectedRefinementPanelRun"
+                :labels="taskRefinementLabels"
                 :busy="refinementBusy || taskSubmitting"
                 :create-on-start="!selectedTaskId"
                 :task-ready="Boolean(taskForm.title.trim())"
