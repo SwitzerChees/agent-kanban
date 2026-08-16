@@ -75,6 +75,41 @@ export function ensureDatabase() {
       PRIMARY KEY(project_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS project_chat_threads (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT 'New chat',
+      harness TEXT NOT NULL DEFAULT 'prime-agent',
+      reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
+      status TEXT NOT NULL DEFAULT 'ready',
+      is_current INTEGER NOT NULL DEFAULT 0,
+      native_session_id TEXT,
+      source_revision TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_chat_messages (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      state TEXT NOT NULL DEFAULT 'complete',
+      client_request_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_chat_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS project_tags (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
@@ -251,6 +286,18 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_task_user ON comment_mentions(task_id, user_id);
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_unread ON comment_mentions(user_id, seen_at);
     CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity(task_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_current
+      ON project_chat_threads(project_id, user_id)
+      WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_project_chat_history
+      ON project_chat_threads(project_id, user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_project_chat_messages_thread
+      ON project_chat_messages(thread_id, created_at, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_message_request
+      ON project_chat_messages(thread_id, client_request_id)
+      WHERE client_request_id IS NOT NULL AND role = 'user';
+    CREATE INDEX IF NOT EXISTS idx_project_chat_events_thread
+      ON project_chat_events(thread_id, id);
   `);
 
   // Older builds persisted the complete Codex protocol stream, including

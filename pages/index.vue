@@ -7534,6 +7534,14 @@ const humanError = (error: unknown) => {
           </UButton>
         </template>
       </UModal>
+
+      <ProjectChatDock
+        v-if="activeView === 'board' && selectedProject"
+        :key="selectedProject.id"
+        :project-id="selectedProject.id"
+        :project-name="selectedProject.name"
+        :locale="locale"
+      />
     </div>
 
     <Teleport to="body">

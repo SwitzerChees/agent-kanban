@@ -50,6 +50,41 @@ export const projectUsers = sqliteTable('project_users', {
   pk: primaryKey({ columns: [table.projectId, table.userId] }),
 }));
 
+export const projectChatThreads = sqliteTable('project_chat_threads', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  title: text('title').notNull().default('New chat'),
+  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('xhigh'),
+  status: text('status', { enum: ['ready', 'running', 'failed'] }).notNull().default('ready'),
+  isCurrent: integer('is_current', { mode: 'boolean' }).notNull().default(false),
+  nativeSessionId: text('native_session_id'),
+  sourceRevision: text('source_revision'),
+  lastError: text('last_error'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const projectChatMessages = sqliteTable('project_chat_messages', {
+  id: text('id').primaryKey(),
+  threadId: text('thread_id').notNull().references(() => projectChatThreads.id, { onDelete: 'cascade' }),
+  role: text('role', { enum: ['user', 'assistant'] }).notNull(),
+  content: text('content').notNull().default(''),
+  state: text('state', { enum: ['complete', 'streaming', 'failed', 'cancelled'] }).notNull().default('complete'),
+  clientRequestId: text('client_request_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const projectChatEvents = sqliteTable('project_chat_events', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  threadId: text('thread_id').notNull().references(() => projectChatThreads.id, { onDelete: 'cascade' }),
+  type: text('type').notNull(),
+  payload: text('payload').notNull().default('{}'),
+  createdAt: text('created_at').notNull(),
+});
+
 export const projectTags = sqliteTable('project_tags', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
@@ -217,6 +252,9 @@ export const activity = sqliteTable('activity', {
 export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type ProjectChatThread = typeof projectChatThreads.$inferSelect;
+export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;
+export type ProjectChatEvent = typeof projectChatEvents.$inferSelect;
 export type ProjectTag = typeof projectTags.$inferSelect;
 export type Column = typeof columns.$inferSelect;
 export type Oberthema = typeof oberthemen.$inferSelect;

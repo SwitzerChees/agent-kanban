@@ -7,6 +7,12 @@ import {
   harnessExecutable,
 } from '../server/lib/agent-harness';
 import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent';
+import {
+  activityFromEvent,
+  assistantTextFromEvent,
+  buildProjectChatArgs,
+  sessionIdFromEvent,
+} from '../server/lib/project-chat-harness';
 
 describe('agent harness runtime contracts', () => {
   test('keeps model selection fixed while forwarding only the selected effort', () => {
@@ -37,5 +43,57 @@ describe('agent harness runtime contracts', () => {
     expect(harnessExecutable('prime-agent')).toMatch(/prime-agent$/);
     expect(parseJsonObject('{"ok":true}')).toEqual({ ok: true });
     expect(parseJsonObject('```json\n{"ok":true}\n```')).toEqual({ ok: true });
+  });
+
+  test('builds resumable, non-autonomous chat turns for every harness', () => {
+    const common = {
+      reasoningEffort: 'medium' as const,
+      workspacePath: '/tmp/project-chat',
+      sessionRoot: '/tmp/project-chat-session',
+      threadId: 'chat-123',
+      prompt: 'Explain the authentication flow.',
+    };
+    expect(buildProjectChatArgs({ ...common, harness: 'prime-agent', nativeSessionId: 'prime-1' }))
+      .toEqual(expect.arrayContaining(['--mode', 'json', '--resume', 'prime-1', '--session-dir']));
+    expect(buildProjectChatArgs({ ...common, harness: 'opencode', nativeSessionId: 'open-1' }))
+      .toEqual(expect.arrayContaining(['--format', 'json', '--agent', 'explore', '--session', 'open-1']));
+    expect(buildProjectChatArgs({ ...common, harness: 'codex', nativeSessionId: 'codex-1' }))
+      .toEqual(expect.arrayContaining(['exec', 'resume', '--json', 'codex-1']));
+    expect(buildProjectChatArgs({ ...common, harness: 'opencode', nativeSessionId: null }))
+      .not.toContain('--auto');
+    for (const harness of ['codex', 'opencode', 'prime-agent'] as const) {
+      expect(buildProjectChatArgs({ ...common, harness, nativeSessionId: null }).join(' '))
+        .not.toContain(common.prompt);
+    }
+  });
+
+  test('parses Prime Agent session headers and streaming text events', () => {
+    expect(sessionIdFromEvent({ type: 'session', id: 'prime-session-1' }, 'prime-agent'))
+      .toBe('prime-session-1');
+    expect(assistantTextFromEvent({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Hello' },
+    }, 'prime-agent')).toEqual({ text: 'Hello', full: false });
+    expect(assistantTextFromEvent({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'toolcall_delta', delta: '{"code":' },
+    }, 'prime-agent')).toBeNull();
+    expect(assistantTextFromEvent({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] },
+    }, 'prime-agent')).toEqual({ text: 'Hello world', full: true });
+  });
+
+  test('reduces raw tool events to generic project or web activity', () => {
+    expect(activityFromEvent({
+      type: 'tool_execution_start',
+      toolName: 'ipython',
+      args: { code: 'open("package.json")' },
+    })).toBe('project');
+    expect(activityFromEvent({
+      type: 'tool_execution_start',
+      toolName: 'ipython',
+      args: { code: 'agent-browser open https://nuxt.com' },
+    })).toBe('web');
   });
 });
