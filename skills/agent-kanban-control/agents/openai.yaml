@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Kanban Control"
+  short_description: "Control Agent Kanban through its HTTP API"
+  default_prompt: "Use $agent-kanban-control to manage projects and tasks in Agent Kanban safely."

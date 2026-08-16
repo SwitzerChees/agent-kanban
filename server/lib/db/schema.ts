@@ -18,6 +18,18 @@ export const sessions = sqliteTable('sessions', {
   createdAt: text('created_at').notNull(),
 });
 
+export const apiTokens = sqliteTable('api_tokens', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  tokenPrefix: text('token_prefix').notNull(),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at'),
+  lastUsedAt: text('last_used_at'),
+  revokedAt: text('revoked_at'),
+});
+
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
   key: text('key').notNull().unique(),
@@ -199,6 +211,7 @@ export const activity = sqliteTable('activity', {
 });
 
 export type User = typeof users.$inferSelect;
+export type ApiToken = typeof apiTokens.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type ProjectTag = typeof projectTags.$inferSelect;
 export type Column = typeof columns.$inferSelect;

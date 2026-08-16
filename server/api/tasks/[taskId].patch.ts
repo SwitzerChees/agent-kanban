@@ -15,7 +15,6 @@ const schema = z.object({
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   tags: z.array(z.string()).optional(),
   position: z.number().int().optional(),
-  agentStatus: z.enum(['idle', 'queued', 'running', 'failed', 'done']).optional(),
 });
 
 export default defineEventHandler(async (event) => {

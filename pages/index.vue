@@ -13,6 +13,20 @@ interface User {
   role: 'admin' | 'member';
 }
 
+interface ApiToken {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+}
+
+interface CreatedApiToken {
+  token: string;
+  apiToken: ApiToken;
+}
+
 interface Project {
   id: string;
   key: string;
@@ -285,6 +299,26 @@ const dictionary = {
     email: 'Email',
     password: 'Password',
     logout: 'Sign out',
+    apiTokens: 'API tokens',
+    apiTokensDescription: 'Create a personal token for an external agent harness.',
+    apiTokenSecurityHint: 'Tokens inherit your current project access. Store them like a password.',
+    apiTokenName: 'Token name',
+    apiTokenNamePlaceholder: 'e.g. Local agent harness',
+    apiTokenExpiry: 'Expires',
+    apiTokenExpiry30: 'In 30 days',
+    apiTokenExpiry90: 'In 90 days',
+    apiTokenExpiry365: 'In 1 year',
+    apiTokenExpiryNever: 'No expiry',
+    apiTokenCreate: 'Create token',
+    apiTokenCreated: 'Token created',
+    apiTokenCreatedHint: 'Copy this token now. It will not be shown again.',
+    apiTokenCopy: 'Copy token',
+    apiTokenCopied: 'Copied',
+    apiTokenRevoke: 'Revoke',
+    apiTokenEmpty: 'No active API tokens yet.',
+    apiTokenLastUsed: 'Last used',
+    apiTokenNeverUsed: 'Never used',
+    apiTokenNeverExpires: 'Never expires',
     projects: 'Projects',
     users: 'Users',
     admin: 'Admin',
@@ -554,6 +588,26 @@ const dictionary = {
     email: 'E-Mail',
     password: 'Passwort',
     logout: 'Abmelden',
+    apiTokens: 'API-Tokens',
+    apiTokensDescription: 'Erstelle ein persönliches Token für einen externen Agent-Harness.',
+    apiTokenSecurityHint: 'Tokens erben deine aktuellen Projektzugriffe. Bewahre sie wie ein Passwort auf.',
+    apiTokenName: 'Token-Name',
+    apiTokenNamePlaceholder: 'z. B. Lokaler Agent-Harness',
+    apiTokenExpiry: 'Gültigkeit',
+    apiTokenExpiry30: '30 Tage',
+    apiTokenExpiry90: '90 Tage',
+    apiTokenExpiry365: '1 Jahr',
+    apiTokenExpiryNever: 'Unbegrenzt',
+    apiTokenCreate: 'Token erstellen',
+    apiTokenCreated: 'Token erstellt',
+    apiTokenCreatedHint: 'Kopiere dieses Token jetzt. Es wird nicht erneut angezeigt.',
+    apiTokenCopy: 'Token kopieren',
+    apiTokenCopied: 'Kopiert',
+    apiTokenRevoke: 'Widerrufen',
+    apiTokenEmpty: 'Noch keine aktiven API-Tokens.',
+    apiTokenLastUsed: 'Zuletzt verwendet',
+    apiTokenNeverUsed: 'Noch nie verwendet',
+    apiTokenNeverExpires: 'Unbegrenzt gültig',
     projects: 'Projekte',
     users: 'Benutzer',
     admin: 'Admin',
@@ -839,6 +893,7 @@ const hierarchyDragOverId = ref<string | null>(null);
 const hierarchyReordering = ref(false);
 const projectModalOpen = ref(false);
 const userModalOpen = ref(false);
+const apiTokenModalOpen = ref(false);
 const taskModalOpen = ref(false);
 const discardTaskModalOpen = ref(false);
 const refinementOverwriteModalOpen = ref(false);
@@ -851,6 +906,7 @@ const annotationModalOpen = ref(false);
 const taskSubmitting = ref(false);
 const hierarchySubmitting = ref(false);
 const userSubmitting = ref(false);
+const apiTokenSubmitting = ref(false);
 const annotationSubmitting = ref(false);
 const attachmentSubmitting = ref(false);
 const downloadingAttachmentId = ref<string | null>(null);
@@ -925,6 +981,11 @@ const DONE_RETENTION_MS = 30 * 60 * 1000;
 const UNASSIGNED_ID = '__unassigned__';
 
 const loginForm = reactive({ email: '', password: '' });
+const apiTokenForm = reactive({ name: '', expiry: '90' as '30' | '90' | '365' | 'never' });
+const apiTokens = ref<ApiToken[]>([]);
+const createdApiToken = ref<CreatedApiToken | null>(null);
+const apiTokenError = ref<string | null>(null);
+const apiTokenCopied = ref(false);
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
 const userFormError = ref<string | null>(null);
 const userFormElement = ref<HTMLFormElement | null>(null);
@@ -1088,6 +1149,12 @@ const isDarkMode = computed(() => colorMode.value === 'dark');
 const themeToggleLabel = computed(() => isDarkMode.value ? t.value.lightMode : t.value.darkMode);
 const themeToggleIcon = computed(() => isDarkMode.value ? 'i-lucide-sun' : 'i-lucide-moon');
 const isAdmin = computed(() => user.value?.role === 'admin');
+const apiTokenExpiryItems = computed(() => [
+  { label: t.value.apiTokenExpiry30, value: '30' },
+  { label: t.value.apiTokenExpiry90, value: '90' },
+  { label: t.value.apiTokenExpiry365, value: '365' },
+  { label: t.value.apiTokenExpiryNever, value: 'never' },
+]);
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
 const selectedOberthema = computed(() => board.value?.oberthemen.find((topic) => topic.id === selectedOberthemaId.value) ?? null);
 const selectedUnterthema = computed(() => board.value?.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value) ?? null);
@@ -2421,11 +2488,72 @@ const logout = async () => {
   commandPaletteOpen.value = false;
   commandPaletteQuery.value = '';
   commandPaletteIndex.value = { tasks: [], topics: [] };
+  apiTokenModalOpen.value = false;
+  apiTokens.value = [];
+  createdApiToken.value = null;
   user.value = null;
   board.value = null;
   projects.value = [];
   boardFilterPopoverOpen.value = false;
   clearBoardFilters();
+};
+
+const openApiTokenModal = async () => {
+  apiTokenModalOpen.value = true;
+  apiTokenError.value = null;
+  createdApiToken.value = null;
+  apiTokenCopied.value = false;
+  apiTokenForm.name = '';
+  try {
+    const response = await $fetch<{ tokens: ApiToken[] }>('/api/auth/tokens');
+    apiTokens.value = response.tokens;
+  } catch (error) {
+    apiTokenError.value = humanError(error);
+  }
+};
+
+const createApiTokenAction = async () => {
+  if (!apiTokenForm.name.trim() || apiTokenSubmitting.value) return;
+  apiTokenSubmitting.value = true;
+  apiTokenError.value = null;
+  apiTokenCopied.value = false;
+  try {
+    const response = await $fetch<CreatedApiToken>('/api/auth/tokens', {
+      method: 'POST',
+      body: {
+        name: apiTokenForm.name,
+        expiresInDays: apiTokenForm.expiry === 'never' ? null : Number(apiTokenForm.expiry),
+      },
+    });
+    createdApiToken.value = response;
+    apiTokens.value = [response.apiToken, ...apiTokens.value.filter((token) => token.id !== response.apiToken.id)];
+    apiTokenForm.name = '';
+  } catch (error) {
+    apiTokenError.value = humanError(error);
+  } finally {
+    apiTokenSubmitting.value = false;
+  }
+};
+
+const copyApiToken = async () => {
+  if (!createdApiToken.value || !import.meta.client) return;
+  await navigator.clipboard.writeText(createdApiToken.value.token);
+  apiTokenCopied.value = true;
+};
+
+const revokeApiTokenAction = async (tokenId: string) => {
+  if (apiTokenSubmitting.value) return;
+  apiTokenSubmitting.value = true;
+  apiTokenError.value = null;
+  try {
+    await $fetch(`/api/auth/tokens/${tokenId}`, { method: 'DELETE' });
+    apiTokens.value = apiTokens.value.filter((token) => token.id !== tokenId);
+    if (createdApiToken.value?.apiToken.id === tokenId) createdApiToken.value = null;
+  } catch (error) {
+    apiTokenError.value = humanError(error);
+  } finally {
+    apiTokenSubmitting.value = false;
+  }
 };
 
 const saveUserAction = async () => {
@@ -3727,6 +3855,11 @@ const formatActivityTime = (value: string) => new Date(value).toLocaleTimeString
   second: '2-digit',
 });
 
+const formatApiTokenDate = (value: string) => new Date(value).toLocaleString(locale.value === 'de' ? 'de-CH' : 'en', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+
 const toggleLocale = () => {
   locale.value = locale.value === 'en' ? 'de' : 'en';
 };
@@ -3738,6 +3871,7 @@ const toggleTheme = () => {
 const hasBlockingOverlay = computed(() => Boolean(
   projectModalOpen.value
   || userModalOpen.value
+  || apiTokenModalOpen.value
   || taskModalOpen.value
   || discardTaskModalOpen.value
   || oberthemaModalOpen.value
@@ -4749,6 +4883,128 @@ const humanError = (error: unknown) => {
     <div v-else class="ak-workspace-shell flex h-dvh min-h-0 overflow-hidden bg-zinc-50 dark:bg-zinc-950">
       <p id="task-card-keyboard-hint" class="sr-only">{{ t.taskKeyboardMoveHint }}</p>
       <UModal
+        v-model:open="apiTokenModalOpen"
+        :title="t.apiTokens"
+        :description="t.apiTokensDescription"
+        :ui="{ content: 'max-w-2xl', body: 'p-0 sm:p-0' }"
+      >
+        <template #close="{ ui }">
+          <UButton :aria-label="t.close" :class="ui.close()" color="neutral" variant="ghost" icon="i-lucide-x" />
+        </template>
+        <template #body>
+          <div class="grid gap-0">
+            <div class="border-b border-zinc-200 bg-zinc-50/80 px-5 py-4 dark:border-zinc-800 dark:bg-zinc-900/70 sm:px-6">
+              <p class="flex items-start gap-2 text-sm leading-5 text-zinc-600 dark:text-zinc-300">
+                <UIcon name="i-lucide-shield-check" class="mt-0.5 size-4 shrink-0 text-teal-600 dark:text-teal-400" />
+                <span>{{ t.apiTokenSecurityHint }}</span>
+              </p>
+            </div>
+
+            <div class="grid gap-5 p-5 sm:p-6">
+              <UAlert
+                v-if="apiTokenError"
+                color="error"
+                variant="soft"
+                icon="i-lucide-alert-triangle"
+                :description="apiTokenError"
+              />
+
+              <form class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_11rem_auto] sm:items-end" @submit.prevent="createApiTokenAction">
+                <UFormField :label="t.apiTokenName" required>
+                  <UInput
+                    v-model="apiTokenForm.name"
+                    class="w-full"
+                    icon="i-lucide-key-round"
+                    :placeholder="t.apiTokenNamePlaceholder"
+                    maxlength="80"
+                    required
+                  />
+                </UFormField>
+                <UFormField :label="t.apiTokenExpiry">
+                  <USelect v-model="apiTokenForm.expiry" class="w-full" :items="apiTokenExpiryItems" />
+                </UFormField>
+                <UButton
+                  type="submit"
+                  icon="i-lucide-plus"
+                  :loading="apiTokenSubmitting"
+                  :disabled="!apiTokenForm.name.trim()"
+                >
+                  {{ t.apiTokenCreate }}
+                </UButton>
+              </form>
+
+              <section
+                v-if="createdApiToken"
+                class="overflow-hidden rounded-xl bg-teal-50 ring-1 ring-teal-200 dark:bg-teal-950/35 dark:ring-teal-800"
+                aria-live="polite"
+              >
+                <div class="flex items-start gap-3 border-b border-teal-200 px-4 py-3 dark:border-teal-800">
+                  <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-teal-600 text-white">
+                    <UIcon name="i-lucide-key-round" class="size-4" />
+                  </span>
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-teal-950 dark:text-teal-50">{{ t.apiTokenCreated }}</p>
+                    <p class="mt-0.5 text-xs leading-5 text-teal-800 dark:text-teal-200">{{ t.apiTokenCreatedHint }}</p>
+                  </div>
+                </div>
+                <div class="grid gap-3 p-4">
+                  <code class="select-all break-all rounded-lg bg-white px-3 py-2.5 text-xs leading-5 text-zinc-800 ring-1 ring-teal-200 dark:bg-zinc-950 dark:text-zinc-100 dark:ring-teal-800">{{ createdApiToken.token }}</code>
+                  <UButton
+                    class="justify-self-start"
+                    color="neutral"
+                    variant="soft"
+                    :icon="apiTokenCopied ? 'i-lucide-check' : 'i-lucide-copy'"
+                    type="button"
+                    @click="copyApiToken"
+                  >
+                    {{ apiTokenCopied ? t.apiTokenCopied : t.apiTokenCopy }}
+                  </UButton>
+                </div>
+              </section>
+
+              <div class="grid gap-2">
+                <article
+                  v-for="token in apiTokens"
+                  :key="token.id"
+                  class="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
+                >
+                  <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
+                    <UIcon name="i-lucide-terminal-square" class="size-4" />
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <p class="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">{{ token.name }}</p>
+                      <code class="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">{{ token.prefix }}…</code>
+                    </div>
+                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      {{ token.lastUsedAt ? `${t.apiTokenLastUsed}: ${formatApiTokenDate(token.lastUsedAt)}` : t.apiTokenNeverUsed }}
+                      · {{ token.expiresAt ? `${t.apiTokenExpiry}: ${formatApiTokenDate(token.expiresAt)}` : t.apiTokenNeverExpires }}
+                    </p>
+                  </div>
+                  <UButton
+                    color="error"
+                    variant="ghost"
+                    size="sm"
+                    icon="i-lucide-trash-2"
+                    type="button"
+                    :loading="apiTokenSubmitting"
+                    :aria-label="`${t.apiTokenRevoke}: ${token.name}`"
+                    :title="t.apiTokenRevoke"
+                    @click="revokeApiTokenAction(token.id)"
+                  >
+                    <span class="hidden sm:inline">{{ t.apiTokenRevoke }}</span>
+                  </UButton>
+                </article>
+                <p v-if="!apiTokens.length" class="rounded-xl border border-dashed border-zinc-300 p-5 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                  {{ t.apiTokenEmpty }}
+                </p>
+              </div>
+            </div>
+          </div>
+        </template>
+      </UModal>
+
+      <UModal
         v-model:open="commandPaletteOpen"
         :title="t.commandPaletteTitle"
         :description="t.commandPaletteDescription"
@@ -4981,7 +5237,7 @@ const humanError = (error: unknown) => {
               <span class="block truncate text-[10px] text-zinc-500 dark:text-zinc-400">{{ user.email }}</span>
             </span>
           </div>
-          <div :class="sidebarCollapsed ? 'grid justify-items-center gap-1' : 'grid grid-cols-[auto_auto_1fr] gap-1'">
+          <div :class="sidebarCollapsed ? 'grid justify-items-center gap-1' : 'grid grid-cols-[auto_auto_auto_1fr] gap-1'">
             <UButton
               variant="ghost"
               color="neutral"
@@ -5003,6 +5259,16 @@ const humanError = (error: unknown) => {
               :title="themeToggleLabel"
               :class="sidebarCollapsed ? 'size-10 justify-center px-0' : ''"
               @click="toggleTheme"
+            />
+            <UButton
+              variant="ghost"
+              color="neutral"
+              size="sm"
+              icon="i-lucide-key-round"
+              :aria-label="t.apiTokens"
+              :title="t.apiTokens"
+              :class="sidebarCollapsed ? 'size-10 justify-center px-0' : ''"
+              @click="openApiTokenModal"
             />
             <UButton
               variant="ghost"
