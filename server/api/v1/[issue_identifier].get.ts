@@ -1,8 +1,11 @@
 import { createError, getRouterParam } from 'h3';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../../lib/db';
+import { getTaskDetail } from '../../lib/kanban';
+import { requireUser } from '../../lib/security/auth';
 
 export default defineEventHandler((event) => {
+  const user = requireUser(event);
   const identifier = getRouterParam(event, 'issue_identifier');
   if (!identifier) {
     throw createError({ statusCode: 400, statusMessage: 'Missing issue identifier' });
@@ -16,5 +19,5 @@ export default defineEventHandler((event) => {
       data: { error: { code: 'task_not_found', message: `Task ${identifier} is not tracked in local Kanban.` } },
     });
   }
-  return { task };
+  return getTaskDetail(task.id, user);
 });

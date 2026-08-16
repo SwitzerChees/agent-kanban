@@ -22,9 +22,14 @@ export function startLocalTaskDispatcher() {
   return dispatcher;
 }
 
+export function abortLocalTask(taskId: string) {
+  return dispatcher?.abortTask(taskId) ?? false;
+}
+
 class LocalTaskDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private runningProjects = new Map<string, number>();
+  private runningTasks = new Map<string, AbortController>();
 
   start() {
     if (this.timer) return;
@@ -39,6 +44,14 @@ class LocalTaskDispatcher {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const controller of this.runningTasks.values()) controller.abort();
+  }
+
+  abortTask(taskId: string) {
+    const controller = this.runningTasks.get(taskId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
   }
 
   private async tick() {
@@ -87,6 +100,7 @@ class LocalTaskDispatcher {
   }
 
   private async runTask(queued: typeof schema.tasks.$inferSelect, queuedColumn: typeof schema.columns.$inferSelect) {
+    if (this.runningTasks.has(queued.id)) return;
     const project = db.select().from(schema.projects).where(eq(schema.projects.id, queued.projectId)).get();
     if (!project) {
       db.update(schema.tasks).set({ agentStatus: 'failed', updatedAt: new Date().toISOString() })
@@ -95,6 +109,8 @@ class LocalTaskDispatcher {
       return;
     }
 
+    const controller = new AbortController();
+    this.runningTasks.set(queued.id, controller);
     this.runningProjects.set(queued.projectId, (this.runningProjects.get(queued.projectId) ?? 0) + 1);
     const inProgressColumn = db.select().from(schema.columns)
       .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_progress')))
@@ -160,7 +176,7 @@ class LocalTaskDispatcher {
         promptPrefix: agentsPromptPrefix,
         attempt: null,
         maxTurns: Math.min(config.agent.maxTurns, Number.parseInt(process.env.KANBAN_AGENT_MAX_TURNS ?? String(config.agent.maxTurns), 10)),
-        signal: new AbortController().signal,
+        signal: controller.signal,
         onEvent: (event) => {
           runtimeLogger.info('local codex event', {
             task_id: queued.id,
@@ -243,6 +259,7 @@ class LocalTaskDispatcher {
         }),
       });
 
+      if (controller.signal.aborted) return;
       db.update(schema.tasks).set({
         agentStatus: 'done',
         columnId: reviewColumn?.id ?? queued.columnId,
@@ -251,6 +268,11 @@ class LocalTaskDispatcher {
       logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', { nextColumn: reviewColumn?.key ?? null });
       runtimeLogger.info('local codex task completed', { task_id: queued.id, task_key: queued.key });
     } catch (error) {
+      if (controller.signal.aborted) {
+        logTaskActivity(queued.projectId, queued.id, null, 'codex_cancelled', {});
+        runtimeLogger.info('local codex task cancelled', { task_id: queued.id, task_key: queued.key });
+        return;
+      }
       db.update(schema.tasks).set({
         agentStatus: 'failed',
         columnId: reviewColumn?.id ?? queued.columnId,
@@ -268,6 +290,7 @@ class LocalTaskDispatcher {
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      this.runningTasks.delete(queued.id);
       const runningCount = (this.runningProjects.get(queued.projectId) ?? 1) - 1;
       if (runningCount > 0) this.runningProjects.set(queued.projectId, runningCount);
       else this.runningProjects.delete(queued.projectId);

@@ -44,6 +44,18 @@ export function ensureDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS api_tokens (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      token_prefix TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT,
+      last_used_at TEXT,
+      revoked_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       key TEXT NOT NULL UNIQUE,
@@ -226,6 +238,7 @@ export function ensureDatabase() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id, revoked_at);
     CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks(column_id);
     CREATE INDEX IF NOT EXISTS idx_oberthemen_project ON oberthemen(project_id);
     CREATE INDEX IF NOT EXISTS idx_unterthemen_oberthema ON unterthemen(oberthema_id);

@@ -1,7 +1,9 @@
 import { count } from 'drizzle-orm';
 import { db, schema } from '../../lib/db';
+import { requireUser } from '../../lib/security/auth';
 
-export default defineEventHandler(() => {
+export default defineEventHandler((event) => {
+  requireUser(event);
   const projectCount = db.select({ value: count() }).from(schema.projects).get()?.value ?? 0;
   const taskCount = db.select({ value: count() }).from(schema.tasks).get()?.value ?? 0;
   const userCount = db.select({ value: count() }).from(schema.users).get()?.value ?? 0;

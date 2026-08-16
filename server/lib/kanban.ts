@@ -746,7 +746,7 @@ async function createTaskOnce(
 ): Promise<BoardTask> {
   const assigneeId = resolveTaskAssignee(projectId, input.assigneeId, user.id);
   const now = new Date().toISOString();
-  const columnId = defaultBacklogColumn(projectId);
+  const columnId = input.columnId || defaultBacklogColumn(projectId);
   const column = getProjectColumn(projectId, columnId);
   const placement = resolveTaskPlacement(projectId, input.oberthemaId, input.unterthemaId, user);
   const position = nextTaskPosition(projectId, columnId, placement.oberthemaId, placement.unterthemaId);
@@ -771,7 +771,7 @@ async function createTaskOnce(
       clientRequestId: input.clientRequestId || null,
       assigneeId,
       agentEnabled: input.agentEnabled ?? false,
-      agentStatus: 'idle',
+      agentStatus: input.agentEnabled && column.key === 'todo' ? 'queued' : 'idle',
       createdAt: now,
       updatedAt: now,
     }).run();
@@ -791,6 +791,9 @@ async function createTaskOnce(
       }
     }
     logTaskActivity(projectId, taskId, user.id, 'task_created', { columnKey: column.key, tags: normalizeTags(input.tags ?? []) });
+    if (input.agentEnabled && column.key === 'todo') {
+      logTaskActivity(projectId, taskId, user.id, 'codex_queued', { reason: 'created_in_todo' });
+    }
 
     return getBoardTask(projectId, taskId, user);
   } catch (error) {
@@ -961,6 +964,52 @@ export async function updateTask(taskId: string, input: {
     await cleanupCompletedTaskWorktree(task, project.folderPath, user.id);
   }
   return updated ? publicTaskDescription(updated) : updated;
+}
+
+export function queueTaskAgent(taskId: string, user: User, reason: 'api_queue' | 'api_retry' = 'api_queue') {
+  const { task } = authorizeTaskAccess(taskId, user);
+  if (task.agentStatus === 'running') {
+    throw createError({ statusCode: 409, statusMessage: 'task_agent_already_running' });
+  }
+  if (task.agentStatus === 'queued' && task.agentEnabled) return getTaskDetail(taskId, user);
+
+  const todoColumn = db.select().from(schema.columns)
+    .where(and(eq(schema.columns.projectId, task.projectId), eq(schema.columns.key, 'todo')))
+    .get();
+  if (!todoColumn) throw createError({ statusCode: 400, statusMessage: 'missing_todo_column' });
+  db.update(schema.tasks).set({
+    columnId: todoColumn.id,
+    agentEnabled: true,
+    agentStatus: 'queued',
+    position: nextTaskPosition(task.projectId, todoColumn.id, task.oberthemaId, task.unterthemaId),
+    updatedAt: new Date().toISOString(),
+  }).where(eq(schema.tasks.id, taskId)).run();
+  logTaskActivity(task.projectId, taskId, user.id, 'codex_queued', { reason });
+  return getTaskDetail(taskId, user);
+}
+
+export function cancelTaskAgent(taskId: string, user: User) {
+  const { task } = authorizeTaskAccess(taskId, user);
+  if (task.agentStatus === 'idle' && !task.agentEnabled) return getTaskDetail(taskId, user);
+  if (!['queued', 'running'].includes(task.agentStatus)) {
+    throw createError({ statusCode: 409, statusMessage: 'task_agent_not_cancelable' });
+  }
+
+  const todoColumn = db.select().from(schema.columns)
+    .where(and(eq(schema.columns.projectId, task.projectId), eq(schema.columns.key, 'todo')))
+    .get();
+  if (!todoColumn) throw createError({ statusCode: 400, statusMessage: 'missing_todo_column' });
+  db.update(schema.tasks).set({
+    columnId: todoColumn.id,
+    agentEnabled: false,
+    agentStatus: 'idle',
+    position: nextTaskPosition(task.projectId, todoColumn.id, task.oberthemaId, task.unterthemaId),
+    updatedAt: new Date().toISOString(),
+  }).where(eq(schema.tasks.id, taskId)).run();
+  logTaskActivity(task.projectId, taskId, user.id, 'codex_cancel_requested', {
+    previousStatus: task.agentStatus,
+  });
+  return getTaskDetail(taskId, user);
 }
 
 export async function deleteTask(taskId: string, user: User) {
@@ -1295,6 +1344,7 @@ export function deleteUser(userId: string, admin: User) {
       .run();
     tx.delete(schema.projectUsers).where(eq(schema.projectUsers.userId, userId)).run();
     tx.delete(schema.sessions).where(eq(schema.sessions.userId, userId)).run();
+    tx.delete(schema.apiTokens).where(eq(schema.apiTokens.userId, userId)).run();
     tx.update(schema.users)
       .set({ active: false, updatedAt: now })
       .where(eq(schema.users.id, userId))
