@@ -884,12 +884,8 @@ function friendlyError(error: unknown) {
                       <UIcon name="i-lucide-bot" class="size-3.5" />
                     </span>
                     <div class="min-w-0 flex-1">
-                      <p
-                        v-if="message.content && message.state === 'streaming'"
-                        class="ak-chat-streaming-text whitespace-pre-wrap break-words text-sm leading-6 text-zinc-700 dark:text-zinc-200"
-                      >{{ message.content }}</p>
                       <UEditor
-                        v-else-if="message.content"
+                        v-if="message.content"
                         :model-value="message.content"
                         content-type="markdown"
                         :editable="false"
@@ -1171,11 +1167,6 @@ function friendlyError(error: unknown) {
 
 .ak-project-chat-log {
   scrollbar-gutter: stable;
-}
-
-.ak-chat-streaming-text {
-  margin: 0;
-  min-height: 1.5rem;
 }
 
 .ak-chat-thinking-dot {

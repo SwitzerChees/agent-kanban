@@ -2860,6 +2860,15 @@ async function createTaskFromCurrentForm() {
 
   const response = await $fetch<{ task: Task }>(`/api/projects/${projectId}/tasks`, { method: 'POST', body: form });
   if (!response.task?.id) throw new Error('task_create_invalid_response');
+  const resolvedDescription = resolvePendingFileReferences(taskForm.description, files, response.task.attachments);
+  if (resolvedDescription !== taskForm.description) {
+    taskForm.description = resolvedDescription;
+    const updated = await $fetch<{ task: Task }>(`/api/tasks/${response.task.id}`, {
+      method: 'PATCH',
+      body: { description: resolvedDescription },
+    });
+    response.task = updated.task;
+  }
   removePendingTaskFiles(files);
   return response.task;
 }
@@ -2899,9 +2908,19 @@ async function persistExistingTaskDetails(taskId: string) {
 
   const files = [...taskAttachmentFiles.value];
   if (files.length) {
+    const existingAttachmentIds = new Set(taskAttachments.value.map((attachment) => attachment.id));
     const attachmentForm = new FormData();
     await appendTaskFiles(attachmentForm, files);
-    await $fetch(`/api/tasks/${taskId}/attachments`, { method: 'POST', body: attachmentForm });
+    const detail = await $fetch<TaskDetail>(`/api/tasks/${taskId}/attachments`, { method: 'POST', body: attachmentForm });
+    const uploadedAttachments = detail.task.attachments.filter((attachment) => !existingAttachmentIds.has(attachment.id));
+    const resolvedDescription = resolvePendingFileReferences(taskForm.description, files, uploadedAttachments);
+    if (!hasAgentActivity.value && resolvedDescription !== taskForm.description) {
+      taskForm.description = resolvedDescription;
+      await $fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        body: { description: resolvedDescription },
+      });
+    }
     removePendingTaskFiles(files);
   }
 }
@@ -3125,6 +3144,7 @@ const saveAttachmentRename = async (attachment: Attachment, input: HTMLInputElem
       method: 'PATCH',
       body: { fileName },
     });
+    syncFileReferenceLabel(attachment.url, fileName);
     if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
   } catch (error) {
     input.value = editableAttachmentName(attachment);
@@ -3529,6 +3549,7 @@ const removePendingTaskFile = (item: Pick<PendingTaskFile, 'id'>) => removePendi
 const renamePendingTaskFile = (item: PendingTaskFile, fileName: string) => {
   const normalizedName = fileName.trim().replace(/[\\/\u0000-\u001F\u007F]/g, '_').slice(0, 255);
   if (!normalizedName || normalizedName === item.file.name) return;
+  syncFileReferenceLabel(pendingFileReferenceUrl(item.id), normalizedName);
   const renamedFile = new File([item.file], normalizedName, {
     type: item.file.type,
     lastModified: item.file.lastModified,
@@ -3589,14 +3610,15 @@ const editableAttachmentName = (attachment: Attachment) => (
     ? attachment.fileName.slice(0, -attachment.extension.length)
     : attachment.fileName
 );
-const attachmentIcon = (attachment: Attachment) => {
-  if (isImageAttachment(attachment)) return 'i-lucide-image';
-  if (attachment.mimeType === 'application/pdf') return 'i-lucide-file-text';
-  if (attachment.mimeType.startsWith('audio/')) return 'i-lucide-file-audio';
-  if (attachment.mimeType.startsWith('video/')) return 'i-lucide-file-video';
-  if (attachment.mimeType.includes('zip') || attachment.mimeType.includes('compressed')) return 'i-lucide-file-archive';
+const fileIcon = (mimeType: string) => {
+  if (mimeType.startsWith('image/')) return 'i-lucide-image';
+  if (mimeType === 'application/pdf') return 'i-lucide-file-text';
+  if (mimeType.startsWith('audio/')) return 'i-lucide-file-audio';
+  if (mimeType.startsWith('video/')) return 'i-lucide-file-video';
+  if (mimeType.includes('zip') || mimeType.includes('compressed')) return 'i-lucide-file-archive';
   return 'i-lucide-file';
 };
+const attachmentIcon = (attachment: Attachment) => fileIcon(attachment.mimeType);
 const attachmentDownloadUrl = (attachment: Attachment) => `${attachment.url}?download=1`;
 const formatFileSize = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -3609,13 +3631,49 @@ const formatFileSize = (bytes: number) => {
   }
   return `${new Intl.NumberFormat(locale.value === 'de' ? 'de-CH' : 'en', { maximumFractionDigits: value >= 10 ? 0 : 1 }).format(value)} ${unit}`;
 };
-const fileReferenceItems = computed<FileReferenceMenuItem[]>(() => taskAttachments.value.map((attachment) => ({
-  kind: 'fileReference',
-  label: attachment.fileName,
-  description: `${formatFileSize(attachment.size)} · ${attachment.mimeType}`,
-  icon: attachmentIcon(attachment),
-  url: attachment.url,
-})));
+const pendingFileReferenceUrl = (id: string) => `#pending-file-${id}`;
+const escapeMarkdownLinkLabel = (value: string) => value.replace(/([\\\[\]])/g, '\\$1');
+const syncFileReferenceLabel = (url: string, fileName: string) => {
+  const nextLabel = `#${escapeMarkdownLinkLabel(fileName)}`;
+  taskForm.description = taskForm.description.replace(
+    /\[([^\]]*(?:\\\][^\]]*)*)\]\(([^)\s]+)([^)]*)\)/g,
+    (link, _label: string, href: string, suffix: string) => href === url
+      ? `[${nextLabel}](${href}${suffix})`
+      : link,
+  );
+};
+const resolvePendingFileReferences = (
+  markdown: string,
+  files: PendingTaskFile[],
+  attachments: Attachment[],
+) => {
+  const remaining = [...attachments];
+  return files.reduce((resolved, file) => {
+    const matchingIndex = remaining.findIndex((attachment) => attachment.fileName === file.file.name);
+    const attachment = remaining.splice(matchingIndex >= 0 ? matchingIndex : 0, 1)[0];
+    if (!attachment) return resolved;
+    return resolved.replaceAll(
+      `](${pendingFileReferenceUrl(file.id)})`,
+      `](${attachment.url})`,
+    );
+  }, markdown);
+};
+const fileReferenceItems = computed<FileReferenceMenuItem[]>(() => [
+  ...taskAttachments.value.map((attachment) => ({
+    kind: 'fileReference' as const,
+    label: attachment.fileName,
+    description: `${formatFileSize(attachment.size)} · ${attachment.mimeType}`,
+    icon: attachmentIcon(attachment),
+    url: attachment.url,
+  })),
+  ...taskAttachmentFiles.value.map((item) => ({
+    kind: 'fileReference' as const,
+    label: item.file.name,
+    description: `${formatFileSize(item.file.size)} · ${item.file.type || 'application/octet-stream'}`,
+    icon: fileIcon(item.file.type),
+    url: pendingFileReferenceUrl(item.id),
+  })),
+]);
 
 const columnName = (column: BoardColumn) => locale.value === 'de' ? column.nameDe : column.nameEn;
 const oberthemaFor = (subtopic: Unterthema | null | undefined) => subtopic
@@ -7206,7 +7264,15 @@ const humanError = (error: unknown) => {
                     }"
                   >
                     <time class="mb-2 block text-xs text-zinc-500 dark:text-zinc-400">{{ formatActivityTime(latestAgentUpdate.createdAt) }}</time>
-                    <p class="whitespace-pre-wrap break-words text-sm leading-6">{{ latestAgentUpdate.body }}</p>
+                    <UEditor
+                      :model-value="latestAgentUpdate.body"
+                      content-type="markdown"
+                      :editable="false"
+                      :image="false"
+                      :mention="false"
+                      class="ak-markdown-readonly text-sm leading-6"
+                      :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm leading-6' }"
+                    />
                   </div>
                   <p v-else class="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
                     {{ t.noAgentUpdate }}
