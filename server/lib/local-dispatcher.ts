@@ -30,7 +30,6 @@ export function abortLocalTask(taskId: string) {
 
 class LocalTaskDispatcher {
   private timer: NodeJS.Timeout | null = null;
-  private runningProjects = new Map<string, number>();
   private runningTasks = new Map<string, AbortController>();
 
   start() {
@@ -65,13 +64,7 @@ class LocalTaskDispatcher {
       .all();
 
     for (const row of queuedRows) {
-      const projectId = row.task.projectId;
-      const projectLimit = Number.parseInt(process.env.KANBAN_AGENT_PROJECT_CONCURRENCY ?? '1', 10);
-      if ((this.runningProjects.get(projectId) ?? 0) >= projectLimit) continue;
-      const activeCount = db.select({ value: count() }).from(schema.tasks)
-        .where(and(eq(schema.tasks.projectId, projectId), eq(schema.tasks.agentStatus, 'running')))
-        .get()?.value ?? 0;
-      if (activeCount >= projectLimit) continue;
+      if (!taskSlotAvailability(row.task.projectId, row.task.agentHarness).available) continue;
       void this.runTask(row.task, row.column);
     }
   }
@@ -113,7 +106,6 @@ class LocalTaskDispatcher {
 
     const controller = new AbortController();
     this.runningTasks.set(queued.id, controller);
-    this.runningProjects.set(queued.projectId, (this.runningProjects.get(queued.projectId) ?? 0) + 1);
     const inProgressColumn = db.select().from(schema.columns)
       .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_progress')))
       .get();
@@ -313,11 +305,36 @@ class LocalTaskDispatcher {
       });
     } finally {
       this.runningTasks.delete(queued.id);
-      const runningCount = (this.runningProjects.get(queued.projectId) ?? 1) - 1;
-      if (runningCount > 0) this.runningProjects.set(queued.projectId, runningCount);
-      else this.runningProjects.delete(queued.projectId);
     }
   }
+}
+
+export function taskSlotAvailability(projectId: string, harness: AgentHarness) {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  if (!project) {
+    return { available: false, projectLimit: 0, harnessLimit: 0, projectRunning: 0, harnessRunning: 0 };
+  }
+  const harnessLimit = db.select().from(schema.projectHarnessLimits)
+    .where(and(
+      eq(schema.projectHarnessLimits.projectId, projectId),
+      eq(schema.projectHarnessLimits.harness, harness),
+    )).get()?.maxConcurrentTasks ?? project.agentConcurrencyLimit;
+  const projectRunning = db.select({ value: count() }).from(schema.tasks)
+    .where(and(eq(schema.tasks.projectId, projectId), eq(schema.tasks.agentStatus, 'running')))
+    .get()?.value ?? 0;
+  const harnessRunning = db.select({ value: count() }).from(schema.tasks)
+    .where(and(
+      eq(schema.tasks.projectId, projectId),
+      eq(schema.tasks.agentHarness, harness),
+      eq(schema.tasks.agentStatus, 'running'),
+    )).get()?.value ?? 0;
+  return {
+    available: projectRunning < project.agentConcurrencyLimit && harnessRunning < harnessLimit,
+    projectLimit: project.agentConcurrencyLimit,
+    harnessLimit,
+    projectRunning,
+    harnessRunning,
+  };
 }
 
 export function reconcileFailedTaskColumns() {

@@ -10,6 +10,12 @@ const createProjectSchema = z.object({
   folderPath: z.string().min(1),
   userIds: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
+  agentConcurrencyLimit: z.number().int().min(0).max(100).optional(),
+  agentHarnessLimits: z.object({
+    codex: z.number().int().min(0).max(100),
+    opencode: z.number().int().min(0).max(100),
+    'prime-agent': z.number().int().min(0).max(100),
+  }).optional(),
 });
 
 export default defineEventHandler(async (event) => {

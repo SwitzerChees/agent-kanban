@@ -12,11 +12,13 @@ process.env.KANBAN_ADMIN_PASSWORD = 'agent-control-test-password';
 
 let dbModule: typeof import('../server/lib/db');
 let kanban: typeof import('../server/lib/kanban');
+let localDispatcher: typeof import('../server/lib/local-dispatcher');
 let admin: User;
 
 beforeAll(async () => {
   dbModule = await import('../server/lib/db');
   kanban = await import('../server/lib/kanban');
+  localDispatcher = await import('../server/lib/local-dispatcher');
   const seededAdmin = dbModule.db.select().from(dbModule.schema.users).get();
   if (!seededAdmin) throw new Error('seeded_admin_missing');
   admin = seededAdmin;
@@ -27,6 +29,59 @@ afterAll(() => {
 });
 
 describe('external agent task controls', () => {
+  test('persists project and harness concurrency limits and combines both slot checks', async () => {
+    const project = await kanban.createProject({
+      name: 'Concurrency Project',
+      key: 'SLOTS',
+      folderPath: path.join(testRoot, 'concurrency-workspace'),
+      agentConcurrencyLimit: 3,
+      agentHarnessLimits: { codex: 2, opencode: 1, 'prime-agent': 0 },
+    }, admin);
+    const board = kanban.getBoard(project.id, admin);
+    expect(board.project).toMatchObject({
+      agentConcurrencyLimit: 3,
+      agentHarnessLimits: { codex: 2, opencode: 1, 'prime-agent': 0 },
+    });
+
+    const tasks = await Promise.all([
+      kanban.createTask(project.id, { title: 'Codex one', agentHarness: 'codex' }, admin),
+      kanban.createTask(project.id, { title: 'Codex two', agentHarness: 'codex' }, admin),
+      kanban.createTask(project.id, { title: 'OpenCode one', agentHarness: 'opencode' }, admin),
+    ]);
+    expect(localDispatcher.taskSlotAvailability(project.id, 'prime-agent').available).toBe(false);
+
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'running' })
+      .where(eq(dbModule.schema.tasks.id, tasks[0]!.id)).run();
+    expect(localDispatcher.taskSlotAvailability(project.id, 'codex')).toMatchObject({
+      available: true,
+      projectRunning: 1,
+      harnessRunning: 1,
+    });
+
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'running' })
+      .where(eq(dbModule.schema.tasks.id, tasks[1]!.id)).run();
+    expect(localDispatcher.taskSlotAvailability(project.id, 'codex').available).toBe(false);
+    expect(localDispatcher.taskSlotAvailability(project.id, 'opencode').available).toBe(true);
+
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'running' })
+      .where(eq(dbModule.schema.tasks.id, tasks[2]!.id)).run();
+    expect(localDispatcher.taskSlotAvailability(project.id, 'opencode')).toMatchObject({
+      available: false,
+      projectRunning: 3,
+      projectLimit: 3,
+    });
+
+    await kanban.updateProject(project.id, {
+      agentConcurrencyLimit: 4,
+      agentHarnessLimits: { codex: 2, opencode: 1, 'prime-agent': 1 },
+    }, admin);
+    expect(kanban.listProjects(admin).find((item) => item.id === project.id)).toMatchObject({
+      agentConcurrencyLimit: 4,
+      agentHarnessLimits: { codex: 2, opencode: 1, 'prime-agent': 1 },
+    });
+    expect(localDispatcher.taskSlotAvailability(project.id, 'prime-agent').available).toBe(true);
+  });
+
   test('respects the requested creation column and exposes safe queue controls', async () => {
     const project = await kanban.createProject({
       name: 'Harness Project',

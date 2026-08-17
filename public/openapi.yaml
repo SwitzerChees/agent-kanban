@@ -607,6 +607,14 @@ components:
         folderPath: { type: string, minLength: 1 }
         userIds: { type: array, items: { type: string, format: uuid } }
         tags: { type: array, items: { type: string } }
+        agentConcurrencyLimit: { type: integer, minimum: 0, maximum: 100, default: 1 }
+        agentHarnessLimits:
+          type: object
+          required: [codex, opencode, prime-agent]
+          properties:
+            codex: { type: integer, minimum: 0, maximum: 100, default: 1 }
+            opencode: { type: integer, minimum: 0, maximum: 100, default: 1 }
+            prime-agent: { type: integer, minimum: 0, maximum: 100, default: 1 }
     TaskCreate:
       type: object
       required: [title]

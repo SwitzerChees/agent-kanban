@@ -62,9 +62,17 @@ export function ensureDatabase() {
       name TEXT NOT NULL,
       description TEXT,
       folder_path TEXT NOT NULL,
+      agent_concurrency_limit INTEGER NOT NULL DEFAULT 1,
       created_by TEXT NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_harness_limits (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      harness TEXT NOT NULL,
+      max_concurrent_tasks INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY(project_id, harness)
     );
 
     CREATE TABLE IF NOT EXISTS project_users (
@@ -317,6 +325,29 @@ export function ensureDatabase() {
     sqlite.exec("ALTER TABLE comments ADD COLUMN kind TEXT NOT NULL DEFAULT 'steering';");
   }
 
+  const projectColumns = sqlite.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
+  if (!projectColumns.some((column) => column.name === 'agent_concurrency_limit')) {
+    sqlite.exec('ALTER TABLE projects ADD COLUMN agent_concurrency_limit INTEGER NOT NULL DEFAULT 1;');
+  }
+  sqlite.exec(`
+    UPDATE projects
+    SET agent_concurrency_limit = 1
+    WHERE agent_concurrency_limit < 0 OR agent_concurrency_limit IS NULL;
+
+    INSERT OR IGNORE INTO project_harness_limits (project_id, harness, max_concurrent_tasks)
+    SELECT projects.id, harnesses.harness, projects.agent_concurrency_limit
+    FROM projects
+    CROSS JOIN (
+      SELECT 'codex' AS harness
+      UNION ALL SELECT 'opencode'
+      UNION ALL SELECT 'prime-agent'
+    ) AS harnesses;
+
+    UPDATE project_harness_limits
+    SET max_concurrent_tasks = 1
+    WHERE max_concurrent_tasks < 0 OR max_concurrent_tasks IS NULL;
+  `);
+
   const taskColumns = sqlite.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
   if (!taskColumns.some((column) => column.name === 'unterthema_id')) {
     sqlite.exec('ALTER TABLE tasks ADD COLUMN unterthema_id TEXT REFERENCES unterthemen(id);');
@@ -359,6 +390,9 @@ export function ensureDatabase() {
     SET reasoning_effort = 'xhigh'
     WHERE reasoning_effort NOT IN ('low', 'medium', 'xhigh')
        OR reasoning_effort IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_agent_dispatch
+      ON tasks(agent_status, project_id, agent_harness);
   `);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request

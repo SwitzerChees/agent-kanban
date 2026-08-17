@@ -36,6 +36,8 @@ interface Project {
   name: string;
   description: string | null;
   folderPath: string;
+  agentConcurrencyLimit: number;
+  agentHarnessLimits: Record<AgentHarness, number>;
   createdAt?: string;
 }
 
@@ -433,6 +435,12 @@ const dictionary = {
     projectNameHelp: 'A readable name shown in the sidebar and board header.',
     projectKeyHelp: 'Short label shown on task cards, for example APP.',
     projectFolderHelp: "Where this project's files are stored.",
+    agentConcurrency: 'Agent concurrency',
+    agentConcurrencyHelp: 'Control how many implementation tasks may run at once. Running tasks finish normally when a limit is lowered.',
+    agentConcurrencyTotal: 'All harnesses',
+    agentConcurrencyTotalHelp: 'Maximum active implementations in this project.',
+    agentConcurrencyHarnessHelp: 'Maximum active implementations using this harness.',
+    concurrencyPausedHint: 'Set a limit to 0 to pause new starts.',
     description: 'Description',
     originalDescription: 'Original',
     refinedDescription: 'Refinement',
@@ -751,6 +759,12 @@ const dictionary = {
     projectNameHelp: 'Lesbarer Name für Sidebar und Board-Kopf.',
     projectKeyHelp: 'Kurzes Kürzel auf Aufgabenkarten, zum Beispiel APP.',
     projectFolderHelp: 'Ort, an dem die Projektdateien gespeichert sind.',
+    agentConcurrency: 'Agent-Parallelität',
+    agentConcurrencyHelp: 'Lege fest, wie viele Umsetzungen gleichzeitig laufen dürfen. Bereits laufende Tasks enden normal, wenn ein Limit gesenkt wird.',
+    agentConcurrencyTotal: 'Alle Harnesses',
+    agentConcurrencyTotalHelp: 'Maximal gleichzeitig laufende Umsetzungen in diesem Projekt.',
+    agentConcurrencyHarnessHelp: 'Maximal gleichzeitig laufende Umsetzungen mit diesem Harness.',
+    concurrencyPausedHint: 'Mit dem Wert 0 werden neue Starts pausiert.',
     description: 'Beschreibung',
     originalDescription: 'Original',
     refinedDescription: 'Refinement',
@@ -1094,7 +1108,21 @@ const apiTokenCopied = ref(false);
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
 const userFormError = ref<string | null>(null);
 const userFormElement = ref<HTMLFormElement | null>(null);
-const projectForm = reactive({ name: '', key: '', folderPath: '', description: '', userIds: [] as string[], tags: '' });
+const emptyProjectForm = () => ({
+  name: '',
+  key: '',
+  folderPath: '',
+  description: '',
+  userIds: [] as string[],
+  tags: '',
+  agentConcurrencyLimit: 1,
+  agentHarnessLimits: {
+    codex: 1,
+    opencode: 1,
+    'prime-agent': 1,
+  } as Record<AgentHarness, number>,
+});
+const projectForm = reactive(emptyProjectForm());
 const oberthemaForm = reactive({ name: '', description: '', color: 'teal' });
 const unterthemaForm = reactive({ name: '', description: '', oberthemaId: '' });
 const taskForm = reactive({
@@ -2302,7 +2330,7 @@ const deleteUnterthemaAction = async () => {
 
 const openProjectModal = async (project?: Project) => {
   editingProjectId.value = project?.id ?? null;
-  Object.assign(projectForm, { name: '', key: '', folderPath: '', description: '', userIds: [], tags: '' });
+  Object.assign(projectForm, emptyProjectForm());
   if (project) {
     Object.assign(projectForm, {
       name: project.name,
@@ -2317,6 +2345,8 @@ const openProjectModal = async (project?: Project) => {
       : await $fetch<Board>(`/api/projects/${project.id}/board`);
     projectForm.userIds = projectBoard.members.map((member) => member.id);
     projectForm.tags = projectBoard.projectTags.join(', ');
+    projectForm.agentConcurrencyLimit = projectBoard.project.agentConcurrencyLimit;
+    projectForm.agentHarnessLimits = { ...projectBoard.project.agentHarnessLimits };
   }
   projectModalOpen.value = true;
 };
@@ -2820,7 +2850,7 @@ const saveProjectAction = async () => {
     } else {
       await $fetch('/api/projects', { method: 'POST', body });
     }
-    Object.assign(projectForm, { name: '', key: '', folderPath: '', description: '', userIds: [], tags: '' });
+    Object.assign(projectForm, emptyProjectForm());
     const editedProjectId = editingProjectId.value;
     editingProjectId.value = null;
     await loadAppData();
@@ -6279,6 +6309,53 @@ const humanError = (error: unknown) => {
               <UFormField :label="t.projectTags" :description="t.projectTagsHelp" size="lg">
                 <UTextarea v-model="projectForm.tags" class="w-full" :rows="3" size="lg" />
               </UFormField>
+
+              <section class="overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50/70 dark:border-zinc-800 dark:bg-zinc-900/50">
+                <div class="flex items-start gap-3 border-b border-zinc-200 bg-white px-4 py-4 dark:border-zinc-800 dark:bg-zinc-950">
+                  <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-300">
+                    <UIcon name="i-lucide-gauge" class="size-4" />
+                  </span>
+                  <div class="min-w-0">
+                    <p class="text-sm font-semibold text-zinc-950 dark:text-zinc-50">{{ t.agentConcurrency }}</p>
+                    <p class="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ t.agentConcurrencyHelp }}</p>
+                  </div>
+                </div>
+
+                <div class="grid gap-4 p-4">
+                  <div class="grid items-end gap-3 rounded-lg border border-teal-200 bg-teal-50/70 p-3 dark:border-teal-900 dark:bg-teal-950/30 sm:grid-cols-[1fr_8rem]">
+                    <div>
+                      <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.agentConcurrencyTotal }}</p>
+                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.agentConcurrencyTotalHelp }}</p>
+                    </div>
+                    <UInput
+                      v-model.number="projectForm.agentConcurrencyLimit"
+                      type="number"
+                      min="0"
+                      max="100"
+                      inputmode="numeric"
+                      size="lg"
+                      icon="i-lucide-layers-3"
+                    />
+                  </div>
+
+                  <div class="grid gap-3 sm:grid-cols-3">
+                    <UFormField :label="t.harnessCodex" :description="t.agentConcurrencyHarnessHelp" size="sm">
+                      <UInput v-model.number="projectForm.agentHarnessLimits.codex" type="number" min="0" max="100" inputmode="numeric" size="lg" />
+                    </UFormField>
+                    <UFormField :label="t.harnessOpenCode" :description="t.agentConcurrencyHarnessHelp" size="sm">
+                      <UInput v-model.number="projectForm.agentHarnessLimits.opencode" type="number" min="0" max="100" inputmode="numeric" size="lg" />
+                    </UFormField>
+                    <UFormField :label="t.harnessPrimeAgent" :description="t.agentConcurrencyHarnessHelp" size="sm">
+                      <UInput v-model.number="projectForm.agentHarnessLimits['prime-agent']" type="number" min="0" max="100" inputmode="numeric" size="lg" />
+                    </UFormField>
+                  </div>
+
+                  <p class="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <UIcon name="i-lucide-pause-circle" class="size-3.5" />
+                    {{ t.concurrencyPausedHint }}
+                  </p>
+                </div>
+              </section>
 
               <div class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
                 <div class="mb-3 flex items-center justify-between">

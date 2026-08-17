@@ -8,7 +8,7 @@ import { removeTaskWorktree } from './git-workspaces';
 import { hashPassword } from './security/password';
 import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSource } from './task-description';
 import type { User } from './db/schema';
-import type { AgentHarness, ReasoningEffort } from './agent-harness';
+import { AGENT_HARNESSES, type AgentHarness, type ReasoningEffort } from './agent-harness';
 
 const DEFAULT_COLUMNS = [
   { key: 'backlog', nameEn: 'Backlog', nameDe: 'Backlog', position: 0, done: false },
@@ -25,6 +25,8 @@ export async function createProject(input: {
   folderPath: string;
   userIds?: string[];
   tags?: string[];
+  agentConcurrencyLimit?: number;
+  agentHarnessLimits?: Partial<Record<AgentHarness, number>>;
 }, admin: User) {
   const now = new Date().toISOString();
   const folderPath = path.resolve(input.folderPath);
@@ -40,10 +42,22 @@ export async function createProject(input: {
       name: input.name.trim(),
       description: input.description?.trim() || null,
       folderPath,
+      agentConcurrencyLimit: concurrencyLimit(input.agentConcurrencyLimit, 1),
       createdBy: admin.id,
       createdAt: now,
       updatedAt: now,
     }).run();
+
+    for (const harness of AGENT_HARNESSES) {
+      tx.insert(schema.projectHarnessLimits).values({
+        projectId,
+        harness,
+        maxConcurrentTasks: concurrencyLimit(
+          input.agentHarnessLimits?.[harness],
+          concurrencyLimit(input.agentConcurrencyLimit, 1),
+        ),
+      }).run();
+    }
 
     tx.insert(schema.projectUsers).values({
       projectId,
@@ -119,6 +133,8 @@ export async function updateProject(projectId: string, input: {
   folderPath?: string;
   userIds?: string[];
   tags?: string[];
+  agentConcurrencyLimit?: number;
+  agentHarnessLimits?: Partial<Record<AgentHarness, number>>;
 }, admin: User) {
   getProject(projectId, admin);
   const updates: Partial<typeof schema.projects.$inferInsert> = {
@@ -128,6 +144,9 @@ export async function updateProject(projectId: string, input: {
   if (input.name !== undefined) updates.name = input.name.trim();
   if (input.key !== undefined) updates.key = normalizeProjectKey(input.key);
   if (input.description !== undefined) updates.description = input.description?.trim() || null;
+  if (input.agentConcurrencyLimit !== undefined) {
+    updates.agentConcurrencyLimit = concurrencyLimit(input.agentConcurrencyLimit, 1);
+  }
   if (input.folderPath !== undefined) {
     const folderPath = path.resolve(input.folderPath);
     await fs.mkdir(folderPath, { recursive: true });
@@ -136,6 +155,17 @@ export async function updateProject(projectId: string, input: {
 
   db.transaction((tx) => {
     tx.update(schema.projects).set(updates).where(eq(schema.projects.id, projectId)).run();
+    if (input.agentHarnessLimits) {
+      const existingLimits = getProjectAgentLimits(projectId);
+      for (const harness of AGENT_HARNESSES) {
+        const maxConcurrentTasks = concurrencyLimit(input.agentHarnessLimits[harness], existingLimits[harness]);
+        tx.insert(schema.projectHarnessLimits).values({ projectId, harness, maxConcurrentTasks })
+          .onConflictDoUpdate({
+            target: [schema.projectHarnessLimits.projectId, schema.projectHarnessLimits.harness],
+            set: { maxConcurrentTasks },
+          }).run();
+      }
+    }
     if (input.userIds) {
       tx.delete(schema.projectUsers).where(eq(schema.projectUsers.projectId, projectId)).run();
       const memberIds = [...new Set([admin.id, ...input.userIds])];
@@ -161,7 +191,8 @@ export async function updateProject(projectId: string, input: {
 
 export function listProjects(user: User) {
   if (user.role === 'admin') {
-    return db.select().from(schema.projects).orderBy(asc(schema.projects.name)).all();
+    return db.select().from(schema.projects).orderBy(asc(schema.projects.name)).all()
+      .map(decorateProjectAgentLimits);
   }
   const rows = db
     .select({ project: schema.projects })
@@ -170,7 +201,7 @@ export function listProjects(user: User) {
     .where(eq(schema.projectUsers.userId, user.id))
     .orderBy(asc(schema.projects.name))
     .all();
-  return rows.map((row) => row.project);
+  return rows.map((row) => decorateProjectAgentLimits(row.project));
 }
 
 export function getProject(projectId: string, user: User) {
@@ -247,7 +278,7 @@ export function getBoard(projectId: string, user: User) {
     .map((row) => ({ id: row.user.id, name: row.user.name, email: row.user.email, role: row.user.role }));
 
   return {
-    project,
+    project: decorateProjectAgentLimits(project),
     projectTags,
     columns: projectColumns,
     oberthemen: topics,
@@ -264,6 +295,26 @@ export function getBoard(projectId: string, user: User) {
       latestUnreadMentionAt: unreadMentionsByTaskId.get(task.id)?.latestAt ?? null,
     })),
   };
+}
+
+export function getProjectAgentLimits(projectId: string): Record<AgentHarness, number> {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
+  const fallback = concurrencyLimit(project?.agentConcurrencyLimit, 1);
+  const limits = Object.fromEntries(
+    AGENT_HARNESSES.map((harness) => [harness, fallback]),
+  ) as Record<AgentHarness, number>;
+  const rows = db.select().from(schema.projectHarnessLimits)
+    .where(eq(schema.projectHarnessLimits.projectId, projectId)).all();
+  for (const row of rows) limits[row.harness] = concurrencyLimit(row.maxConcurrentTasks, fallback);
+  return limits;
+}
+
+function decorateProjectAgentLimits(project: typeof schema.projects.$inferSelect) {
+  return { ...project, agentHarnessLimits: getProjectAgentLimits(project.id) };
+}
+
+function concurrencyLimit(value: number | undefined, fallback: number) {
+  return Number.isInteger(value) && value! >= 0 ? value! : fallback;
 }
 
 export function getCommandPaletteIndex(user: User) {

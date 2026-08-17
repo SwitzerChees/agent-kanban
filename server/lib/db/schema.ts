@@ -36,10 +36,19 @@ export const projects = sqliteTable('projects', {
   name: text('name').notNull(),
   description: text('description'),
   folderPath: text('folder_path').notNull(),
+  agentConcurrencyLimit: integer('agent_concurrency_limit').notNull().default(1),
   createdBy: text('created_by').notNull().references(() => users.id),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
+
+export const projectHarnessLimits = sqliteTable('project_harness_limits', {
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull(),
+  maxConcurrentTasks: integer('max_concurrent_tasks').notNull().default(1),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.projectId, table.harness] }),
+}));
 
 export const projectUsers = sqliteTable('project_users', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
@@ -252,6 +261,7 @@ export const activity = sqliteTable('activity', {
 export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type ProjectHarnessLimit = typeof projectHarnessLimits.$inferSelect;
 export type ProjectChatThread = typeof projectChatThreads.$inferSelect;
 export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;
 export type ProjectChatEvent = typeof projectChatEvents.$inferSelect;
