@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
 import type { User } from './db/schema';
@@ -19,6 +19,7 @@ import {
   runProjectChatHarnessTurn,
   stopSandboxUnit,
   type ProjectChatActivity,
+  type ProjectChatMode,
 } from './project-chat-harness';
 
 const execFileAsync = promisify(execFile);
@@ -28,6 +29,23 @@ const DRAFT_FLUSH_MS = 160;
 interface ActiveChatJob {
   controller: AbortController;
   unitName: string | null;
+  mode: ProjectChatMode;
+  voiceCommandId: string | null;
+  followUps: QueuedFollowUp[];
+}
+
+interface QueueMessageOptions {
+  mode?: ProjectChatMode;
+  displayContent?: string;
+  voiceCommandId?: string | null;
+}
+
+interface QueuedFollowUp {
+  body: string;
+  displayContent: string;
+  clientRequestId: string;
+  voiceCommandId: string;
+  user: User;
 }
 
 declare global {
@@ -38,6 +56,16 @@ declare global {
 export function startProjectChatRuntime() {
   if (!globalThis.__agentKanbanProjectChatRuntime) {
     const recovered = recoverInterruptedProjectChats();
+    db.update(schema.projectChatVoiceCommands).set({
+      status: 'failed',
+      updatedAt: new Date().toISOString(),
+    }).where(and(
+      isNull(schema.projectChatVoiceCommands.targetTaskId),
+      or(
+        eq(schema.projectChatVoiceCommands.status, 'queued'),
+        eq(schema.projectChatVoiceCommands.status, 'dispatched'),
+      ),
+    )).run();
     if (recovered) runtimeLogger.warn('recovered interrupted project chats', { count: recovered });
     globalThis.__agentKanbanProjectChatRuntime = new ProjectChatRuntime();
   }
@@ -51,9 +79,16 @@ export function projectChatRuntime() {
 export class ProjectChatRuntime {
   private readonly jobs = new Map<string, ActiveChatJob>();
 
-  queueMessage(threadId: string, body: string, clientRequestId: string | null, user: User) {
+  queueMessage(
+    threadId: string,
+    body: string,
+    clientRequestId: string | null,
+    user: User,
+    options: QueueMessageOptions = {},
+  ) {
     const thread = authorizeProjectChat(threadId, user);
     const content = body.trim();
+    const displayContent = (options.displayContent ?? body).trim();
     if (!content) throw createError({ statusCode: 400, statusMessage: 'empty_chat_message' });
     if (content.length > MAX_MESSAGE_LENGTH) {
       throw createError({ statusCode: 400, statusMessage: 'chat_message_too_long' });
@@ -77,13 +112,13 @@ export class ProjectChatRuntime {
     const { userCreatedAt, assistantCreatedAt } = turnMessageTimestamps();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const title = thread.title || conversationTitle(content);
+    const title = thread.title || conversationTitle(displayContent);
     db.transaction((tx) => {
       tx.insert(schema.projectChatMessages).values({
         id: userMessageId,
         threadId,
         role: 'user',
-        content,
+        content: displayContent,
         state: 'complete',
         clientRequestId,
         createdAt: userCreatedAt,
@@ -114,12 +149,20 @@ export class ProjectChatRuntime {
     });
 
     const controller = new AbortController();
-    this.jobs.set(threadId, { controller, unitName: null });
+    this.jobs.set(threadId, {
+      controller,
+      unitName: null,
+      mode: options.mode ?? 'read_only',
+      voiceCommandId: options.voiceCommandId ?? null,
+      followUps: [],
+    });
     void this.runTurn({
       threadId,
       assistantMessageId,
       userContent: content,
       controller,
+      mode: options.mode ?? 'read_only',
+      voiceCommandId: options.voiceCommandId ?? null,
     });
     return {
       accepted: true,
@@ -128,6 +171,45 @@ export class ProjectChatRuntime {
       assistantMessageId,
       latestEventId: latestChatEventId(threadId),
     };
+  }
+
+  isRunning(threadId: string) {
+    return this.jobs.has(threadId);
+  }
+
+  queueFollowUp(
+    threadId: string,
+    body: string,
+    displayContent: string,
+    clientRequestId: string,
+    voiceCommandId: string,
+    user: User,
+  ) {
+    authorizeProjectChat(threadId, user);
+    const job = this.jobs.get(threadId);
+    if (!job || job.mode !== 'orchestrator') {
+      return this.queueMessage(threadId, body, clientRequestId, user, {
+        mode: 'orchestrator',
+        displayContent,
+        voiceCommandId,
+      });
+    }
+    job.followUps.push({ body, displayContent, clientRequestId, voiceCommandId, user });
+    db.update(schema.projectChatVoiceCommands).set({
+      status: 'queued',
+      updatedAt: new Date().toISOString(),
+    }).where(eq(schema.projectChatVoiceCommands.id, voiceCommandId)).run();
+    appendProjectChatEvent(threadId, 'voice_job_update', {
+      jobId: voiceCommandId,
+      taskId: '',
+      taskKey: 'Projektchat',
+      title: displayContent,
+      harness: null,
+      status: 'queued',
+      detail: 'Der Hinweis wird am nächsten sicheren Übergabepunkt übernommen.',
+      announce: false,
+    });
+    return { accepted: true, duplicate: false, queued: true, latestEventId: latestChatEventId(threadId) };
   }
 
   async abort(threadId: string, user: User) {
@@ -168,10 +250,14 @@ export class ProjectChatRuntime {
     assistantMessageId: string;
     userContent: string;
     controller: AbortController;
+    mode: ProjectChatMode;
+    voiceCommandId: string | null;
   }) {
     let draft = '';
     let flushTimer: NodeJS.Timeout | null = null;
     let lastActivity: ProjectChatActivity | null = null;
+    let lastVoiceProgressAt = 0;
+    let lastVoiceProgress = '';
     const flushDraft = () => {
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = null;
@@ -184,6 +270,21 @@ export class ProjectChatRuntime {
         content: draft,
         state: 'streaming',
       });
+      if (input.voiceCommandId && Date.now() - lastVoiceProgressAt >= 30_000) {
+        const progress = conciseVoiceProgress(draft);
+        if (progress && progress !== lastVoiceProgress) {
+          lastVoiceProgress = progress;
+          lastVoiceProgressAt = Date.now();
+          appendProjectChatEvent(input.threadId, 'voice_job_progress', {
+            jobId: input.voiceCommandId,
+            taskId: '',
+            taskKey: 'Projektchat',
+            status: 'running',
+            detail: progress,
+            announce: true,
+          });
+        }
+      }
     };
     const scheduleDraftFlush = () => {
       if (flushTimer) return;
@@ -198,6 +299,20 @@ export class ProjectChatRuntime {
       const project = db.select().from(schema.projects)
         .where(eq(schema.projects.id, thread.projectId)).get();
       if (!project) throw new Error('project_not_found');
+
+      if (input.voiceCommandId) {
+        db.update(schema.projectChatVoiceCommands).set({ status: 'dispatched', updatedAt: new Date().toISOString() })
+          .where(eq(schema.projectChatVoiceCommands.id, input.voiceCommandId)).run();
+        appendProjectChatEvent(input.threadId, 'voice_job_update', {
+          jobId: input.voiceCommandId,
+          taskId: '',
+          taskKey: 'Projektchat',
+          title: input.userContent,
+          harness: thread.harness,
+          status: 'running',
+          announce: false,
+        });
+      }
 
       appendProjectChatEvent(input.threadId, 'activity', { activity: 'project', phase: 'preparing' });
       const worktree = await prepareTaskWorktree({
@@ -219,6 +334,7 @@ export class ProjectChatRuntime {
         workspacePath,
         sessionRoot: appDataDir('chat-sessions', input.threadId),
         nativeSessionId: thread.nativeSessionId,
+        mode: input.mode,
         prompt: input.userContent,
         signal: input.controller.signal,
         onText: (fragment) => {
@@ -237,8 +353,10 @@ export class ProjectChatRuntime {
       });
       if (flushTimer) flushDraft();
       draft = result.text;
-      const dirty = await worktreeIsDirty(worktree.worktreeRoot);
-      if (dirty) throw new Error('chat_read_only_violation');
+      if (input.mode === 'read_only') {
+        const dirty = await worktreeIsDirty(worktree.worktreeRoot);
+        if (dirty) throw new Error('chat_read_only_violation');
+      }
 
       const now = new Date().toISOString();
       db.transaction((tx) => {
@@ -263,6 +381,25 @@ export class ProjectChatRuntime {
           }),
           createdAt: now,
         }).run();
+        if (input.voiceCommandId) {
+          tx.update(schema.projectChatVoiceCommands).set({ status: 'completed', updatedAt: now })
+            .where(eq(schema.projectChatVoiceCommands.id, input.voiceCommandId)).run();
+          tx.insert(schema.projectChatEvents).values({
+            threadId: input.threadId,
+            type: 'voice_job_update',
+            payload: JSON.stringify({
+              jobId: input.voiceCommandId,
+              taskId: '',
+              taskKey: 'Projektchat',
+              title: input.userContent,
+              harness: thread.harness,
+              status: 'done',
+              detail: conciseVoiceProgress(result.text) || 'Die Hintergrundarbeit ist abgeschlossen.',
+              announce: true,
+            }),
+            createdAt: now,
+          }).run();
+        }
       });
     } catch (error) {
       if (flushTimer) flushDraft();
@@ -288,6 +425,25 @@ export class ProjectChatRuntime {
             : { messageId: input.assistantMessageId, code: errorCode }),
           createdAt: now,
         }).run();
+        if (input.voiceCommandId) {
+          tx.update(schema.projectChatVoiceCommands).set({
+            status: cancelled ? 'cancelled' : 'failed',
+            updatedAt: now,
+          }).where(eq(schema.projectChatVoiceCommands.id, input.voiceCommandId)).run();
+          tx.insert(schema.projectChatEvents).values({
+            threadId: input.threadId,
+            type: 'voice_job_update',
+            payload: JSON.stringify({
+              jobId: input.voiceCommandId,
+              taskId: '',
+              taskKey: 'Projektchat',
+              status: cancelled ? 'cancelled' : 'failed',
+              detail: cancelled ? 'Die Hintergrundarbeit wurde gestoppt.' : 'Die Hintergrundarbeit konnte nicht abgeschlossen werden.',
+              announce: true,
+            }),
+            createdAt: now,
+          }).run();
+        }
       });
       if (!cancelled) {
         runtimeLogger.warn('project chat turn failed', {
@@ -296,7 +452,24 @@ export class ProjectChatRuntime {
         });
       }
     } finally {
+      const followUps = this.jobs.get(input.threadId)?.followUps ?? [];
       this.jobs.delete(input.threadId);
+      const next = followUps.shift();
+      if (next) {
+        setImmediate(() => {
+          try {
+            this.queueMessage(input.threadId, next.body, next.clientRequestId, next.user, {
+              mode: 'orchestrator',
+              displayContent: next.displayContent,
+              voiceCommandId: next.voiceCommandId,
+            });
+            const active = this.jobs.get(input.threadId);
+            if (active) active.followUps.push(...followUps);
+          } catch (error) {
+            runtimeLogger.warn('queued voice follow-up failed', { thread_id: input.threadId, error: errorMessage(error) });
+          }
+        });
+      }
     }
   }
 }
@@ -333,4 +506,19 @@ function publicChatError(error: unknown) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function conciseVoiceProgress(value: string) {
+  const text = value
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/[>*_~|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return null;
+  const first = text.match(/^(.{1,220}?[.!?])(?:\s|$)/)?.[1] ?? text.slice(0, 220);
+  return first.trim();
 }

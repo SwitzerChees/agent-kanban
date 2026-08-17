@@ -69,6 +69,11 @@ const copy = {
     done: 'Ready for review',
     failed: 'Background task needs attention',
     cancelled: 'Background task stopped',
+    chatQueued: 'Waiting for the background agent',
+    chatRunning: 'Background agent is working',
+    chatDone: 'Background work completed',
+    chatFailed: 'Background work needs attention',
+    chatCancelled: 'Background work stopped',
     textMode: 'Return to text mode',
     queuedTurns: 'voice turns waiting',
   },
@@ -92,6 +97,11 @@ const copy = {
     done: 'Bereit zur Prüfung',
     failed: 'Hintergrundaufgabe braucht Aufmerksamkeit',
     cancelled: 'Hintergrundaufgabe gestoppt',
+    chatQueued: 'Wartet auf den Hintergrund-Agenten',
+    chatRunning: 'Hintergrund-Agent arbeitet',
+    chatDone: 'Hintergrundarbeit abgeschlossen',
+    chatFailed: 'Hintergrundarbeit braucht Aufmerksamkeit',
+    chatCancelled: 'Hintergrundarbeit gestoppt',
     textMode: 'Zurück zum Textmodus',
     queuedTurns: 'Spracheingaben warten',
   },
@@ -154,7 +164,13 @@ const stateKind = computed(() => speaking.value
       ? 'processing'
       : 'listening');
 const visibleCaption = computed(() => assistantCaption.value || transcript.value || t.value.idleCaption);
-const jobStatusLabel = computed(() => currentJob.value ? t.value[currentJob.value.status] : '');
+const jobStatusLabel = computed(() => {
+  if (!currentJob.value) return '';
+  if (currentJob.value.taskId) return t.value[currentJob.value.status];
+  const key = `chat${currentJob.value.status[0]!.toUpperCase()}${currentJob.value.status.slice(1)}` as
+    'chatQueued' | 'chatRunning' | 'chatDone' | 'chatFailed' | 'chatCancelled';
+  return t.value[key];
+});
 
 onBeforeUnmount(() => {
   void stopVoice();
@@ -463,12 +479,17 @@ function handleBridgeEvent(type: 'update' | 'progress', payload: VoiceBridgePayl
 
 function bridgeAnnouncement(type: 'update' | 'progress', payload: VoiceBridgePayload, status: VoiceJobStatus) {
   const key = payload.taskKey || currentJob.value?.taskKey || (props.locale === 'de' ? 'Die Aufgabe' : 'The task');
+  const isChatJob = !(payload.taskId || currentJob.value?.taskId);
   if (type === 'progress' && payload.detail) {
     return props.locale === 'de' ? `Kurzes Update zu ${key}: ${payload.detail}` : `A quick update on ${key}: ${payload.detail}`;
   }
   if (status === 'running') return props.locale === 'de' ? `${key} wird jetzt bearbeitet.` : `${key} is now being worked on.`;
-  if (status === 'done') return props.locale === 'de' ? `${key} ist abgeschlossen und bereit zur Prüfung.` : `${key} is complete and ready for review.`;
-  if (status === 'failed') return props.locale === 'de' ? `${key} konnte nicht abgeschlossen werden. Bitte prüfe die Aufgabe.` : `${key} could not be completed. Please review the task.`;
+  if (status === 'done') return isChatJob
+    ? (props.locale === 'de' ? 'Die Hintergrundarbeit im Projektchat ist abgeschlossen.' : 'The background work in the project chat is complete.')
+    : (props.locale === 'de' ? `${key} ist abgeschlossen und bereit zur Prüfung.` : `${key} is complete and ready for review.`);
+  if (status === 'failed') return isChatJob
+    ? (props.locale === 'de' ? 'Die Hintergrundarbeit im Projektchat konnte nicht abgeschlossen werden.' : 'The background work in the project chat could not be completed.')
+    : (props.locale === 'de' ? `${key} konnte nicht abgeschlossen werden. Bitte prüfe die Aufgabe.` : `${key} could not be completed. Please review the task.`);
   if (status === 'cancelled') return props.locale === 'de' ? `${key} wurde gestoppt.` : `${key} was stopped.`;
   return '';
 }
@@ -599,7 +620,7 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
     </div>
 
     <div class="ak-voice-footer">
-      <span class="inline-flex min-w-0 items-center gap-1.5 truncate text-[0.6875rem] text-zinc-600 dark:text-zinc-300">
+      <span class="inline-flex min-w-0 flex-1 items-center gap-1.5 truncate text-[0.6875rem] text-zinc-600 dark:text-zinc-300">
         <UIcon name="i-lucide-shield-check" class="size-3.5 shrink-0 text-teal-700 dark:text-teal-300" />
         <span class="truncate">{{ projectName }} · {{ harness }}</span>
       </span>
@@ -621,6 +642,9 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
   display: grid;
   gap: 0.75rem;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0.75rem;
   border-radius: 0.875rem;
   background: rgb(255 255 255);
@@ -635,6 +659,9 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
 
 .ak-voice-job {
   display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 2.75rem;
   align-items: center;
   gap: 0.625rem;
@@ -663,6 +690,8 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
 
 .ak-voice-stage {
   display: grid;
+  width: 100%;
+  min-width: 0;
   justify-items: center;
   gap: 0.625rem;
   padding: 0.125rem 0.25rem 0.25rem;
@@ -690,6 +719,7 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
 .ak-voice-control-row {
   display: flex;
   width: 100%;
+  min-width: 0;
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
@@ -761,6 +791,7 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
 .is-capturing .ak-voice-pulse-two { animation: ak-voice-ring 2.2s 320ms cubic-bezier(0.22, 1, 0.36, 1) infinite; }
 
 .ak-voice-caption {
+  width: 100%;
   max-width: 48ch;
   min-height: 2.75rem;
   margin: 0;
@@ -768,6 +799,7 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
   font-size: 0.875rem;
   line-height: 1.45;
   text-wrap: pretty;
+  overflow-wrap: anywhere;
 }
 
 :global(.dark .ak-voice-caption) { color: rgb(228 228 231); }
@@ -779,6 +811,9 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
   margin: 0;
   color: rgb(82 82 91);
   font-size: 0.6875rem;
+  max-width: 100%;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 :global(.dark .ak-voice-listening-note) { color: rgb(161 161 170); }
@@ -786,6 +821,7 @@ defineExpose({ startVoice, stopVoice, handleBridgeEvent });
 .ak-voice-footer {
   display: flex;
   min-width: 0;
+  width: 100%;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;

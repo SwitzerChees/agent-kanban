@@ -64,19 +64,28 @@ afterAll(() => {
 describe('live voice agent bridge', () => {
   test('validates the strict Qwen routing contract', () => {
     expect(voice.parseVoiceRouteContent(JSON.stringify({
-      intent: 'delegate',
+      intent: 'create_task',
       spokenResponse: 'Ich übernehme das.',
       instruction: 'Führe die Tests aus.',
       taskTitle: 'Tests ausführen',
       targetTask: '',
       requiresConfirmation: false,
       confirmationPrompt: '',
-    }))).toMatchObject({ intent: 'delegate', taskTitle: 'Tests ausführen' });
+    }))).toMatchObject({ intent: 'create_task', taskTitle: 'Tests ausführen' });
 
     expect(() => voice.parseVoiceRouteContent(JSON.stringify({
-      intent: 'delegate',
+      intent: 'orchestrate',
       spokenResponse: 'Ich übernehme das.',
     }))).toThrow();
+  });
+
+  test('requires explicit Kanban language before creating a visible task', () => {
+    expect(voice.explicitTaskCreationRequested('Prüfe im Projekt, welche Aufgaben Patrick noch offen hat.')).toBe(false);
+    expect(voice.explicitTaskCreationRequested('Implementiere den Fix bitte direkt.')).toBe(false);
+    expect(voice.explicitTaskCreationRequested('Mach die Aufgabe bitte fertig.')).toBe(false);
+    expect(voice.explicitTaskCreationRequested('Erstelle dafür einen Kanban-Task.')).toBe(true);
+    expect(voice.explicitTaskCreationRequested('Neuer Task: Browser-Test ergänzen.')).toBe(true);
+    expect(voice.explicitTaskCreationRequested('Please create a ticket for this.')).toBe(true);
   });
 
   test('filters likely TTS echo without suppressing new user input', () => {

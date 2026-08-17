@@ -15,6 +15,7 @@ import {
   authorizeProjectChat,
   listChatMessages,
 } from './project-chat';
+import { projectChatRuntime } from './project-chat-runtime';
 
 const DEFAULT_WHISPER_URL = 'https://vllm-whisper.hackerman.ch';
 const DEFAULT_QWEN_URL = 'https://qwen-3-8-27b.lab.p11l.ch';
@@ -28,10 +29,10 @@ const MAX_SPEECH_LENGTH = 1_200;
 const PROGRESS_ANNOUNCEMENT_INTERVAL_MS = 30_000;
 
 export type VoiceLocale = 'en' | 'de';
-export type VoiceIntent = 'respond' | 'delegate' | 'status' | 'steer' | 'cancel' | 'clarify' | 'confirm' | 'reject';
+export type VoiceIntent = 'respond' | 'orchestrate' | 'create_task' | 'status' | 'steer' | 'cancel' | 'clarify' | 'confirm' | 'reject';
 
 const voiceRouteSchema = z.object({
-  intent: z.enum(['respond', 'delegate', 'status', 'steer', 'cancel', 'clarify', 'confirm', 'reject']),
+  intent: z.enum(['respond', 'orchestrate', 'create_task', 'status', 'steer', 'cancel', 'clarify', 'confirm', 'reject']),
   spokenResponse: z.string().max(MAX_SPEECH_LENGTH),
   instruction: z.string().max(8_000),
   taskTitle: z.string().max(180),
@@ -41,7 +42,8 @@ const voiceRouteSchema = z.object({
 });
 
 type VoiceRoute = z.infer<typeof voiceRouteSchema>;
-type VoiceCommandKind = 'delegate' | 'steer' | 'cancel';
+type VoiceCommandKind = 'orchestrate' | 'delegate' | 'steer' | 'cancel';
+type RoutedCommandIntent = 'orchestrate' | 'create_task' | 'steer' | 'cancel';
 type VoiceJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 interface VoiceConfig {
@@ -137,7 +139,7 @@ export async function processVoiceTranscript(input: ProcessVoiceTranscriptInput)
 
   const context = voiceContext(input.threadId);
   const pending = context.pendingCommand;
-  const route = await routeVoiceTranscript({
+  const routed = await routeVoiceTranscript({
     transcript,
     locale: input.locale,
     thread,
@@ -145,6 +147,9 @@ export async function processVoiceTranscript(input: ProcessVoiceTranscriptInput)
     jobs: context.jobs,
     pending,
   });
+  const route: VoiceRoute = routed.intent === 'create_task' && !explicitTaskCreationRequested(transcript)
+    ? { ...routed, intent: 'orchestrate' }
+    : routed;
 
   let spokenResponse = route.spokenResponse.trim();
   let job: ReturnType<typeof publicVoiceJob> | null = null;
@@ -156,7 +161,7 @@ export async function processVoiceTranscript(input: ProcessVoiceTranscriptInput)
         const dispatched = await dispatchStoredCommand(pending, thread, input.user, input.locale);
         spokenResponse = dispatched.spokenResponse;
         job = dispatched.job;
-        action = pending.kind;
+        action = pending.kind === 'delegate' ? 'create_task' : pending.kind;
       } else if (route.intent === 'reject') {
         updateVoiceCommand(pending.id, { status: 'rejected' });
         spokenResponse = input.locale === 'de'
@@ -171,10 +176,13 @@ export async function processVoiceTranscript(input: ProcessVoiceTranscriptInput)
     } else if (route.intent === 'status') {
       spokenResponse = describeVoiceJobs(context.jobs, input.locale);
     } else if (isCommandIntent(route.intent)) {
-      const kind = route.intent;
-      const targetTaskId = kind === 'delegate' ? null : resolveTargetTaskId(context.jobs, route.targetTask);
+      const kind: VoiceCommandKind = route.intent === 'create_task' ? 'delegate' : route.intent;
+      const chatRunning = projectChatRuntime().isRunning(thread.id);
+      const targetTaskId = kind === 'delegate' || kind === 'orchestrate' || (chatRunning && !route.targetTask.trim())
+        ? null
+        : resolveTargetTaskId(context.taskJobs, route.targetTask);
       const confirmationText = route.confirmationPrompt.trim() || route.spokenResponse.trim();
-      if (kind !== 'delegate' && !targetTaskId) {
+      if (kind !== 'delegate' && kind !== 'orchestrate' && !targetTaskId && !chatRunning) {
         spokenResponse = input.locale === 'de'
           ? 'Welche Hintergrundaufgabe meinst du? Bitte nenne den Aufgaben-Key oder den Titel.'
           : 'Which background task do you mean? Please say its task key or title.';
@@ -220,7 +228,8 @@ export async function processVoiceTranscript(input: ProcessVoiceTranscriptInput)
   }
 
   spokenResponse = spokenResponse.slice(0, MAX_SPEECH_LENGTH);
-  persistVoiceConversation(input.threadId, transcript, spokenResponse);
+  const chatOwnsConversation = Boolean(job && !job.taskId && (action === 'orchestrate' || action === 'steer'));
+  if (!chatOwnsConversation) persistVoiceConversation(input.threadId, transcript, spokenResponse);
   return {
     ignored: false,
     transcript,
@@ -310,7 +319,11 @@ export function isLikelyPlaybackEcho(transcript: string, playback: string) {
 }
 
 function voiceContext(threadId: string) {
-  const jobs = db.select({ job: schema.projectChatVoiceJobs, task: schema.tasks })
+  const thread = db.select({
+    harness: schema.projectChatThreads.harness,
+    reasoningEffort: schema.projectChatThreads.reasoningEffort,
+  }).from(schema.projectChatThreads).where(eq(schema.projectChatThreads.id, threadId)).get();
+  const taskJobs = db.select({ job: schema.projectChatVoiceJobs, task: schema.tasks })
     .from(schema.projectChatVoiceJobs)
     .innerJoin(schema.tasks, eq(schema.projectChatVoiceJobs.taskId, schema.tasks.id))
     .where(eq(schema.projectChatVoiceJobs.threadId, threadId))
@@ -318,6 +331,20 @@ function voiceContext(threadId: string) {
     .limit(12)
     .all()
     .map((row) => publicVoiceJob(row.job, row.task));
+  const orchestratorJobs = db.select().from(schema.projectChatVoiceCommands)
+    .where(eq(schema.projectChatVoiceCommands.threadId, threadId))
+    .orderBy(desc(schema.projectChatVoiceCommands.createdAt))
+    .limit(20)
+    .all()
+    .filter((command) => command.kind === 'orchestrate' || (command.kind === 'steer' && !command.targetTaskId))
+    .map((command) => publicOrchestratorJob(
+      command,
+      thread?.harness ?? 'codex',
+      thread?.reasoningEffort ?? 'xhigh',
+    ));
+  const jobs = [...taskJobs, ...orchestratorJobs]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, 12);
   const pendingCommand = db.select().from(schema.projectChatVoiceCommands)
     .where(and(
       eq(schema.projectChatVoiceCommands.threadId, threadId),
@@ -325,7 +352,7 @@ function voiceContext(threadId: string) {
     ))
     .orderBy(desc(schema.projectChatVoiceCommands.createdAt))
     .get() ?? null;
-  return { jobs, pendingCommand };
+  return { jobs, taskJobs, pendingCommand };
 }
 
 async function routeVoiceTranscript(input: {
@@ -349,11 +376,15 @@ async function routeVoiceTranscript(input: {
   const system = [
     `You are Jarvis, the concise ${language} foreground dialog and action router inside Agent Kanban.`,
     'The foreground voice loop must stay conversational while a separate background agent works.',
-    'Choose respond for ordinary conversation, delegate for a complete executable background task, status for progress questions, steer for new information for an existing task, cancel to stop a task, and clarify whenever anything important is ambiguous.',
+    'Choose respond only for ordinary conversation that needs no project inspection or action.',
+    'Choose orchestrate by default whenever the user asks you to inspect, find, check, analyse, run, fix, implement, change, or otherwise do something in the current project. Orchestrate uses the private chat background harness and must not create a Kanban item.',
+    'Choose create_task only when the user explicitly asks to create/add/open a Kanban task, card, ticket, issue, or board item. Merely asking to do work is never create_task.',
+    'Choose status only when the user asks what this voice assistant or its current background run is doing. Questions about open project tasks, assigned work, the board, or project state require orchestrate so the harness can inspect the real project data.',
+    'Choose steer for additional information or changed instructions while background work is active, cancel to stop it, and clarify whenever anything important is ambiguous.',
     'If a pending command exists, choose confirm only for a clear affirmative answer and reject only for a clear refusal. Otherwise clarify.',
     'Always ask a short follow-up when the object, target task, scope, destination, or desired outcome is unclear.',
     'Set requiresConfirmation=true for destructive, irreversible, security-sensitive, credential-related, deployment, publication, purchase, external messaging, or other consequential external-state actions. Normal reversible work inside an isolated task worktree does not need confirmation.',
-    'Do not choose clarify merely to request confirmation. For a clear consequential command, choose delegate, steer, or cancel and set requiresConfirmation=true so the application can persist and enforce the confirmation.',
+    'Do not choose clarify merely to request confirmation. For a clear consequential command, choose orchestrate, create_task, steer, or cancel and set requiresConfirmation=true so the application can persist and enforce the confirmation.',
     'Keep spokenResponse to one or two natural sentences. Never expose hidden reasoning, raw tool output, tokens, credentials, or implementation protocol.',
     `The selected background harness is ${input.thread.harness} with ${input.thread.reasoningEffort} effort. Do not select another harness.`,
     `The current private project chat belongs to ${project ? `${project.name} (${project.key})` : input.thread.projectId}. Treat every unqualified or deictic project reference, including "this project", "dieses Projekt", "das Projekt", and "das Testprojekt", as this current project; do not ask which project unless the user clearly names another one.`,
@@ -384,7 +415,7 @@ async function routeVoiceTranscript(input: {
           schema: {
             type: 'object',
             properties: {
-              intent: { type: 'string', enum: ['respond', 'delegate', 'status', 'steer', 'cancel', 'clarify', 'confirm', 'reject'] },
+              intent: { type: 'string', enum: ['respond', 'orchestrate', 'create_task', 'status', 'steer', 'cancel', 'clarify', 'confirm', 'reject'] },
               spokenResponse: { type: 'string' },
               instruction: { type: 'string' },
               taskTitle: { type: 'string' },
@@ -416,6 +447,43 @@ async function dispatchStoredCommand(
   locale: VoiceLocale,
 ) {
   try {
+    if (command.kind === 'orchestrate') {
+      const instruction = command.instruction.trim() || command.transcript.trim();
+      if (projectChatRuntime().isRunning(thread.id)) {
+        projectChatRuntime().queueFollowUp(
+          thread.id,
+          instruction,
+          command.transcript,
+          `voice-orchestrator-follow-up-${command.id}`,
+          command.id,
+          user,
+        );
+        const spokenResponse = locale === 'de'
+          ? 'Ich habe die zusätzliche Anweisung aufgenommen. Der Hintergrund-Agent übernimmt sie am nächsten sicheren Übergabepunkt.'
+          : 'I captured the additional instruction. The background agent will pick it up at the next safe handoff point.';
+        updateVoiceCommand(command.id, { status: 'queued', spokenResponse });
+        return { spokenResponse, job: publicOrchestratorJob(
+          { ...command, status: 'queued', spokenResponse },
+          thread.harness,
+          thread.reasoningEffort,
+        ) };
+      }
+      projectChatRuntime().queueMessage(thread.id, instruction, `voice-orchestrator-${command.id}`, user, {
+        mode: 'orchestrator',
+        displayContent: command.transcript,
+        voiceCommandId: command.id,
+      });
+      const spokenResponse = locale === 'de'
+        ? `Verstanden. Ich lasse ${harnessLabel(thread.harness)} das direkt im Projektchat prüfen und bleibe für weitere Hinweise erreichbar.`
+        : `Understood. I’ll have ${harnessLabel(thread.harness)} handle that directly in the project chat and keep listening for updates.`;
+      updateVoiceCommand(command.id, { status: 'dispatched', spokenResponse });
+      return { spokenResponse, job: publicOrchestratorJob(
+        { ...command, status: 'dispatched', spokenResponse },
+        thread.harness,
+        thread.reasoningEffort,
+      ) };
+    }
+
     if (command.kind === 'delegate') {
       const todo = db.select().from(schema.columns)
         .where(and(eq(schema.columns.projectId, thread.projectId), eq(schema.columns.key, 'todo')))
@@ -462,13 +530,31 @@ async function dispatchStoredCommand(
       return { spokenResponse, job: publicVoiceJob(job, task) };
     }
 
-    const jobs = voiceContext(thread.id).jobs;
-    const taskId = command.targetTaskId ?? resolveTargetTaskId(jobs, '');
-    if (!taskId) {
-      throw createError({ statusCode: 409, statusMessage: 'voice_target_task_ambiguous' });
-    }
-    const target = jobs.find((job) => job.taskId === taskId);
+    const context = voiceContext(thread.id);
+    const taskId = command.targetTaskId ?? resolveTargetTaskId(context.taskJobs, '');
+    const target = taskId ? context.taskJobs.find((job) => job.taskId === taskId) : null;
     if (command.kind === 'steer') {
+      if (!taskId && projectChatRuntime().isRunning(thread.id)) {
+        const instruction = command.instruction.trim() || command.transcript.trim();
+        projectChatRuntime().queueFollowUp(
+          thread.id,
+          instruction,
+          command.transcript,
+          `voice-steer-${command.id}`,
+          command.id,
+          user,
+        );
+        const spokenResponse = locale === 'de'
+          ? 'Ich habe den Hinweis aufgenommen. Der Hintergrund-Agent übernimmt ihn am nächsten sicheren Übergabepunkt.'
+          : 'I captured that update. The background agent will pick it up at the next safe handoff point.';
+        updateVoiceCommand(command.id, { status: 'queued', spokenResponse });
+        return { spokenResponse, job: publicOrchestratorJob(
+          { ...command, status: 'queued', spokenResponse },
+          thread.harness,
+          thread.reasoningEffort,
+        ) };
+      }
+      if (!taskId) throw createError({ statusCode: 409, statusMessage: 'voice_target_task_ambiguous' });
       addTaskMessage(taskId, command.instruction.trim() || command.transcript.trim(), user);
       const spokenResponse = locale === 'de'
         ? `Ich habe den Hinweis an ${target?.taskKey ?? 'die Hintergrundaufgabe'} weitergegeben.`
@@ -486,6 +572,15 @@ async function dispatchStoredCommand(
       return { spokenResponse, job: target ?? null };
     }
 
+    if (!taskId && projectChatRuntime().isRunning(thread.id)) {
+      await projectChatRuntime().abort(thread.id, user);
+      const spokenResponse = locale === 'de'
+        ? 'Ich habe die Hintergrundarbeit im Projektchat gestoppt.'
+        : 'I stopped the background work in the project chat.';
+      updateVoiceCommand(command.id, { status: 'completed', spokenResponse });
+      return { spokenResponse, job: null };
+    }
+    if (!taskId) throw createError({ statusCode: 409, statusMessage: 'voice_target_task_ambiguous' });
     cancelTaskAgent(taskId, user);
     const { abortLocalTask } = await import('./local-dispatcher');
     abortLocalTask(taskId);
@@ -514,7 +609,7 @@ function insertVoiceCommand(input: {
   threadId: string;
   userId: string;
   kind: VoiceCommandKind;
-  status: 'pending_confirmation' | 'dispatched';
+  status: 'pending_confirmation' | 'queued' | 'dispatched';
   transcript: string;
   instruction: string;
   taskTitle: string;
@@ -596,6 +691,36 @@ function publicVoiceJob(
   };
 }
 
+function publicOrchestratorJob(
+  command: typeof schema.projectChatVoiceCommands.$inferSelect,
+  harness: typeof schema.projectChatThreads.$inferSelect.harness,
+  reasoningEffort: typeof schema.projectChatThreads.$inferSelect.reasoningEffort,
+) {
+  const status: VoiceJobStatus = command.status === 'queued' || command.status === 'pending_confirmation'
+    ? 'queued'
+    : command.status === 'completed'
+      ? 'done'
+      : command.status === 'failed'
+        ? 'failed'
+        : command.status === 'cancelled' || command.status === 'rejected'
+          ? 'cancelled'
+          : 'running';
+  return {
+    id: command.id,
+    taskId: '',
+    taskKey: 'Projektchat',
+    title: command.taskTitle || fallbackTaskTitle(command.instruction || command.transcript),
+    harness,
+    reasoningEffort,
+    status,
+    latestProgress: status === 'queued' && command.kind === 'steer'
+      ? 'Zusätzlicher Hinweis wartet auf den nächsten sicheren Übergabepunkt.'
+      : null,
+    createdAt: command.createdAt,
+    updatedAt: command.updatedAt,
+  };
+}
+
 function voiceJobRow(taskId: string) {
   return db.select({ job: schema.projectChatVoiceJobs, task: schema.tasks })
     .from(schema.projectChatVoiceJobs)
@@ -648,8 +773,16 @@ function describeVoiceJobs(jobs: Array<ReturnType<typeof publicVoiceJob>>, local
     : `${job.taskKey} ${job.status === 'queued' ? 'is waiting for an available agent slot.' : 'is currently being worked on.'}${detail}`;
 }
 
-function isCommandIntent(intent: VoiceIntent): intent is VoiceCommandKind {
-  return intent === 'delegate' || intent === 'steer' || intent === 'cancel';
+function isCommandIntent(intent: VoiceIntent): intent is RoutedCommandIntent {
+  return intent === 'orchestrate' || intent === 'create_task' || intent === 'steer' || intent === 'cancel';
+}
+
+export function explicitTaskCreationRequested(value: string) {
+  const normalized = value.toLocaleLowerCase('de-CH').replace(/[‐‑‒–—]/g, '-');
+  const object = /\b(task|aufgabe|karte|card|ticket|issue|kanban(?:-task)?|board(?:-eintrag| item)?)\b/;
+  const action = /\b(erstell(?:e|en|t)|anleg(?:e|en|t)|hinzuf(?:ü|ue)g(?:e|en|t)|create|add)\b/;
+  const explicitNewItem = /\b(neu(?:e|en|er|es)?|new)\s+(?:kanban-)?(?:task|aufgabe|karte|card|ticket|issue)\b/;
+  return (object.test(normalized) && action.test(normalized)) || explicitNewItem.test(normalized);
 }
 
 function conciseProgress(value: string) {

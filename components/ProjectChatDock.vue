@@ -941,7 +941,7 @@ function friendlyError(error: unknown) {
               </div>
             </div>
 
-            <div class="shrink-0 border-t border-zinc-200 bg-zinc-50/90 p-3 dark:border-zinc-800 dark:bg-zinc-900/80">
+            <div class="min-w-0 shrink-0 overflow-hidden border-t border-zinc-200 bg-zinc-50/90 p-3 dark:border-zinc-800 dark:bg-zinc-900/80">
               <ProjectVoiceConsole
                 v-if="chat"
                 ref="voiceConsole"

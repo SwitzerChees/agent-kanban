@@ -15,6 +15,7 @@ import {
 } from './agent-harness';
 
 export type ProjectChatActivity = 'project' | 'web' | 'tool';
+export type ProjectChatMode = 'read_only' | 'orchestrator';
 
 export interface ProjectChatHarnessTurnOptions {
   threadId: string;
@@ -23,6 +24,7 @@ export interface ProjectChatHarnessTurnOptions {
   workspacePath: string;
   sessionRoot: string;
   nativeSessionId: string | null;
+  mode?: ProjectChatMode;
   prompt: string;
   signal: AbortSignal;
   onText: (fragment: string) => void;
@@ -47,6 +49,20 @@ This is a strictly read-only conversation:
 
 The operating-system sandbox enforces read-only access to the source tree. Temporary files and browser state belong only in the provided session area.`;
 
+const ORCHESTRATOR_SYSTEM_PROMPT = `You are the task-independent background orchestrator for the private project chat inside Agent Kanban.
+Work directly in the current chat-owned, isolated Git worktree. Inspect the project, use tools, edit files, and run focused tests when that is necessary to fulfil the user's request.
+
+Operating rules:
+- This is not a Kanban task. Never create a task, card, ticket, issue, or other board item.
+- Keep all project changes inside this isolated chat worktree. Never commit, push, merge, deploy, publish, send messages, purchase anything, or change external systems unless the user explicitly requested that consequential action and it has already been confirmed by the application.
+- Do not expose secrets, credentials, raw tool payloads, or hidden reasoning.
+- Give concise, useful progress in your response and end with the concrete result, relevant validation, and any remaining limitation.
+- If a request is ambiguous in a way that could cause harmful or materially different work, explain the missing decision instead of guessing.`;
+
+export function projectChatSystemPrompt(mode: ProjectChatMode = 'read_only') {
+  return mode === 'orchestrator' ? ORCHESTRATOR_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
+}
+
 export async function runProjectChatHarnessTurn(
   options: ProjectChatHarnessTurnOptions,
 ): Promise<ProjectChatHarnessTurnResult> {
@@ -66,6 +82,7 @@ export async function runProjectChatHarnessTurn(
     workspacePath: options.workspacePath,
     sessionRoot: options.sessionRoot,
     harness: options.harness,
+    mode: options.mode ?? 'read_only',
   });
   options.onUnit?.(unitName);
 
@@ -74,9 +91,10 @@ export async function runProjectChatHarnessTurn(
     env: runner.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  const systemPrompt = projectChatSystemPrompt(options.mode);
   child.stdin.end(options.harness === 'prime-agent'
     ? options.prompt
-    : `${CHAT_SYSTEM_PROMPT}\n\n---\n\n${options.prompt}`);
+    : `${systemPrompt}\n\n---\n\n${options.prompt}`);
   let stdoutBuffer = '';
   let stderrTail = '';
   let text = '';
@@ -137,14 +155,14 @@ export async function runProjectChatHarnessTurn(
 }
 
 export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions,
-  'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId'>) {
+  'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId' | 'mode'>) {
   if (options.harness === 'opencode') {
     return [
       'run',
       '--format', 'json',
       '--model', QWEN_OPENCODE_MODEL,
       '--variant', options.reasoningEffort,
-      '--agent', 'explore',
+      '--agent', options.mode === 'orchestrator' ? 'build' : 'explore',
       '--title', `Project chat ${options.threadId.slice(0, 8)}`,
       ...(options.nativeSessionId ? ['--session', options.nativeSessionId] : []),
     ];
@@ -159,7 +177,7 @@ export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions
       '--model', QWEN_MODEL_ID,
       '--thinking', options.reasoningEffort,
       '--session-dir', path.join(options.sessionRoot, 'prime-sessions'),
-      '--append-system-prompt', CHAT_SYSTEM_PROMPT,
+      '--append-system-prompt', projectChatSystemPrompt(options.mode),
       ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
     ];
   }
@@ -183,6 +201,7 @@ interface SandboxRunnerOptions {
   workspacePath: string;
   sessionRoot: string;
   harness: AgentHarness;
+  mode: ProjectChatMode;
 }
 
 function buildSandboxRunner(options: SandboxRunnerOptions) {
@@ -206,7 +225,9 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
   const properties = [
     'ProtectHome=read-only',
     `ReadWritePaths=${options.sessionRoot}`,
-    `BindReadOnlyPaths=${options.workspacePath}`,
+    options.mode === 'orchestrator'
+      ? `ReadWritePaths=${options.workspacePath}`
+      : `BindReadOnlyPaths=${options.workspacePath}`,
     'NoNewPrivileges=yes',
     'RestrictSUIDSGID=yes',
     'PrivateDevices=yes',

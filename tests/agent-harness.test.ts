@@ -11,6 +11,7 @@ import {
   activityFromEvent,
   assistantTextFromEvent,
   buildProjectChatArgs,
+  projectChatSystemPrompt,
   sessionIdFromEvent,
 } from '../server/lib/project-chat-harness';
 
@@ -65,6 +66,23 @@ describe('agent harness runtime contracts', () => {
       expect(buildProjectChatArgs({ ...common, harness, nativeSessionId: null }).join(' '))
         .not.toContain(common.prompt);
     }
+  });
+
+  test('gives the voice orchestrator a writable chat-worktree contract without creating board tasks', () => {
+    expect(projectChatSystemPrompt('orchestrator')).toContain('isolated Git worktree');
+    expect(projectChatSystemPrompt('orchestrator')).toContain('Never create a task, card, ticket');
+    expect(projectChatSystemPrompt('read_only')).toContain('strictly read-only conversation');
+    const args = buildProjectChatArgs({
+      reasoningEffort: 'xhigh',
+      workspacePath: '/tmp/project-chat',
+      sessionRoot: '/tmp/project-chat-session',
+      threadId: 'chat-voice',
+      prompt: 'Fix the issue.',
+      harness: 'opencode',
+      nativeSessionId: null,
+      mode: 'orchestrator',
+    });
+    expect(args).toEqual(expect.arrayContaining(['--agent', 'build']));
   });
 
   test('parses Prime Agent session headers and streaming text events', () => {
