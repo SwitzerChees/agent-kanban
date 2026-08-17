@@ -1,18 +1,47 @@
 ---
 name: agent-kanban-control
-description: Control an Agent Kanban instance through its HTTP API with a personal Bearer token. Use when an external agent harness needs to inspect boards, create or update tasks, move work through columns and topics, add comments or files, steer/refine tasks, or queue, cancel, and retry agent runs.
+description: Configure and control an Agent Kanban instance through its HTTP API with a shared per-user personal token. Use when an external agent harness needs persistent Agent Kanban access across sessions, or needs to inspect boards, create or update tasks, move work through columns and topics, add comments or files, steer/refine tasks, or queue, cancel, and retry agent runs.
 ---
 
 # Agent Kanban Control
 
 Use Agent Kanban as the source of truth for projects, task placement, collaboration, and agent-run lifecycle. Authenticate as the user who supplied the personal token so every request retains that user's existing role and project access.
 
-## Prepare access
+## Configure access once
 
-1. Obtain the instance base URL and a personal token generated from **API tokens** in the Agent Kanban user menu.
-2. Read `references/api.md` before making requests. Prefer the live OpenAPI document at `<base-url>/openapi.yaml` when available.
-3. Send `Authorization: Bearer <token>` and `Accept: application/json` on every API request.
-4. Keep the token out of commands that will be printed, task comments, logs, commits, and error messages. Prefer the harness's secret store or an environment variable such as `AGENT_KANBAN_TOKEN`.
+1. Install this skill globally for every supported harness when the user requests machine-wide availability:
+
+   ```sh
+   npx skills add SwitzerChees/agent-kanban --skill agent-kanban-control --agent '*' --global --copy --yes
+   ```
+
+2. Obtain a personal token from **API tokens** in the Agent Kanban user menu.
+3. Run the bundled helper from the installed skill directory. Supply the base URL as an argument; enter the token only at the hidden prompt:
+
+   ```sh
+   python3 ~/.agents/skills/agent-kanban-control/scripts/agent_kanban.py \
+     configure --base-url https://kanban.example.com
+   ```
+
+4. Store the connection once per operating-system user. The helper uses `~/.config/agent-kanban/config.json` by default on Unix-like systems, respects `XDG_CONFIG_HOME`, and uses `%APPDATA%/agent-kanban/config.json` on Windows. It applies mode `0600` on POSIX; on Windows the user profile's ACL remains authoritative. Every future agent process running as that same OS user can load it.
+5. Use `AGENT_KANBAN_CONFIG` to select another shared config file. Preserve compatibility with session-specific `AGENT_KANBAN_URL` and `AGENT_KANBAN_TOKEN` overrides.
+
+Do not place the token in command arguments, prompts, task comments, logs, commits, or error messages. The shared file intentionally grants all processes running as the same OS user access to that user's Agent Kanban permissions; it does not share credentials across OS users, containers, or machines.
+
+## Prepare each operation
+
+1. Resolve `scripts/agent_kanban.py` relative to this `SKILL.md`, even when a harness installed the skill through a symlink or copied it into its own skill directory.
+2. Run `python3 scripts/agent_kanban.py status` when connection state is uncertain. This reveals the URL and credential source but never the token.
+3. Read `references/api.md` before making requests. Prefer the live OpenAPI document at `/openapi.yaml` when available.
+4. Send API calls through the helper so authentication stays out of the command line:
+
+   ```sh
+   python3 scripts/agent_kanban.py request GET /api/projects
+   python3 scripts/agent_kanban.py request POST /api/tasks/<task-id>/comments \
+     --json '{"body":"Acceptance checks passed."}'
+   ```
+
+Use `--json-file <path>` for complex or generated payloads. The helper accepts only relative paths beginning with `/`, preventing the configured token from being sent to a different host.
 
 ## Operate the board
 
@@ -42,6 +71,7 @@ Use Agent Kanban as the source of truth for projects, task placement, collaborat
 - Do not delete tasks, attachments, topics, users, or project membership unless the user explicitly requested that destructive change.
 - Do not queue an agent merely because a task exists. Queue only when execution was requested or is clearly part of the active workflow.
 - Do not expose server filesystem paths returned for projects to unrelated systems or users.
+- Never print, return, or copy the stored token. If authentication needs replacement, run `configure` again and overwrite the shared config atomically.
 
 ## Report results
 

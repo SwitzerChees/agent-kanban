@@ -2,18 +2,29 @@
 
 ## Connection
 
-Set a base URL without a trailing slash and supply a personal token generated in the Agent Kanban UI.
+Generate a personal token in the Agent Kanban UI, then configure the bundled helper once. It verifies the token with `GET /api/projects` before saving it:
 
 ```sh
-export AGENT_KANBAN_URL="https://kanban.example.com"
-export AGENT_KANBAN_TOKEN="<secret>"
-curl --fail-with-body \
-  -H "Authorization: Bearer ${AGENT_KANBAN_TOKEN}" \
-  -H "Accept: application/json" \
-  "${AGENT_KANBAN_URL}/api/projects"
+python3 scripts/agent_kanban.py configure --base-url https://kanban.example.com
+python3 scripts/agent_kanban.py status
+python3 scripts/agent_kanban.py request GET /api/projects
 ```
 
-The token authenticates as its active owner and inherits the owner's `admin` or `member` role plus project memberships. The server exposes a machine-readable contract at `/openapi.yaml`.
+The default shared config is `~/.config/agent-kanban/config.json` on Unix-like systems, with `XDG_CONFIG_HOME` respected when set, and `%APPDATA%/agent-kanban/config.json` on Windows. Set `AGENT_KANBAN_CONFIG` to choose another shared file. `AGENT_KANBAN_URL` and `AGENT_KANBAN_TOKEN` override individual stored values for a session.
+
+The token authenticates as its active owner and inherits the owner's `admin` or `member` role plus project memberships. The helper never prints the token and only sends it to relative paths on the configured base URL. The server exposes a machine-readable contract at `/openapi.yaml`.
+
+Pass JSON inline or from a file:
+
+```sh
+python3 scripts/agent_kanban.py request POST /api/tasks/<task-id>/comments \
+  --json '{"body":"Acceptance checks passed."}'
+
+python3 scripts/agent_kanban.py request PATCH /api/tasks/<task-id> \
+  --json-file /path/to/task-update.json
+```
+
+For multipart attachment uploads, use a harness HTTP client that reads the same config without logging its token. Do not put the token directly in a `curl` command.
 
 ## Discovery and project operations
 
@@ -79,19 +90,11 @@ Agent statuses are `idle`, `queued`, `running`, `failed`, and `done`. Queue is i
 | `GET` | `/api/tasks/{taskId}/attachments/{attachmentId}` | Read a file; use `?download=1` or `?variant=annotated`. |
 | `DELETE` | `/api/tasks/{taskId}/attachments/{attachmentId}` | Delete a non-locked attachment. |
 
-Examples:
+JSON example:
 
 ```sh
-curl --fail-with-body -X POST \
-  -H "Authorization: Bearer ${AGENT_KANBAN_TOKEN}" \
-  -H "Content-Type: application/json" \
-  --data '{"body":"Acceptance checks passed."}' \
-  "${AGENT_KANBAN_URL}/api/tasks/<task-id>/comments"
-
-curl --fail-with-body -X POST \
-  -H "Authorization: Bearer ${AGENT_KANBAN_TOKEN}" \
-  -F "file=@./evidence.png" \
-  "${AGENT_KANBAN_URL}/api/tasks/<task-id>/attachments"
+python3 scripts/agent_kanban.py request POST /api/tasks/<task-id>/messages \
+  --json '{"body":"Please verify the migration before continuing."}'
 ```
 
 ## Hierarchy
