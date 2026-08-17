@@ -84,6 +84,7 @@ const copy = {
     retry: 'You can send another message.',
     loading: 'Loading private conversation…',
     unavailable: 'Unavailable on this server',
+    resize: 'Resize chat window',
   },
   de: {
     open: 'Privaten Projekt-Chat öffnen',
@@ -118,6 +119,7 @@ const copy = {
     retry: 'Du kannst eine weitere Nachricht senden.',
     loading: 'Private Unterhaltung wird geladen…',
     unavailable: 'Auf diesem Server nicht verfügbar',
+    resize: 'Chat-Fenster skalieren',
   },
 } as const;
 
@@ -137,7 +139,20 @@ const composer = ref('');
 const currentActivity = ref<'preparing' | 'project' | 'web' | 'tool' | null>(null);
 const messageLog = ref<HTMLElement | null>(null);
 const composerInput = ref<HTMLElement | null>(null);
+const desktopViewport = ref(false);
+const resizing = ref(false);
+const dockSize = reactive({ width: 448, height: 736 });
 let stream: EventSource | null = null;
+let streamFrame: number | null = null;
+let scrollFrame: number | null = null;
+let lastStreamPaint = 0;
+
+const DOCK_SIZE_STORAGE_KEY = 'ak_project_chat_size_v1';
+const DOCK_MIN_WIDTH = 360;
+const DOCK_MIN_HEIGHT = 420;
+const DOCK_VIEWPORT_MARGIN = 32;
+const STREAM_FRAME_INTERVAL = 32;
+const streamTargets = new Map<string, { content: string; state: ProjectChatMessage['state']; updatedAt: string }>();
 
 const harnessItems = computed(() => {
   const labels: Record<AgentHarness, string> = {
@@ -169,14 +184,25 @@ const activityLabel = computed(() => {
   if (!currentActivity.value) return '';
   return t.value[currentActivity.value];
 });
+const dockStyle = computed(() => desktopViewport.value
+  ? { width: `${dockSize.width}px`, height: `${dockSize.height}px` }
+  : undefined);
 
 onMounted(() => {
   if (!import.meta.client) return;
+  restoreDockSize();
+  updateViewport();
+  window.addEventListener('resize', updateViewport);
   isOpen.value = localStorage.getItem('ak_project_chat_open') === 'true';
   if (isOpen.value) void ensureCurrentChat();
 });
 
-onBeforeUnmount(() => closeStream());
+onBeforeUnmount(() => {
+  closeStream();
+  stopStreamAnimation();
+  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+  window.removeEventListener('resize', updateViewport);
+});
 
 watch(() => props.projectId, async () => {
   closeStream();
@@ -187,10 +213,9 @@ watch(() => props.projectId, async () => {
   currentActivity.value = null;
   errorMessage.value = '';
   view.value = 'chat';
+  stopStreamAnimation();
   if (isOpen.value) await ensureCurrentChat();
 });
-
-watch(messages, () => void scrollToLatest(), { deep: true });
 
 async function toggleDock() {
   isOpen.value = !isOpen.value;
@@ -228,11 +253,13 @@ async function ensureCurrentChat() {
 }
 
 function applyPayload(payload: ChatPayload) {
+  stopStreamAnimation();
   chat.value = payload.chat;
   messages.value = payload.messages;
   latestEventId.value = payload.latestEventId;
   currentActivity.value = chat.value?.status === 'running' ? 'project' : null;
   connectStream();
+  scheduleScroll(true);
 }
 
 async function reloadChat() {
@@ -410,12 +437,67 @@ function applyMessageEvent(event: Event, state: ProjectChatMessage['state']) {
   const messageId = String(payload.messageId ?? '');
   const message = messages.value.find((candidate) => candidate.id === messageId);
   if (message) {
-    message.content = String(payload.content ?? message.content);
-    message.state = state;
-    message.updatedAt = new Date().toISOString();
+    const target = String(payload.content ?? message.content);
+    const updatedAt = new Date().toISOString();
+    if (prefersReducedMotion() || !target.startsWith(message.content)) {
+      message.content = target;
+      message.state = state;
+      message.updatedAt = updatedAt;
+      scheduleScroll(isNearLatest());
+      return;
+    }
+    message.state = 'streaming';
+    streamTargets.set(messageId, { content: target, state, updatedAt });
+    scheduleStreamAnimation();
   } else {
     void reloadChat();
   }
+}
+
+function scheduleStreamAnimation() {
+  if (streamFrame !== null) return;
+  streamFrame = requestAnimationFrame(paintStreamFrame);
+}
+
+function paintStreamFrame(timestamp: number) {
+  streamFrame = null;
+  if (timestamp - lastStreamPaint < STREAM_FRAME_INTERVAL) {
+    scheduleStreamAnimation();
+    return;
+  }
+  lastStreamPaint = timestamp;
+  const followLatest = isNearLatest();
+
+  for (const [messageId, target] of streamTargets) {
+    const message = messages.value.find((candidate) => candidate.id === messageId);
+    if (!message) {
+      streamTargets.delete(messageId);
+      continue;
+    }
+    const remaining = target.content.length - message.content.length;
+    if (remaining <= 0) {
+      message.state = target.state;
+      message.updatedAt = target.updatedAt;
+      streamTargets.delete(messageId);
+      continue;
+    }
+    const chunkSize = Math.max(1, Math.ceil(remaining / 5));
+    message.content = target.content.slice(0, message.content.length + chunkSize);
+    if (message.content.length === target.content.length) {
+      message.state = target.state;
+      message.updatedAt = target.updatedAt;
+      streamTargets.delete(messageId);
+    }
+  }
+
+  scheduleScroll(followLatest);
+  if (streamTargets.size) scheduleStreamAnimation();
+}
+
+function stopStreamAnimation() {
+  if (streamFrame !== null) cancelAnimationFrame(streamFrame);
+  streamFrame = null;
+  streamTargets.clear();
 }
 
 function eventPayload(event: MessageEvent) {
@@ -442,9 +524,95 @@ function focusComposer() {
   input?.focus();
 }
 
-async function scrollToLatest() {
-  await nextTick();
-  if (messageLog.value) messageLog.value.scrollTop = messageLog.value.scrollHeight;
+function isNearLatest() {
+  const log = messageLog.value;
+  if (!log) return true;
+  return log.scrollHeight - log.scrollTop - log.clientHeight < 96;
+}
+
+function scheduleScroll(force = false) {
+  if (!force || scrollFrame !== null) return;
+  void nextTick(() => {
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = null;
+      const log = messageLog.value;
+      if (log) log.scrollTop = log.scrollHeight;
+    });
+  });
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function restoreDockSize() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DOCK_SIZE_STORAGE_KEY) ?? '{}') as { width?: unknown; height?: unknown };
+    if (typeof stored.width === 'number' && typeof stored.height === 'number') {
+      dockSize.width = stored.width;
+      dockSize.height = stored.height;
+    }
+  } catch {
+    localStorage.removeItem(DOCK_SIZE_STORAGE_KEY);
+  }
+}
+
+function updateViewport() {
+  desktopViewport.value = window.innerWidth >= 640;
+  const clamped = clampDockSize(dockSize.width, dockSize.height);
+  dockSize.width = clamped.width;
+  dockSize.height = clamped.height;
+}
+
+function clampDockSize(width: number, height: number) {
+  const maxWidth = Math.max(DOCK_MIN_WIDTH, window.innerWidth - DOCK_VIEWPORT_MARGIN);
+  const maxHeight = Math.max(DOCK_MIN_HEIGHT, window.innerHeight - DOCK_VIEWPORT_MARGIN);
+  return {
+    width: Math.round(Math.min(maxWidth, Math.max(DOCK_MIN_WIDTH, width))),
+    height: Math.round(Math.min(maxHeight, Math.max(DOCK_MIN_HEIGHT, height))),
+  };
+}
+
+function setDockSize(width: number, height: number, persist = false) {
+  const clamped = clampDockSize(width, height);
+  dockSize.width = clamped.width;
+  dockSize.height = clamped.height;
+  if (persist) localStorage.setItem(DOCK_SIZE_STORAGE_KEY, JSON.stringify(clamped));
+}
+
+function beginResize(event: PointerEvent) {
+  if (!desktopViewport.value || event.button !== 0) return;
+  event.preventDefault();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startWidth = dockSize.width;
+  const startHeight = dockSize.height;
+  resizing.value = true;
+  document.documentElement.classList.add('ak-project-chat-resizing');
+
+  const move = (moveEvent: PointerEvent) => {
+    setDockSize(startWidth + startX - moveEvent.clientX, startHeight + startY - moveEvent.clientY);
+  };
+  const end = () => {
+    resizing.value = false;
+    document.documentElement.classList.remove('ak-project-chat-resizing');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    setDockSize(dockSize.width, dockSize.height, true);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+}
+
+function resizeWithKeyboard(event: KeyboardEvent) {
+  if (!desktopViewport.value || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+  event.preventDefault();
+  const step = event.shiftKey ? 32 : 16;
+  const width = dockSize.width + (event.key === 'ArrowLeft' ? step : event.key === 'ArrowRight' ? -step : 0);
+  const height = dockSize.height + (event.key === 'ArrowUp' ? step : event.key === 'ArrowDown' ? -step : 0);
+  setDockSize(width, height, true);
 }
 
 function choosePrompt(value: string) {
@@ -489,11 +657,22 @@ function friendlyError(error: unknown) {
         <aside
           v-if="isOpen"
           class="ak-project-chat-dock"
+          :class="{ 'is-resizing': resizing }"
+          :style="dockStyle"
           role="dialog"
           aria-modal="false"
           :aria-label="t.title"
           data-testid="project-chat-dock"
         >
+          <button
+            v-if="desktopViewport"
+            type="button"
+            class="ak-project-chat-resize-handle"
+            :aria-label="t.resize"
+            data-testid="project-chat-resize"
+            @pointerdown="beginResize"
+            @keydown="resizeWithKeyboard"
+          />
           <header class="flex min-h-16 shrink-0 items-center gap-3 border-b border-zinc-200 px-3.5 dark:border-zinc-800">
             <UButton
               v-if="view === 'history'"
@@ -809,6 +988,60 @@ function friendlyError(error: unknown) {
   border-radius: 1rem;
   background: rgb(255 255 255);
   box-shadow: 0 8px 12px rgb(15 23 42 / 0.18);
+}
+
+.ak-project-chat-dock.is-resizing {
+  box-shadow: 0 12px 24px rgb(15 23 42 / 0.22);
+}
+
+.ak-project-chat-resize-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 0;
+  border-radius: 1rem 0 0;
+  background: transparent;
+  color: rgb(113 113 122);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.ak-project-chat-resize-handle::before,
+.ak-project-chat-resize-handle::after {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-top: 1.5px solid currentColor;
+  border-left: 1.5px solid currentColor;
+  content: '';
+}
+
+.ak-project-chat-resize-handle::after {
+  top: 0.62rem;
+  left: 0.62rem;
+  width: 0.25rem;
+  height: 0.25rem;
+  opacity: 0.55;
+}
+
+.ak-project-chat-resize-handle:hover {
+  color: rgb(13 148 136);
+}
+
+.ak-project-chat-resize-handle:focus-visible {
+  outline: 2px solid rgb(13 148 136);
+  outline-offset: -2px;
+}
+
+:global(html.ak-project-chat-resizing),
+:global(html.ak-project-chat-resizing *) {
+  cursor: nwse-resize !important;
+  user-select: none !important;
 }
 
 :global(.dark) .ak-project-chat-dock {
