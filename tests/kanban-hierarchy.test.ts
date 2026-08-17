@@ -365,7 +365,7 @@ describe('project topic hierarchy', () => {
       .where(eq(dbModule.schema.attachments.id, attachment.id))
       .get()!;
 
-    expect(attachment).toMatchObject({ fileName: 'briefing.txt', mimeType: 'text/plain', size: 10 });
+    expect(attachment).toMatchObject({ fileName: 'briefing.txt', extension: '.txt', mimeType: 'text/plain', size: 10 });
     expect(attachment).not.toHaveProperty('storagePath');
     expect(existsSync(stored.storagePath)).toBe(true);
 
@@ -381,6 +381,8 @@ describe('project topic hierarchy', () => {
     });
     expect(() => kanban.renameTaskAttachment(task!.id, attachment.id, '../unsafe.txt', admin))
       .toThrowError(expect.objectContaining({ statusMessage: 'invalid_attachment_file_name' }));
+    expect(() => kanban.renameTaskAttachment(task!.id, attachment.id, 'final-briefing.md', admin))
+      .toThrowError(expect.objectContaining({ statusMessage: 'attachment_file_extension_locked' }));
 
     const detail = await kanban.deleteTaskAttachment(task!.id, attachment.id, admin);
 

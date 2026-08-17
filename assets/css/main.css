@@ -267,6 +267,21 @@ button:focus-visible,
   outline: none;
 }
 
+.ak-markdown-editor .ProseMirror a,
+.ak-markdown-readonly .ProseMirror a {
+  color: rgb(13 148 136);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgb(13 148 136 / 0.45);
+  text-underline-offset: 3px;
+}
+
+.dark .ak-markdown-editor .ProseMirror a,
+.dark .ak-markdown-readonly .ProseMirror a {
+  color: rgb(94 234 212);
+  text-decoration-color: rgb(94 234 212 / 0.5);
+}
+
 .ak-markdown-readonly .ProseMirror > * {
   margin-block: 0.65rem;
 }

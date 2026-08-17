@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
+import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
 
 type Locale = 'en' | 'de';
@@ -75,6 +75,7 @@ interface Unterthema {
 interface Attachment {
   id: string;
   fileName: string;
+  extension: string;
   mimeType: string;
   size: number;
   url: string;
@@ -83,6 +84,14 @@ interface Attachment {
     data: string;
     updatedAt: string;
   } | null;
+}
+
+interface FileReferenceMenuItem {
+  kind: 'fileReference';
+  label: string;
+  description: string;
+  icon: string;
+  url: string;
 }
 
 interface Task {
@@ -293,6 +302,33 @@ interface PendingTaskFile {
   annotatedUrl: string | null;
   renderedFile: File | null;
 }
+
+const fileReferenceHandlers = {
+  fileReference: {
+    canExecute: () => true,
+    execute: (editor, command?: FileReferenceMenuItem) => {
+      if (!command) return editor.chain();
+      return editor.chain().focus().insertContent([
+        {
+          type: 'text',
+          text: `#${command.label}`,
+          marks: [{
+            type: 'link',
+            attrs: {
+              href: command.url,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+            },
+          }],
+        },
+        { type: 'text', text: ' ' },
+      ]);
+    },
+    isActive: () => false,
+  },
+} satisfies EditorCustomHandlers;
+
+const appendEditorMenuToBody = () => document.body;
 
 const dictionary = {
   en: {
@@ -3075,9 +3111,10 @@ const requestDeleteAttachment = (attachment: Attachment) => {
 
 const saveAttachmentRename = async (attachment: Attachment, input: HTMLInputElement) => {
   if (!selectedTaskId.value || attachmentSubmitting.value) return;
-  const fileName = input.value.trim();
-  if (!fileName) {
-    input.value = attachment.fileName;
+  const name = input.value.trim();
+  const fileName = `${name}${attachment.extension}`;
+  if (!name) {
+    input.value = editableAttachmentName(attachment);
     return;
   }
   if (fileName === attachment.fileName) return;
@@ -3090,7 +3127,7 @@ const saveAttachmentRename = async (attachment: Attachment, input: HTMLInputElem
     });
     if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
   } catch (error) {
-    input.value = attachment.fileName;
+    input.value = editableAttachmentName(attachment);
     errorMessage.value = humanError(error);
   } finally {
     attachmentSubmitting.value = false;
@@ -3547,6 +3584,11 @@ const taskAssigneeIdForRequest = () => taskForm.assigneeId === UNASSIGNED_ID ? n
 
 const isImageAttachment = (attachment: Attachment) => attachment.mimeType.startsWith('image/');
 const isPendingImageFile = (item: PendingTaskFile) => item.file.type.startsWith('image/');
+const editableAttachmentName = (attachment: Attachment) => (
+  attachment.extension && attachment.fileName.endsWith(attachment.extension)
+    ? attachment.fileName.slice(0, -attachment.extension.length)
+    : attachment.fileName
+);
 const attachmentIcon = (attachment: Attachment) => {
   if (isImageAttachment(attachment)) return 'i-lucide-image';
   if (attachment.mimeType === 'application/pdf') return 'i-lucide-file-text';
@@ -3567,6 +3609,13 @@ const formatFileSize = (bytes: number) => {
   }
   return `${new Intl.NumberFormat(locale.value === 'de' ? 'de-CH' : 'en', { maximumFractionDigits: value >= 10 ? 0 : 1 }).format(value)} ${unit}`;
 };
+const fileReferenceItems = computed<FileReferenceMenuItem[]>(() => taskAttachments.value.map((attachment) => ({
+  kind: 'fileReference',
+  label: attachment.fileName,
+  description: `${formatFileSize(attachment.size)} · ${attachment.mimeType}`,
+  icon: attachmentIcon(attachment),
+  url: attachment.url,
+})));
 
 const columnName = (column: BoardColumn) => locale.value === 'de' ? column.nameDe : column.nameEn;
 const oberthemaFor = (subtopic: Unterthema | null | undefined) => subtopic
@@ -6671,6 +6720,7 @@ const humanError = (error: unknown) => {
                           v-model="taskForm.description"
                           :data-keytip-label="t.description"
                           content-type="markdown"
+                          :handlers="fileReferenceHandlers"
                           :image="false"
                           :mention="false"
                           :placeholder="t.description"
@@ -6682,6 +6732,17 @@ const humanError = (error: unknown) => {
                             :editor="editor"
                             :items="editorToolbarItems"
                             class="ak-editor-toolbar border-b border-zinc-200 bg-zinc-50/90 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/80"
+                          />
+                          <UEditorSuggestionMenu
+                            v-if="fileReferenceItems.length"
+                            :editor="editor"
+                            char="#"
+                            plugin-key="fileAttachmentMenu"
+                            :items="fileReferenceItems"
+                            :limit="8"
+                            :suggestion="{ allowSpaces: true }"
+                            :options="{ strategy: 'fixed', placement: 'bottom-start' }"
+                            :append-to="appendEditorMenuToBody"
                           />
                         </UEditor>
                       </div>
@@ -6785,9 +6846,9 @@ const humanError = (error: unknown) => {
                             class="shrink-0 text-sm font-semibold text-teal-600 underline-offset-4 hover:underline dark:text-teal-400"
                           >#</a>
                           <input
-                            :value="attachment.fileName"
+                            :value="editableAttachmentName(attachment)"
                             class="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-semibold text-zinc-800 outline-none hover:border-zinc-300 hover:bg-white focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-zinc-100 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
-                            maxlength="255"
+                            :maxlength="Math.max(1, 255 - attachment.extension.length)"
                             required
                             :disabled="editingTask?.agentStatus === 'running' || attachmentSubmitting"
                             :aria-label="t.renameAttachment + ': ' + attachment.fileName"
@@ -6795,6 +6856,11 @@ const humanError = (error: unknown) => {
                             @change="saveAttachmentRename(attachment, $event.target as HTMLInputElement)"
                             @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
                           >
+                          <span
+                            v-if="attachment.extension"
+                            class="shrink-0 select-none pr-1 text-sm font-semibold text-zinc-500 dark:text-zinc-400"
+                            aria-hidden="true"
+                          >{{ attachment.extension }}</span>
                         </div>
                         <p class="mt-0.5 truncate text-xs text-zinc-500 dark:text-zinc-400">
                           {{ formatFileSize(attachment.size) }} · {{ attachment.mimeType }}

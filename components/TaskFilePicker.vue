@@ -51,6 +51,15 @@ const formatSize = (size: number) => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const fileNameParts = (fileName: string) => {
+  const extensionIndex = fileName.lastIndexOf('.');
+  if (extensionIndex <= 0) return { name: fileName, extension: '' };
+  return {
+    name: fileName.slice(0, extensionIndex),
+    extension: fileName.slice(extensionIndex),
+  };
+};
+
 const handleDragEnter = () => {
   dragDepth.value += 1;
   isDragging.value = true;
@@ -70,10 +79,10 @@ const handleDrop = (event: DragEvent) => {
 const handleRename = (item: PendingFileItem, event: Event) => {
   const input = event.target as HTMLInputElement;
   if (!input.value.trim()) {
-    input.value = item.file.name;
+    input.value = fileNameParts(item.file.name).name;
     return;
   }
-  emit('rename', item, input.value);
+  emit('rename', item, `${input.value}${fileNameParts(item.file.name).extension}`);
 };
 </script>
 
@@ -152,15 +161,20 @@ const handleRename = (item: PendingFileItem, event: Event) => {
           <div class="flex min-w-0 items-center gap-1">
             <span class="shrink-0 text-sm font-semibold text-teal-600 dark:text-teal-400">#</span>
             <input
-              :value="item.file.name"
+              :value="fileNameParts(item.file.name).name"
               class="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-medium text-zinc-800 outline-none hover:border-zinc-300 hover:bg-white focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20 dark:text-zinc-100 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
-              maxlength="255"
+              :maxlength="Math.max(1, 255 - fileNameParts(item.file.name).extension.length)"
               required
               :aria-label="`${props.renameLabel}: ${item.file.name}`"
               :title="props.renameLabel"
               @change="handleRename(item, $event)"
               @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
             >
+            <span
+              v-if="fileNameParts(item.file.name).extension"
+              class="shrink-0 select-none pr-1 text-sm font-medium text-zinc-500 dark:text-zinc-400"
+              aria-hidden="true"
+            >{{ fileNameParts(item.file.name).extension }}</span>
           </div>
           <p class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{{ formatSize(item.file.size) }}</p>
         </div>

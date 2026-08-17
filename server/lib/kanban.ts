@@ -1169,6 +1169,10 @@ export function renameTaskAttachment(taskId: string, attachmentId: string, fileN
   if (!normalizedName || normalizedName.length > 255 || /[\\/\u0000-\u001F\u007F]/.test(normalizedName)) {
     throw createError({ statusCode: 400, statusMessage: 'invalid_attachment_file_name' });
   }
+  const protectedExtension = path.extname(attachment.storagePath);
+  if (path.extname(normalizedName) !== protectedExtension) {
+    throw createError({ statusCode: 400, statusMessage: 'attachment_file_extension_locked' });
+  }
   if (normalizedName === attachment.fileName) return getTaskDetail(taskId, user);
 
   db.update(schema.attachments).set({ fileName: normalizedName })
@@ -1502,6 +1506,7 @@ function decorateAttachment(
     id: attachment.id,
     taskId: attachment.taskId,
     fileName: attachment.fileName,
+    extension: path.extname(attachment.storagePath),
     mimeType: attachment.mimeType,
     size: attachment.size,
     createdAt: attachment.createdAt,
