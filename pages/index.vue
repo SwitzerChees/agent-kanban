@@ -422,6 +422,9 @@ const dictionary = {
     deleteTaskConfirm: 'Delete this task permanently?',
     deleteTaskWarning: 'This cannot be undone. Attachments and activity for this task will be removed with it.',
     deleteAttachment: 'Delete file',
+    renameAttachment: 'Rename file',
+    renameAttachmentHint: 'Edit the name and confirm with Enter.',
+    dropFilesHere: 'Drop files here',
     deleteAttachmentConfirm: 'Delete this attached file?',
     deleteAttachmentWarning: 'The file will be removed permanently and will no longer be available to people or the AI agent.',
     openAttachment: 'Open file',
@@ -737,6 +740,9 @@ const dictionary = {
     deleteTaskConfirm: 'Diese Aufgabe dauerhaft löschen?',
     deleteTaskWarning: 'Das kann nicht rückgängig gemacht werden. Anhänge und Aktivitäten dieser Aufgabe werden mitgelöscht.',
     deleteAttachment: 'Datei löschen',
+    renameAttachment: 'Datei umbenennen',
+    renameAttachmentHint: 'Namen bearbeiten und mit Enter bestätigen.',
+    dropFilesHere: 'Dateien hier ablegen',
     deleteAttachmentConfirm: 'Diese angehängte Datei löschen?',
     deleteAttachmentWarning: 'Die Datei wird dauerhaft entfernt und steht danach weder Personen noch dem KI-Agenten zur Verfügung.',
     openAttachment: 'Datei öffnen',
@@ -3067,6 +3073,30 @@ const requestDeleteAttachment = (attachment: Attachment) => {
   deleteAttachmentModalOpen.value = true;
 };
 
+const saveAttachmentRename = async (attachment: Attachment, input: HTMLInputElement) => {
+  if (!selectedTaskId.value || attachmentSubmitting.value) return;
+  const fileName = input.value.trim();
+  if (!fileName) {
+    input.value = attachment.fileName;
+    return;
+  }
+  if (fileName === attachment.fileName) return;
+  errorMessage.value = null;
+  attachmentSubmitting.value = true;
+  try {
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/attachments/${attachment.id}`, {
+      method: 'PATCH',
+      body: { fileName },
+    });
+    if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
+  } catch (error) {
+    input.value = attachment.fileName;
+    errorMessage.value = humanError(error);
+  } finally {
+    attachmentSubmitting.value = false;
+  }
+};
+
 const downloadTaskAttachment = async (attachment: Attachment) => {
   if (downloadingAttachmentId.value || !import.meta.client) return;
   downloadingAttachmentId.value = attachment.id;
@@ -3458,6 +3488,18 @@ const removePendingTaskFiles = (items: Array<Pick<PendingTaskFile, 'id'>>) => {
 };
 
 const removePendingTaskFile = (item: Pick<PendingTaskFile, 'id'>) => removePendingTaskFiles([item]);
+
+const renamePendingTaskFile = (item: PendingTaskFile, fileName: string) => {
+  const normalizedName = fileName.trim().replace(/[\\/\u0000-\u001F\u007F]/g, '_').slice(0, 255);
+  if (!normalizedName || normalizedName === item.file.name) return;
+  const renamedFile = new File([item.file], normalizedName, {
+    type: item.file.type,
+    lastModified: item.file.lastModified,
+  });
+  taskFiles.value = taskFiles.value.map((entry) => entry.id === item.id
+    ? { ...entry, file: renamedFile }
+    : entry);
+};
 
 const appendTaskFiles = async (form: FormData, files: PendingTaskFile[]) => {
   const annotations: Array<{
@@ -6672,10 +6714,13 @@ const humanError = (error: unknown) => {
                     :hint="t.pasteHint"
                     :choose-label="t.files"
                     :edit-image-label="t.editImage"
+                    :rename-label="t.renameAttachment"
+                    :drop-label="t.dropFilesHere"
                     :remove-label="t.deleteAttachment"
                     @file-change="handleFileInput"
                     @file-drop="handleFileDrop"
                     @annotate="openPendingAnnotationEditor"
+                    @rename="renamePendingTaskFile"
                     @remove="removePendingTaskFile"
                   />
                 </template>
@@ -6730,15 +6775,27 @@ const humanError = (error: unknown) => {
                       </span>
 
                       <div class="min-w-0">
-                        <a
-                          :href="attachment.url"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          :aria-label="t.openAttachment + ': ' + attachment.fileName"
-                          class="block truncate text-sm font-semibold text-zinc-800 underline-offset-4 hover:text-teal-700 hover:underline dark:text-zinc-100 dark:hover:text-teal-300"
-                        >
-                          {{ attachment.fileName }}
-                        </a>
+                        <div class="flex min-w-0 items-center gap-1">
+                          <a
+                            :href="attachment.url"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            :aria-label="t.openAttachment + ': ' + attachment.fileName"
+                            :title="t.openAttachment"
+                            class="shrink-0 text-sm font-semibold text-teal-600 underline-offset-4 hover:underline dark:text-teal-400"
+                          >#</a>
+                          <input
+                            :value="attachment.fileName"
+                            class="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-semibold text-zinc-800 outline-none hover:border-zinc-300 hover:bg-white focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-zinc-100 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
+                            maxlength="255"
+                            required
+                            :disabled="editingTask?.agentStatus === 'running' || attachmentSubmitting"
+                            :aria-label="t.renameAttachment + ': ' + attachment.fileName"
+                            :title="t.renameAttachmentHint"
+                            @change="saveAttachmentRename(attachment, $event.target as HTMLInputElement)"
+                            @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+                          >
+                        </div>
                         <p class="mt-0.5 truncate text-xs text-zinc-500 dark:text-zinc-400">
                           {{ formatFileSize(attachment.size) }} · {{ attachment.mimeType }}
                         </p>
@@ -6965,10 +7022,13 @@ const humanError = (error: unknown) => {
                       :hint="t.pasteHint"
                       :choose-label="t.files"
                       :edit-image-label="t.editImage"
+                      :rename-label="t.renameAttachment"
+                      :drop-label="t.dropFilesHere"
                       :remove-label="t.deleteAttachment"
                       @file-change="handleFileInput"
                       @file-drop="handleFileDrop"
                       @annotate="openPendingAnnotationEditor"
+                      @rename="renamePendingTaskFile"
                       @remove="removePendingTaskFile"
                     />
 
@@ -7012,11 +7072,14 @@ const humanError = (error: unknown) => {
                       :hint="t.pasteHint"
                       :choose-label="t.files"
                       :edit-image-label="t.editImage"
+                      :rename-label="t.renameAttachment"
+                      :drop-label="t.dropFilesHere"
                       :remove-label="t.deleteAttachment"
                       tone="warning"
                       @file-change="handleFileInput"
                       @file-drop="handleFileDrop"
                       @annotate="openPendingAnnotationEditor"
+                      @rename="renamePendingTaskFile"
                       @remove="removePendingTaskFile"
                     />
 

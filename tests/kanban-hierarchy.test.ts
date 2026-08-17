@@ -369,6 +369,19 @@ describe('project topic hierarchy', () => {
     expect(attachment).not.toHaveProperty('storagePath');
     expect(existsSync(stored.storagePath)).toBe(true);
 
+    const renamed = kanban.renameTaskAttachment(task!.id, attachment.id, 'final-briefing.txt', admin);
+    expect(renamed.task.attachments[0]).toMatchObject({
+      id: attachment.id,
+      fileName: 'final-briefing.txt',
+    });
+    expect(dbModule.db.select().from(dbModule.schema.attachments)
+      .where(eq(dbModule.schema.attachments.id, attachment.id)).get()).toMatchObject({
+      fileName: 'final-briefing.txt',
+      storagePath: stored.storagePath,
+    });
+    expect(() => kanban.renameTaskAttachment(task!.id, attachment.id, '../unsafe.txt', admin))
+      .toThrowError(expect.objectContaining({ statusMessage: 'invalid_attachment_file_name' }));
+
     const detail = await kanban.deleteTaskAttachment(task!.id, attachment.id, admin);
 
     expect(detail.task.attachments).toEqual([]);

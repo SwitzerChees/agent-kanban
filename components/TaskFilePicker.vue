@@ -22,6 +22,8 @@ const props = withDefaults(defineProps<{
   hint: string;
   chooseLabel: string;
   editImageLabel: string;
+  renameLabel: string;
+  dropLabel: string;
   removeLabel: string;
   tone?: 'neutral' | 'warning';
 }>(), {
@@ -32,10 +34,13 @@ const emit = defineEmits<{
   fileChange: [event: Event];
   fileDrop: [event: DragEvent];
   annotate: [item: PendingFileItem];
+  rename: [item: PendingFileItem, fileName: string];
   remove: [item: PendingFileItem];
 }>();
 
 const fileInput = ref<HTMLInputElement | null>(null);
+const dragDepth = ref(0);
+const isDragging = ref(false);
 const openFileDialog = () => fileInput.value?.click();
 
 const isImage = (item: PendingFileItem) => item.file.type.startsWith('image/');
@@ -45,17 +50,55 @@ const formatSize = (size: number) => {
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
+
+const handleDragEnter = () => {
+  dragDepth.value += 1;
+  isDragging.value = true;
+};
+
+const handleDragLeave = () => {
+  dragDepth.value = Math.max(0, dragDepth.value - 1);
+  if (!dragDepth.value) isDragging.value = false;
+};
+
+const handleDrop = (event: DragEvent) => {
+  dragDepth.value = 0;
+  isDragging.value = false;
+  emit('fileDrop', event);
+};
+
+const handleRename = (item: PendingFileItem, event: Event) => {
+  const input = event.target as HTMLInputElement;
+  if (!input.value.trim()) {
+    input.value = item.file.name;
+    return;
+  }
+  emit('rename', item, input.value);
+};
 </script>
 
 <template>
   <section
-    class="rounded-xl border border-dashed p-3 transition-colors sm:p-4"
+    class="relative rounded-xl border border-dashed p-3 transition-colors sm:p-4"
     :class="props.tone === 'warning'
       ? 'border-amber-300 bg-amber-50/70 dark:border-amber-900/70 dark:bg-amber-950/20'
       : 'border-zinc-300 bg-zinc-50/70 dark:border-zinc-700 dark:bg-zinc-900/55'"
     @dragover.prevent
-    @drop.prevent="emit('fileDrop', $event)"
+    @dragenter.prevent="handleDragEnter"
+    @dragleave.prevent="handleDragLeave"
+    @drop.prevent="handleDrop"
   >
+    <div
+      v-if="isDragging"
+      class="pointer-events-none absolute inset-1 z-10 grid place-items-center rounded-lg border-2 border-dashed border-teal-500 bg-teal-50/95 text-teal-800 dark:border-teal-400 dark:bg-teal-950/95 dark:text-teal-200"
+      aria-hidden="true"
+    >
+      <div class="flex items-center gap-2 text-sm font-semibold">
+        <UIcon name="i-lucide-file-down" class="size-5" />
+        <span>{{ props.dropLabel }}</span>
+      </div>
+    </div>
+
     <div class="flex min-w-0 flex-wrap items-center justify-between gap-3">
       <div class="flex min-w-0 items-center gap-3">
         <span
@@ -106,7 +149,19 @@ const formatSize = (size: number) => {
         </span>
 
         <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-zinc-800 dark:text-zinc-100">{{ item.file.name }}</p>
+          <div class="flex min-w-0 items-center gap-1">
+            <span class="shrink-0 text-sm font-semibold text-teal-600 dark:text-teal-400">#</span>
+            <input
+              :value="item.file.name"
+              class="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-medium text-zinc-800 outline-none hover:border-zinc-300 hover:bg-white focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20 dark:text-zinc-100 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
+              maxlength="255"
+              required
+              :aria-label="`${props.renameLabel}: ${item.file.name}`"
+              :title="props.renameLabel"
+              @change="handleRename(item, $event)"
+              @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+            >
+          </div>
           <p class="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{{ formatSize(item.file.size) }}</p>
         </div>
 

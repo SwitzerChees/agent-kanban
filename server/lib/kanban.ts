@@ -1160,6 +1160,26 @@ export function getTaskAttachment(taskId: string, attachmentId: string, user: Us
   return { task, attachment, annotation };
 }
 
+export function renameTaskAttachment(taskId: string, attachmentId: string, fileName: string, user: User) {
+  const { task, attachment } = getTaskAttachment(taskId, attachmentId, user);
+  if (task.agentStatus === 'running') {
+    throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_rename_attachment' });
+  }
+  const normalizedName = fileName.trim();
+  if (!normalizedName || normalizedName.length > 255 || /[\\/\u0000-\u001F\u007F]/.test(normalizedName)) {
+    throw createError({ statusCode: 400, statusMessage: 'invalid_attachment_file_name' });
+  }
+  if (normalizedName === attachment.fileName) return getTaskDetail(taskId, user);
+
+  db.update(schema.attachments).set({ fileName: normalizedName })
+    .where(eq(schema.attachments.id, attachmentId)).run();
+  logTaskActivity(task.projectId, taskId, user.id, 'attachment_renamed', {
+    previousFileName: attachment.fileName,
+    fileName: normalizedName,
+  });
+  return getTaskDetail(taskId, user);
+}
+
 export async function deleteTaskAttachment(taskId: string, attachmentId: string, user: User) {
   const { task, attachment, annotation } = getTaskAttachment(taskId, attachmentId, user);
   if (task.agentStatus === 'running') {
