@@ -86,6 +86,7 @@ const copy = {
     unavailable: 'Unavailable on this server',
     resize: 'Resize chat window',
     move: 'Drag to move chat window',
+    voiceStart: 'Start voice assistant',
   },
   de: {
     open: 'Privaten Projekt-Chat öffnen',
@@ -122,6 +123,7 @@ const copy = {
     unavailable: 'Auf diesem Server nicht verfügbar',
     resize: 'Chat-Fenster skalieren',
     move: 'Ziehen, um das Chat-Fenster zu verschieben',
+    voiceStart: 'Sprachassistent starten',
   },
 } as const;
 
@@ -141,6 +143,11 @@ const composer = ref('');
 const currentActivity = ref<'preparing' | 'project' | 'web' | 'tool' | null>(null);
 const messageLog = ref<HTMLElement | null>(null);
 const composerInput = ref<HTMLElement | null>(null);
+const voiceConsole = ref<{
+  startVoice: () => Promise<void>;
+  handleBridgeEvent: (type: 'update' | 'progress', payload: Record<string, unknown>) => void;
+} | null>(null);
+const voiceActive = ref(false);
 const desktopViewport = ref(false);
 const resizing = ref(false);
 const dragging = ref(false);
@@ -430,6 +437,20 @@ function connectStream() {
     if (chat.value) chat.value.status = 'ready';
     currentActivity.value = null;
   });
+  stream.addEventListener('voice_turn_completed', (event) => {
+    updateEventCursor(event, eventPayload(event as MessageEvent));
+    void reloadChat();
+  });
+  stream.addEventListener('voice_job_update', (event) => {
+    const payload = eventPayload(event as MessageEvent);
+    updateEventCursor(event, payload);
+    voiceConsole.value?.handleBridgeEvent('update', payload);
+  });
+  stream.addEventListener('voice_job_progress', (event) => {
+    const payload = eventPayload(event as MessageEvent);
+    updateEventCursor(event, payload);
+    voiceConsole.value?.handleBridgeEvent('progress', payload);
+  });
   stream.addEventListener('turn_cancelled', (event) => {
     updateEventCursor(event);
     if (chat.value) chat.value.status = 'ready';
@@ -707,6 +728,10 @@ function choosePrompt(value: string) {
   nextTick(focusComposer);
 }
 
+function startVoiceConsole() {
+  void voiceConsole.value?.startVoice();
+}
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat(props.locale === 'de' ? 'de-CH' : 'en-GB', {
     day: '2-digit',
@@ -865,10 +890,10 @@ function friendlyError(error: unknown) {
                     v-for="prompt in [t.promptArchitecture, t.promptFlow, t.promptRisk]"
                     :key="prompt"
                     type="button"
-                    class="flex min-h-11 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-700 transition-colors hover:border-teal-300 hover:bg-teal-50/60 hover:text-teal-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-teal-800 dark:hover:bg-teal-950/35 dark:hover:text-teal-100"
+                    class="flex min-h-11 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-teal-950 transition-colors hover:border-teal-300 hover:bg-teal-50/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-teal-100 dark:hover:border-teal-800 dark:hover:bg-teal-950/35"
                     @click="choosePrompt(prompt)"
                   >
-                    <UIcon name="i-lucide-arrow-up-right" class="size-3.5 shrink-0 text-zinc-400" />
+                    <UIcon name="i-lucide-arrow-up-right" class="size-3.5 shrink-0 text-teal-700 dark:text-teal-300" />
                     <span>{{ prompt }}</span>
                   </button>
                 </div>
@@ -917,7 +942,18 @@ function friendlyError(error: unknown) {
             </div>
 
             <div class="shrink-0 border-t border-zinc-200 bg-zinc-50/90 p-3 dark:border-zinc-800 dark:bg-zinc-900/80">
-              <div v-if="!hasMessages && chat" class="mb-2.5 flex items-center gap-2">
+              <ProjectVoiceConsole
+                v-if="chat"
+                ref="voiceConsole"
+                :chat-id="chat.id"
+                :project-name="projectName"
+                :harness="harnessItems.find((item) => item.value === chat?.harness)?.label?.split(' · ')[0] || chat.harness"
+                :locale="locale"
+                @active-change="voiceActive = $event"
+                @turn-completed="reloadChat"
+              />
+
+              <div v-if="!voiceActive && !hasMessages && chat" class="mb-2.5 flex items-center gap-2">
                 <USelect
                   :model-value="chat.harness"
                   :items="harnessItems"
@@ -944,7 +980,7 @@ function friendlyError(error: unknown) {
                 />
               </div>
 
-              <div v-else-if="chat" class="mb-2 flex min-w-0 items-center gap-2 px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+              <div v-else-if="!voiceActive && chat" class="mb-2 flex min-w-0 items-center gap-2 px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
                 <span class="inline-flex min-w-0 items-center gap-1">
                   <UIcon name="i-lucide-bot" class="size-3" />
                   <span class="truncate">{{ harnessItems.find((item) => item.value === chat?.harness)?.label?.split(' · ')[0] }}</span>
@@ -960,12 +996,12 @@ function friendlyError(error: unknown) {
                 </template>
               </div>
 
-              <div v-if="currentActivity || reconnecting" class="mb-2 flex items-center gap-2 px-1 text-xs text-zinc-500 dark:text-zinc-400" role="status">
+              <div v-if="!voiceActive && (currentActivity || reconnecting)" class="mb-2 flex items-center gap-2 px-1 text-xs text-zinc-500 dark:text-zinc-400" role="status">
                 <UIcon :name="reconnecting ? 'i-lucide-wifi-off' : 'i-lucide-loader-circle'" class="size-3.5" :class="reconnecting ? '' : 'animate-spin'" />
                 <span>{{ reconnecting ? t.reconnecting : activityLabel }}</span>
               </div>
 
-              <div ref="composerInput" class="relative rounded-xl bg-white ring-1 ring-zinc-300 focus-within:ring-2 focus-within:ring-teal-600 dark:bg-zinc-950 dark:ring-zinc-700 dark:focus-within:ring-teal-500">
+              <div v-if="!voiceActive" ref="composerInput" class="relative rounded-xl bg-white ring-1 ring-zinc-300 focus-within:ring-2 focus-within:ring-teal-600 dark:bg-zinc-950 dark:ring-zinc-700 dark:focus-within:ring-teal-500">
                 <UTextarea
                   v-model="composer"
                   autoresize
@@ -980,34 +1016,45 @@ function friendlyError(error: unknown) {
                   @keydown="handleComposerKeydown"
                 />
                 <div class="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2">
-                  <span class="inline-flex min-w-0 items-center gap-1.5 truncate px-1 text-[10px] text-zinc-400 dark:text-zinc-500">
+                  <span class="inline-flex min-w-0 items-center gap-1.5 truncate px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
                     <UIcon name="i-lucide-shield-check" class="size-3 shrink-0" />
                     <span class="truncate">Read-only · {{ projectName }}</span>
                   </span>
-                  <UButton
-                    v-if="running"
-                    color="neutral"
-                    variant="solid"
-                    size="sm"
-                    icon="i-lucide-square"
-                    :aria-label="t.stop"
-                    data-testid="project-chat-stop"
-                    :loading="submitting"
-                    @click="abortTurn"
-                  />
-                  <UButton
-                    v-else
-                    size="sm"
-                    icon="i-lucide-arrow-up"
-                    :aria-label="t.send"
-                    data-testid="project-chat-send"
-                    :disabled="!canSend"
-                    :loading="submitting"
-                    @click="sendMessage"
-                  />
+                  <span class="flex shrink-0 items-center gap-1">
+                    <UButton
+                      color="neutral"
+                      variant="ghost"
+                      size="sm"
+                      icon="i-lucide-mic"
+                      :aria-label="t.voiceStart"
+                      data-testid="project-voice-start"
+                      @click="startVoiceConsole"
+                    />
+                    <UButton
+                      v-if="running"
+                      color="neutral"
+                      variant="solid"
+                      size="sm"
+                      icon="i-lucide-square"
+                      :aria-label="t.stop"
+                      data-testid="project-chat-stop"
+                      :loading="submitting"
+                      @click="abortTurn"
+                    />
+                    <UButton
+                      v-else
+                      size="sm"
+                      icon="i-lucide-arrow-up"
+                      :aria-label="t.send"
+                      data-testid="project-chat-send"
+                      :disabled="!canSend"
+                      :loading="submitting"
+                      @click="sendMessage"
+                    />
+                  </span>
                 </div>
               </div>
-              <p v-if="errorMessage" class="mt-2 flex items-start gap-1.5 px-1 text-xs leading-5 text-red-700 dark:text-red-300" role="alert">
+              <p v-if="!voiceActive && errorMessage" class="mt-2 flex items-start gap-1.5 px-1 text-xs leading-5 text-red-700 dark:text-red-300" role="alert">
                 <UIcon name="i-lucide-circle-alert" class="mt-0.5 size-3.5 shrink-0" />
                 <span>{{ errorMessage }}</span>
               </p>
@@ -1159,7 +1206,7 @@ function friendlyError(error: unknown) {
   user-select: none !important;
 }
 
-:global(.dark) .ak-project-chat-dock {
+:global(.dark .ak-project-chat-dock) {
   border-color: rgb(63 63 70);
   background: rgb(9 9 11);
   box-shadow: 0 8px 12px rgb(0 0 0 / 0.42);

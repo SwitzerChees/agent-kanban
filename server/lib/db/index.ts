@@ -118,6 +118,34 @@ export function ensureDatabase() {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS project_chat_voice_commands (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      transcript TEXT NOT NULL,
+      instruction TEXT NOT NULL DEFAULT '',
+      task_title TEXT NOT NULL DEFAULT '',
+      target_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      spoken_response TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS project_chat_voice_jobs (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      command_id TEXT REFERENCES project_chat_voice_commands(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      instruction TEXT NOT NULL,
+      latest_progress TEXT,
+      last_progress_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS project_tags (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
@@ -306,6 +334,14 @@ export function ensureDatabase() {
       WHERE client_request_id IS NOT NULL AND role = 'user';
     CREATE INDEX IF NOT EXISTS idx_project_chat_events_thread
       ON project_chat_events(thread_id, id);
+    CREATE INDEX IF NOT EXISTS idx_project_chat_voice_commands_thread
+      ON project_chat_voice_commands(thread_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_project_chat_voice_commands_pending
+      ON project_chat_voice_commands(thread_id, status, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_voice_jobs_task
+      ON project_chat_voice_jobs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_project_chat_voice_jobs_thread
+      ON project_chat_voice_jobs(thread_id, created_at DESC);
   `);
 
   // Older builds persisted the complete Codex protocol stream, including

@@ -94,6 +94,34 @@ export const projectChatEvents = sqliteTable('project_chat_events', {
   createdAt: text('created_at').notNull(),
 });
 
+export const projectChatVoiceCommands = sqliteTable('project_chat_voice_commands', {
+  id: text('id').primaryKey(),
+  threadId: text('thread_id').notNull().references(() => projectChatThreads.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['delegate', 'steer', 'cancel'] }).notNull(),
+  status: text('status', { enum: ['pending_confirmation', 'dispatched', 'rejected', 'failed'] }).notNull(),
+  transcript: text('transcript').notNull(),
+  instruction: text('instruction').notNull().default(''),
+  taskTitle: text('task_title').notNull().default(''),
+  targetTaskId: text('target_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  spokenResponse: text('spoken_response').notNull().default(''),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const projectChatVoiceJobs = sqliteTable('project_chat_voice_jobs', {
+  id: text('id').primaryKey(),
+  threadId: text('thread_id').notNull().references(() => projectChatThreads.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  commandId: text('command_id').references(() => projectChatVoiceCommands.id, { onDelete: 'set null' }),
+  status: text('status', { enum: ['queued', 'running', 'done', 'failed', 'cancelled'] }).notNull().default('queued'),
+  instruction: text('instruction').notNull(),
+  latestProgress: text('latest_progress'),
+  lastProgressAt: text('last_progress_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const projectTags = sqliteTable('project_tags', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
@@ -265,6 +293,8 @@ export type ProjectHarnessLimit = typeof projectHarnessLimits.$inferSelect;
 export type ProjectChatThread = typeof projectChatThreads.$inferSelect;
 export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;
 export type ProjectChatEvent = typeof projectChatEvents.$inferSelect;
+export type ProjectChatVoiceCommand = typeof projectChatVoiceCommands.$inferSelect;
+export type ProjectChatVoiceJob = typeof projectChatVoiceJobs.$inferSelect;
 export type ProjectTag = typeof projectTags.$inferSelect;
 export type Column = typeof columns.$inferSelect;
 export type Oberthema = typeof oberthemen.$inferSelect;

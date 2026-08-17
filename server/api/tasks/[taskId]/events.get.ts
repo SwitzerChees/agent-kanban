@@ -3,6 +3,7 @@ import { and, asc, eq, gt, notInArray } from 'drizzle-orm';
 import { db, schema } from '../../../lib/db';
 import { authorizeTaskAccess } from '../../../lib/kanban';
 import { requireUser } from '../../../lib/security/auth';
+import { registerServerStream } from '../../../lib/server-streams';
 
 export default defineEventHandler((event) => {
   const user = requireUser(event);
@@ -25,6 +26,7 @@ export default defineEventHandler((event) => {
   write('ready', { taskId });
 
   return new Promise<void>((resolve) => {
+    let settled = false;
     const timer = setInterval(() => {
       const rows = db.select({
         action: schema.activity.action,
@@ -52,9 +54,15 @@ export default defineEventHandler((event) => {
       });
     }, 1000);
 
-    event.node.req.on('close', () => {
+    const close = () => {
+      if (settled) return;
+      settled = true;
       clearInterval(timer);
+      unregister();
+      if (!response.writableEnded) response.end();
       resolve();
-    });
+    };
+    const unregister = registerServerStream(close);
+    event.node.req.once('close', close);
   });
 });

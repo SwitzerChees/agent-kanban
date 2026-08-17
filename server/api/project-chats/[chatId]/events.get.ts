@@ -1,6 +1,7 @@
 import { getHeader, getQuery, getRouterParam } from 'h3';
 import { authorizeProjectChat, listProjectChatEvents } from '../../../lib/project-chat';
 import { requireSessionUser } from '../../../lib/security/auth';
+import { registerServerStream } from '../../../lib/server-streams';
 
 export default defineEventHandler((event) => {
   const user = requireSessionUser(event);
@@ -23,6 +24,7 @@ export default defineEventHandler((event) => {
 
   let heartbeatAt = Date.now();
   return new Promise<void>((resolve) => {
+    let settled = false;
     const timer = setInterval(() => {
       const rows = listProjectChatEvents(chatId, cursor);
       for (const row of rows) {
@@ -38,9 +40,15 @@ export default defineEventHandler((event) => {
     }, 250);
     timer.unref();
 
-    event.node.req.on('close', () => {
+    const close = () => {
+      if (settled) return;
+      settled = true;
       clearInterval(timer);
+      unregister();
+      if (!response.writableEnded) response.end();
       resolve();
-    });
+    };
+    const unregister = registerServerStream(close);
+    event.node.req.once('close', close);
   });
 });

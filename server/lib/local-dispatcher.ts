@@ -13,6 +13,7 @@ import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { checkAgentsCompletionGate } from './completion-gate';
 import { activeTaskDescription } from './task-description';
 import type { Issue } from './types';
+import { notifyVoiceJobProgress, notifyVoiceJobStatus } from './voice-agent';
 
 let dispatcher: LocalTaskDispatcher | null = null;
 
@@ -90,6 +91,7 @@ class LocalTaskDispatcher {
           reason: 'dispatcher_startup_recovery',
         });
         runtimeLogger.warn('requeued interrupted local codex task', { task_id: row.task.id, task_key: row.task.key });
+        notifyVoiceJobStatus(row.task.id, 'queued', 'Background agent recovered after a service restart.');
       }
     }
   }
@@ -124,6 +126,7 @@ class LocalTaskDispatcher {
       harness: queued.agentHarness,
       reasoningEffort: queued.reasoningEffort,
     });
+    notifyVoiceJobStatus(queued.id, 'running');
 
     try {
       const workflow = await loadWorkflow();
@@ -164,6 +167,7 @@ class LocalTaskDispatcher {
         if (!force && nowMs - lastAgentUpdateLogMs < 3000) return;
         lastAgentUpdateLogMs = nowMs;
         logTaskActivity(queued.projectId, queued.id, null, 'codex_text_update', { body });
+        notifyVoiceJobProgress(queued.id, body);
       };
       runtimeLogger.info('local agent task started', {
         task_id: queued.id,
@@ -276,6 +280,7 @@ class LocalTaskDispatcher {
         nextColumn: reviewColumn?.key ?? null,
         harness: queued.agentHarness,
       });
+      notifyVoiceJobStatus(queued.id, 'done');
       runtimeLogger.info('local agent task completed', {
         task_id: queued.id,
         task_key: queued.key,
@@ -284,6 +289,7 @@ class LocalTaskDispatcher {
     } catch (error) {
       if (controller.signal.aborted) {
         logTaskActivity(queued.projectId, queued.id, null, 'codex_cancelled', {});
+        notifyVoiceJobStatus(queued.id, 'cancelled');
         runtimeLogger.info('local codex task cancelled', { task_id: queued.id, task_key: queued.key });
         return;
       }
@@ -298,6 +304,7 @@ class LocalTaskDispatcher {
         error: error instanceof Error ? error.message : String(error),
         nextColumn: reviewColumn?.key ?? null,
       });
+      notifyVoiceJobStatus(queued.id, 'failed');
       runtimeLogger.warn('local codex task failed', {
         task_id: queued.id,
         task_key: queued.key,
