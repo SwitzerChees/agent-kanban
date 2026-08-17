@@ -85,6 +85,7 @@ const copy = {
     loading: 'Loading private conversation…',
     unavailable: 'Unavailable on this server',
     resize: 'Resize chat window',
+    move: 'Drag to move chat window',
   },
   de: {
     open: 'Privaten Projekt-Chat öffnen',
@@ -120,6 +121,7 @@ const copy = {
     loading: 'Private Unterhaltung wird geladen…',
     unavailable: 'Auf diesem Server nicht verfügbar',
     resize: 'Chat-Fenster skalieren',
+    move: 'Ziehen, um das Chat-Fenster zu verschieben',
   },
 } as const;
 
@@ -141,16 +143,22 @@ const messageLog = ref<HTMLElement | null>(null);
 const composerInput = ref<HTMLElement | null>(null);
 const desktopViewport = ref(false);
 const resizing = ref(false);
+const dragging = ref(false);
 const dockSize = reactive({ width: 448, height: 736 });
+const dockPosition = reactive<{ x: number | null; y: number | null }>({ x: null, y: null });
 let stream: EventSource | null = null;
 let streamFrame: number | null = null;
 let scrollFrame: number | null = null;
 let lastStreamPaint = 0;
+let pointerMoveHandler: ((event: PointerEvent) => void) | null = null;
+let pointerEndHandler: (() => void) | null = null;
 
 const DOCK_SIZE_STORAGE_KEY = 'ak_project_chat_size_v1';
+const DOCK_POSITION_STORAGE_KEY = 'ak_project_chat_position_v1';
 const DOCK_MIN_WIDTH = 360;
 const DOCK_MIN_HEIGHT = 420;
 const DOCK_VIEWPORT_MARGIN = 32;
+const DOCK_EDGE_GAP = 16;
 const STREAM_FRAME_INTERVAL = 32;
 const streamTargets = new Map<string, { content: string; state: ProjectChatMessage['state']; updatedAt: string }>();
 
@@ -185,12 +193,20 @@ const activityLabel = computed(() => {
   return t.value[currentActivity.value];
 });
 const dockStyle = computed(() => desktopViewport.value
-  ? { width: `${dockSize.width}px`, height: `${dockSize.height}px` }
+  ? {
+      width: `${dockSize.width}px`,
+      height: `${dockSize.height}px`,
+      left: `${dockPosition.x ?? DOCK_EDGE_GAP}px`,
+      top: `${dockPosition.y ?? DOCK_EDGE_GAP}px`,
+      right: 'auto',
+      bottom: 'auto',
+    }
   : undefined);
 
 onMounted(() => {
   if (!import.meta.client) return;
   restoreDockSize();
+  restoreDockPosition();
   updateViewport();
   window.addEventListener('resize', updateViewport);
   isOpen.value = localStorage.getItem('ak_project_chat_open') === 'true';
@@ -200,6 +216,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   closeStream();
   stopStreamAnimation();
+  clearPointerInteraction();
   if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
   window.removeEventListener('resize', updateViewport);
 });
@@ -557,11 +574,28 @@ function restoreDockSize() {
   }
 }
 
+function restoreDockPosition() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DOCK_POSITION_STORAGE_KEY) ?? '{}') as { x?: unknown; y?: unknown };
+    if (typeof stored.x === 'number' && Number.isFinite(stored.x) && typeof stored.y === 'number' && Number.isFinite(stored.y)) {
+      dockPosition.x = stored.x;
+      dockPosition.y = stored.y;
+    }
+  } catch {
+    localStorage.removeItem(DOCK_POSITION_STORAGE_KEY);
+  }
+}
+
 function updateViewport() {
   desktopViewport.value = window.innerWidth >= 640;
   const clamped = clampDockSize(dockSize.width, dockSize.height);
   dockSize.width = clamped.width;
   dockSize.height = clamped.height;
+  const initialX = dockPosition.x ?? window.innerWidth - dockSize.width - DOCK_EDGE_GAP;
+  const initialY = dockPosition.y ?? window.innerHeight - dockSize.height - DOCK_EDGE_GAP;
+  const position = clampDockPosition(initialX, initialY);
+  dockPosition.x = position.x;
+  dockPosition.y = position.y;
 }
 
 function clampDockSize(width: number, height: number) {
@@ -574,15 +608,33 @@ function clampDockSize(width: number, height: number) {
 }
 
 function setDockSize(width: number, height: number, persist = false) {
+  const right = (dockPosition.x ?? DOCK_EDGE_GAP) + dockSize.width;
+  const bottom = (dockPosition.y ?? DOCK_EDGE_GAP) + dockSize.height;
   const clamped = clampDockSize(width, height);
   dockSize.width = clamped.width;
   dockSize.height = clamped.height;
+  setDockPosition(right - dockSize.width, bottom - dockSize.height);
   if (persist) localStorage.setItem(DOCK_SIZE_STORAGE_KEY, JSON.stringify(clamped));
+}
+
+function clampDockPosition(x: number, y: number) {
+  return {
+    x: Math.round(Math.min(window.innerWidth - dockSize.width - DOCK_EDGE_GAP, Math.max(DOCK_EDGE_GAP, x))),
+    y: Math.round(Math.min(window.innerHeight - dockSize.height - DOCK_EDGE_GAP, Math.max(DOCK_EDGE_GAP, y))),
+  };
+}
+
+function setDockPosition(x: number, y: number, persist = false) {
+  const clamped = clampDockPosition(x, y);
+  dockPosition.x = clamped.x;
+  dockPosition.y = clamped.y;
+  if (persist) localStorage.setItem(DOCK_POSITION_STORAGE_KEY, JSON.stringify(clamped));
 }
 
 function beginResize(event: PointerEvent) {
   if (!desktopViewport.value || event.button !== 0) return;
   event.preventDefault();
+  clearPointerInteraction();
   const startX = event.clientX;
   const startY = event.clientY;
   const startWidth = dockSize.width;
@@ -590,20 +642,17 @@ function beginResize(event: PointerEvent) {
   resizing.value = true;
   document.documentElement.classList.add('ak-project-chat-resizing');
 
-  const move = (moveEvent: PointerEvent) => {
+  pointerMoveHandler = (moveEvent: PointerEvent) => {
     setDockSize(startWidth + startX - moveEvent.clientX, startHeight + startY - moveEvent.clientY);
   };
-  const end = () => {
-    resizing.value = false;
-    document.documentElement.classList.remove('ak-project-chat-resizing');
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', end);
-    window.removeEventListener('pointercancel', end);
+  pointerEndHandler = () => {
+    clearPointerInteraction();
     setDockSize(dockSize.width, dockSize.height, true);
+    setDockPosition(dockPosition.x ?? DOCK_EDGE_GAP, dockPosition.y ?? DOCK_EDGE_GAP, true);
   };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', end);
-  window.addEventListener('pointercancel', end);
+  window.addEventListener('pointermove', pointerMoveHandler);
+  window.addEventListener('pointerup', pointerEndHandler);
+  window.addEventListener('pointercancel', pointerEndHandler);
 }
 
 function resizeWithKeyboard(event: KeyboardEvent) {
@@ -613,6 +662,44 @@ function resizeWithKeyboard(event: KeyboardEvent) {
   const width = dockSize.width + (event.key === 'ArrowLeft' ? step : event.key === 'ArrowRight' ? -step : 0);
   const height = dockSize.height + (event.key === 'ArrowUp' ? step : event.key === 'ArrowDown' ? -step : 0);
   setDockSize(width, height, true);
+  setDockPosition(dockPosition.x ?? DOCK_EDGE_GAP, dockPosition.y ?? DOCK_EDGE_GAP, true);
+}
+
+function beginDrag(event: PointerEvent) {
+  const target = event.target as HTMLElement;
+  if (!desktopViewport.value || event.button !== 0 || target.closest('button, a, input, textarea, select, [role="button"]')) return;
+  event.preventDefault();
+  clearPointerInteraction();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startLeft = dockPosition.x ?? DOCK_EDGE_GAP;
+  const startTop = dockPosition.y ?? DOCK_EDGE_GAP;
+  dragging.value = true;
+  document.documentElement.classList.add('ak-project-chat-dragging');
+
+  pointerMoveHandler = (moveEvent: PointerEvent) => {
+    setDockPosition(startLeft + moveEvent.clientX - startX, startTop + moveEvent.clientY - startY);
+  };
+  pointerEndHandler = () => {
+    clearPointerInteraction();
+    setDockPosition(dockPosition.x ?? DOCK_EDGE_GAP, dockPosition.y ?? DOCK_EDGE_GAP, true);
+  };
+  window.addEventListener('pointermove', pointerMoveHandler);
+  window.addEventListener('pointerup', pointerEndHandler);
+  window.addEventListener('pointercancel', pointerEndHandler);
+}
+
+function clearPointerInteraction() {
+  if (pointerMoveHandler) window.removeEventListener('pointermove', pointerMoveHandler);
+  if (pointerEndHandler) {
+    window.removeEventListener('pointerup', pointerEndHandler);
+    window.removeEventListener('pointercancel', pointerEndHandler);
+  }
+  pointerMoveHandler = null;
+  pointerEndHandler = null;
+  resizing.value = false;
+  dragging.value = false;
+  document.documentElement.classList.remove('ak-project-chat-resizing', 'ak-project-chat-dragging');
 }
 
 function choosePrompt(value: string) {
@@ -657,7 +744,7 @@ function friendlyError(error: unknown) {
         <aside
           v-if="isOpen"
           class="ak-project-chat-dock"
-          :class="{ 'is-resizing': resizing }"
+          :class="{ 'is-resizing': resizing, 'is-dragging': dragging }"
           :style="dockStyle"
           role="dialog"
           aria-modal="false"
@@ -673,7 +760,12 @@ function friendlyError(error: unknown) {
             @pointerdown="beginResize"
             @keydown="resizeWithKeyboard"
           />
-          <header class="flex min-h-16 shrink-0 items-center gap-3 border-b border-zinc-200 px-3.5 dark:border-zinc-800">
+          <header
+            class="ak-project-chat-header flex min-h-16 shrink-0 items-center gap-3 border-b border-zinc-200 px-3.5 dark:border-zinc-800"
+            :title="desktopViewport ? t.move : undefined"
+            data-testid="project-chat-header"
+            @pointerdown="beginDrag"
+          >
             <UButton
               v-if="view === 'history'"
               color="neutral"
@@ -792,8 +884,12 @@ function friendlyError(error: unknown) {
                       <UIcon name="i-lucide-bot" class="size-3.5" />
                     </span>
                     <div class="min-w-0 flex-1">
+                      <p
+                        v-if="message.content && message.state === 'streaming'"
+                        class="ak-chat-streaming-text whitespace-pre-wrap break-words text-sm leading-6 text-zinc-700 dark:text-zinc-200"
+                      >{{ message.content }}</p>
                       <UEditor
-                        v-if="message.content"
+                        v-else-if="message.content"
                         :model-value="message.content"
                         content-type="markdown"
                         :editable="false"
@@ -994,6 +1090,23 @@ function friendlyError(error: unknown) {
   box-shadow: 0 12px 24px rgb(15 23 42 / 0.22);
 }
 
+.ak-project-chat-dock.is-dragging {
+  box-shadow: 0 10px 18px rgb(15 23 42 / 0.2);
+}
+
+.ak-project-chat-header {
+  cursor: grab;
+  touch-action: none;
+}
+
+.ak-project-chat-header:active {
+  cursor: grabbing;
+}
+
+.ak-project-chat-header :where(button, a, input, textarea, select, [role='button']) {
+  cursor: pointer;
+}
+
 .ak-project-chat-resize-handle {
   position: absolute;
   z-index: 2;
@@ -1044,6 +1157,12 @@ function friendlyError(error: unknown) {
   user-select: none !important;
 }
 
+:global(html.ak-project-chat-dragging),
+:global(html.ak-project-chat-dragging *) {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
 :global(.dark) .ak-project-chat-dock {
   border-color: rgb(63 63 70);
   background: rgb(9 9 11);
@@ -1052,6 +1171,11 @@ function friendlyError(error: unknown) {
 
 .ak-project-chat-log {
   scrollbar-gutter: stable;
+}
+
+.ak-chat-streaming-text {
+  margin: 0;
+  min-height: 1.5rem;
 }
 
 .ak-chat-thinking-dot {
@@ -1093,6 +1217,11 @@ function friendlyError(error: unknown) {
     border: 0;
     border-radius: 0;
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .ak-project-chat-header {
+    cursor: default;
+    touch-action: auto;
   }
 }
 
