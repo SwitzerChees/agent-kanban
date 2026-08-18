@@ -25,9 +25,24 @@ interface ProjectChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachments: ProjectChatAttachment[];
   state: 'complete' | 'streaming' | 'failed' | 'cancelled';
   createdAt: string;
   updatedAt: string;
+}
+
+interface ProjectChatAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+}
+
+interface PendingChatFile {
+  id: string;
+  file: File;
+  previewUrl: string | null;
 }
 
 interface ProjectChatToolActivity {
@@ -97,6 +112,10 @@ const copy = {
     voiceStart: 'Start voice assistant',
     activityDetails: 'Current actions',
     sourceScope: 'Project read-only · Kanban with your permissions',
+    attach: 'Attach files',
+    removeAttachment: 'Remove attachment',
+    dropFiles: 'Drop files to attach',
+    streaming: 'Agent is responding live',
   },
   de: {
     open: 'Privaten Projekt-Chat öffnen',
@@ -136,6 +155,10 @@ const copy = {
     voiceStart: 'Sprachassistent starten',
     activityDetails: 'Aktuelle Aktionen',
     sourceScope: 'Projekt nur lesbar · Kanban mit deinen Rechten',
+    attach: 'Dateien anhängen',
+    removeAttachment: 'Anhang entfernen',
+    dropFiles: 'Dateien zum Anhängen ablegen',
+    streaming: 'Agent antwortet live',
   },
 } as const;
 
@@ -152,6 +175,10 @@ const history = ref<ProjectChatHistoryItem[]>([]);
 const capabilities = ref<ChatCapabilities | null>(null);
 const latestEventId = ref(0);
 const composer = ref('');
+const pendingFiles = ref<PendingChatFile[]>([]);
+const fileInput = ref<HTMLInputElement | null>(null);
+const composerDragDepth = ref(0);
+const composerDragging = ref(false);
 const currentActivity = ref<'preparing' | 'project' | 'web' | 'tool' | null>(null);
 const toolActivities = ref<ProjectChatToolActivity[]>([]);
 const messageLog = ref<HTMLElement | null>(null);
@@ -206,7 +233,7 @@ const effortItems = computed(() => [
 ]);
 const hasMessages = computed(() => messages.value.length > 0);
 const running = computed(() => chat.value?.status === 'running');
-const canSend = computed(() => Boolean(composer.value.trim()) && !running.value && !submitting.value);
+const canSend = computed(() => Boolean(composer.value.trim() || pendingFiles.value.length) && !running.value && !submitting.value);
 const displayTitle = computed(() => chat.value?.title || t.value.newChat);
 const activityLabel = computed(() => {
   if (!currentActivity.value) return '';
@@ -239,6 +266,7 @@ onBeforeUnmount(() => {
   clearPointerInteraction();
   if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
   window.removeEventListener('resize', updateViewport);
+  clearPendingFiles();
 });
 
 watch(() => props.projectId, async () => {
@@ -252,6 +280,7 @@ watch(() => props.projectId, async () => {
   errorMessage.value = '';
   view.value = 'chat';
   stopStreamAnimation();
+  clearPendingFiles();
   if (isOpen.value) await ensureCurrentChat();
 });
 
@@ -279,7 +308,7 @@ async function ensureCurrentChat() {
     if (!payload.chat) {
       payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chats`, {
         method: 'POST',
-        body: { harness: 'prime-agent', reasoningEffort: 'xhigh' },
+        body: { harness: 'prime-agent', reasoningEffort: 'low' },
       });
     }
     applyPayload(payload);
@@ -313,10 +342,11 @@ async function createNewChat() {
   try {
     const payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chats`, {
       method: 'POST',
-      body: { harness: 'prime-agent', reasoningEffort: 'xhigh' },
+      body: { harness: 'prime-agent', reasoningEffort: 'low' },
     });
     view.value = 'chat';
     composer.value = '';
+    clearPendingFiles();
     applyPayload(payload);
     await nextTick();
     focusComposer();
@@ -362,13 +392,15 @@ async function sendMessage() {
   errorMessage.value = '';
   currentActivity.value = 'preparing';
   try {
+    const formData = new FormData();
+    formData.append('message', message);
+    formData.append('clientRequestId', crypto.randomUUID());
+    for (const item of pendingFiles.value) formData.append('files', item.file, item.file.name);
     await $fetch(`/api/project-chats/${chat.value.id}/messages`, {
       method: 'POST',
-      body: {
-        message,
-        clientRequestId: crypto.randomUUID(),
-      },
+      body: formData,
     });
+    clearPendingFiles();
     await reloadChat();
   } catch (error) {
     composer.value = message;
@@ -377,6 +409,90 @@ async function sendMessage() {
   } finally {
     submitting.value = false;
   }
+}
+
+function openFileDialog() {
+  if (!running.value) fileInput.value?.click();
+}
+
+function addFiles(files: File[]) {
+  const next = [...pendingFiles.value];
+  for (const file of files) {
+    if (!file.size || file.size > 10 * 1024 * 1024) {
+      errorMessage.value = errorLabel('chat_attachment_too_large');
+      continue;
+    }
+    if (next.length >= 10) {
+      errorMessage.value = errorLabel('chat_too_many_attachments');
+      break;
+    }
+    const total = next.reduce((sum, item) => sum + item.file.size, 0) + file.size;
+    if (total > 30 * 1024 * 1024) {
+      errorMessage.value = errorLabel('chat_attachments_too_large');
+      break;
+    }
+    next.push({
+      id: crypto.randomUUID(),
+      file,
+      previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+    });
+  }
+  pendingFiles.value = next;
+}
+
+function handleFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  addFiles(Array.from(input.files ?? []));
+  input.value = '';
+}
+
+function handleComposerDrop(event: DragEvent) {
+  composerDragDepth.value = 0;
+  composerDragging.value = false;
+  if (running.value) return;
+  addFiles(Array.from(event.dataTransfer?.files ?? []));
+}
+
+function handleComposerDragEnter() {
+  composerDragDepth.value += 1;
+  composerDragging.value = true;
+}
+
+function handleComposerDragLeave() {
+  composerDragDepth.value = Math.max(0, composerDragDepth.value - 1);
+  if (!composerDragDepth.value) composerDragging.value = false;
+}
+
+function handleComposerPaste(event: ClipboardEvent) {
+  const images = Array.from(event.clipboardData?.items ?? [])
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item, index) => {
+      const file = item.getAsFile();
+      if (!file) return null;
+      const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+      return new File([file], `clipboard-${Date.now()}-${index + 1}.${extension}`, { type: file.type });
+    })
+    .filter((file): file is File => Boolean(file));
+  if (!images.length) return;
+  event.preventDefault();
+  addFiles(images);
+}
+
+function removePendingFile(id: string) {
+  const item = pendingFiles.value.find((candidate) => candidate.id === id);
+  if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  pendingFiles.value = pendingFiles.value.filter((candidate) => candidate.id !== id);
+}
+
+function clearPendingFiles() {
+  for (const item of pendingFiles.value) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  pendingFiles.value = [];
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function handleComposerKeydown(event: KeyboardEvent) {
@@ -801,6 +917,9 @@ function errorLabel(code: string) {
     chat_turn_already_running: ['An answer is already running.', 'Es läuft bereits eine Antwort.'],
     chat_config_locked: ['Harness and effort are fixed for this conversation.', 'Harness und Aufwand sind für diese Unterhaltung festgelegt.'],
     chat_harness_failed: ['The selected harness could not complete the answer.', 'Der gewählte Harness konnte die Antwort nicht abschließen.'],
+    chat_attachment_too_large: ['Each attachment may be up to 10 MB.', 'Ein einzelner Anhang darf höchstens 10 MB groß sein.'],
+    chat_attachments_too_large: ['Attachments may total up to 30 MB.', 'Anhänge dürfen zusammen höchstens 30 MB groß sein.'],
+    chat_too_many_attachments: ['You can attach up to 10 files.', 'Du kannst höchstens 10 Dateien anhängen.'],
   };
   return labels[code]?.[de ? 1 : 0] ?? t.value.failed;
 }
@@ -951,9 +1070,33 @@ function friendlyError(error: unknown) {
               <div v-else class="mx-auto grid max-w-3xl gap-5 px-4 py-5 sm:px-5">
                 <article v-for="message in messages" :key="message.id" class="min-w-0">
                   <div v-if="message.role === 'user'" class="ml-auto max-w-[88%] rounded-xl bg-zinc-900 px-3.5 py-2.5 text-sm leading-6 text-white dark:bg-zinc-100 dark:text-zinc-950">
-                    <p class="whitespace-pre-wrap break-words">{{ message.content }}</p>
+                    <p v-if="message.content" class="whitespace-pre-wrap break-words">{{ message.content }}</p>
+                    <div v-if="message.attachments?.length" class="grid gap-1.5" :class="message.content ? 'mt-2.5' : ''">
+                      <a
+                        v-for="attachment in message.attachments"
+                        :key="attachment.id"
+                        :href="attachment.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="flex min-w-0 items-center gap-2 rounded-lg bg-white/10 px-2.5 py-2 text-left transition-colors hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white dark:bg-zinc-900/10 dark:hover:bg-zinc-900/15 dark:focus-visible:outline-zinc-900"
+                      >
+                        <img
+                          v-if="attachment.mimeType.startsWith('image/')"
+                          :src="attachment.url"
+                          :alt="attachment.fileName"
+                          class="size-9 shrink-0 rounded-md object-cover"
+                        >
+                        <span v-else class="grid size-9 shrink-0 place-items-center rounded-md bg-white/10 dark:bg-zinc-900/10">
+                          <UIcon name="i-lucide-file" class="size-4" />
+                        </span>
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate text-xs font-medium">{{ attachment.fileName }}</span>
+                          <span class="block text-[10px] opacity-70">{{ formatFileSize(attachment.size) }}</span>
+                        </span>
+                      </a>
+                    </div>
                   </div>
-                  <div v-else class="flex min-w-0 items-start gap-3">
+                  <div v-else class="grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] items-start gap-x-2">
                     <span class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/60 dark:text-teal-200 dark:ring-teal-900">
                       <UIcon name="i-lucide-bot" class="size-3.5" />
                     </span>
@@ -976,6 +1119,10 @@ function friendlyError(error: unknown) {
                         </span>
                         <span>{{ activityLabel || t.preparing }}</span>
                       </div>
+                      <p v-if="message.content && message.state === 'streaming'" class="mt-1.5 flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400" role="status">
+                        <span class="size-1.5 rounded-full bg-teal-500 ak-chat-live-dot" aria-hidden="true" />
+                        {{ t.streaming }}
+                      </p>
                       <p v-if="message.state === 'failed'" class="mt-2 flex items-center gap-1.5 text-xs text-red-700 dark:text-red-300">
                         <UIcon name="i-lucide-circle-alert" class="size-3.5" />
                         {{ t.failed }} {{ t.retry }}
@@ -1077,7 +1224,34 @@ function friendlyError(error: unknown) {
                 </div>
               </div>
 
-              <div v-if="!voiceActive" ref="composerInput" class="relative rounded-xl bg-white ring-1 ring-zinc-300 focus-within:ring-2 focus-within:ring-teal-600 dark:bg-zinc-950 dark:ring-zinc-700 dark:focus-within:ring-teal-500">
+              <div
+                v-if="!voiceActive"
+                ref="composerInput"
+                class="relative rounded-xl bg-white ring-1 ring-zinc-300 transition-colors focus-within:ring-2 focus-within:ring-teal-600 dark:bg-zinc-950 dark:ring-zinc-700 dark:focus-within:ring-teal-500"
+                :class="composerDragging ? 'bg-teal-50 ring-2 ring-teal-500 dark:bg-teal-950/40 dark:ring-teal-400' : ''"
+                @dragover.prevent
+                @dragenter.prevent="handleComposerDragEnter"
+                @dragleave.prevent="handleComposerDragLeave"
+                @drop.prevent="handleComposerDrop"
+              >
+                <div v-if="composerDragging" class="pointer-events-none absolute inset-1 z-20 grid place-items-center rounded-lg border border-dashed border-teal-500 bg-teal-50/95 text-xs font-semibold text-teal-800 dark:border-teal-400 dark:bg-teal-950/95 dark:text-teal-200">
+                  <span class="inline-flex items-center gap-2">
+                    <UIcon name="i-lucide-file-down" class="size-4" />
+                    {{ t.dropFiles }}
+                  </span>
+                </div>
+                <div v-if="pendingFiles.length" class="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto px-2.5 pt-2.5">
+                  <span v-for="item in pendingFiles" :key="item.id" class="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-zinc-100 p-1 pr-1.5 text-[11px] text-zinc-700 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:text-zinc-200 dark:ring-zinc-700">
+                    <img v-if="item.previewUrl" :src="item.previewUrl" alt="" class="size-7 shrink-0 rounded-md object-cover">
+                    <span v-else class="grid size-7 shrink-0 place-items-center rounded-md bg-white text-zinc-500 dark:bg-zinc-950 dark:text-zinc-400">
+                      <UIcon name="i-lucide-file" class="size-3.5" />
+                    </span>
+                    <span class="max-w-36 truncate">{{ item.file.name }}</span>
+                    <button type="button" class="grid size-6 shrink-0 place-items-center rounded-md hover:bg-zinc-200 focus-visible:outline-2 focus-visible:outline-teal-600 dark:hover:bg-zinc-800" :aria-label="`${t.removeAttachment}: ${item.file.name}`" @click="removePendingFile(item.id)">
+                      <UIcon name="i-lucide-x" class="size-3.5" />
+                    </button>
+                  </span>
+                </div>
                 <UTextarea
                   v-model="composer"
                   autoresize
@@ -1090,6 +1264,7 @@ function friendlyError(error: unknown) {
                   data-testid="project-chat-composer"
                   :ui="{ base: 'min-h-16 resize-none pb-11 text-sm placeholder:text-zinc-500 dark:placeholder:text-zinc-400' }"
                   @keydown="handleComposerKeydown"
+                  @paste="handleComposerPaste"
                 />
                 <div class="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2">
                   <span class="inline-flex min-w-0 items-center gap-1.5 truncate px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
@@ -1097,6 +1272,17 @@ function friendlyError(error: unknown) {
                     <span class="truncate">{{ t.sourceScope }} · {{ projectName }}</span>
                   </span>
                   <span class="flex shrink-0 items-center gap-1">
+                    <input ref="fileInput" type="file" multiple class="sr-only" tabindex="-1" aria-hidden="true" @change="handleFileChange">
+                    <UButton
+                      color="neutral"
+                      variant="ghost"
+                      size="sm"
+                      icon="i-lucide-paperclip"
+                      :aria-label="t.attach"
+                      :disabled="running"
+                      data-testid="project-chat-attach"
+                      @click="openFileDialog"
+                    />
                     <UButton
                       color="neutral"
                       variant="ghost"
@@ -1301,6 +1487,21 @@ function friendlyError(error: unknown) {
   object-fit: contain;
 }
 
+.ak-chat-markdown :deep(.ProseMirror),
+.ak-chat-markdown :deep([contenteditable='false']) {
+  margin: 0;
+  padding: 0 !important;
+}
+
+.ak-chat-markdown :deep(.ProseMirror > :first-child),
+.ak-chat-markdown :deep([contenteditable='false'] > :first-child) {
+  margin-top: 0;
+}
+
+.ak-chat-live-dot {
+  animation: ak-chat-live 1.15s ease-in-out infinite alternate;
+}
+
 .ak-chat-thinking-dot {
   width: 0.3rem;
   height: 0.3rem;
@@ -1323,6 +1524,11 @@ function friendlyError(error: unknown) {
 @keyframes ak-chat-thinking {
   from { opacity: 0.3; transform: translateY(1px); }
   to { opacity: 1; transform: translateY(-1px); }
+}
+
+@keyframes ak-chat-live {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
 }
 
 @media (max-width: 639px) {
@@ -1362,6 +1568,10 @@ function friendlyError(error: unknown) {
   .ak-chat-thinking-dot {
     animation: none;
     opacity: 0.65;
+  }
+
+  .ak-chat-live-dot {
+    animation: none;
   }
 }
 </style>

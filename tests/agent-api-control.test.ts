@@ -47,6 +47,24 @@ describe('external agent task controls', () => {
   test('instructs task agents to serialize resource-intensive validation', () => {
     expect(localDispatcher.agentRuntimeSafetyInstructions()).toContain('memory-intensive validation commands sequentially');
     expect(localDispatcher.agentRuntimeSafetyInstructions()).toContain('Never run commands in parallel');
+    expect(localDispatcher.agentCompletionHandoffInstructions()).toContain('big-picture product level');
+    expect(localDispatcher.agentCompletionHandoffInstructions()).toContain('places or flows the user can test');
+  });
+
+  test('extracts a user-facing final handoff from a completed Codex message', () => {
+    expect(localDispatcher.completionSummaryFromAgentEvent({
+      event: 'item/completed',
+      raw: {
+        item: {
+          type: 'agentMessage',
+          content: [{ type: 'output_text', text: '## What changed\nThe project flow is clearer.\n\n## Test it\nOpen the project chat.' }],
+        },
+      },
+    })).toContain('## Test it');
+    expect(localDispatcher.completionSummaryFromAgentEvent({
+      event: 'item/completed',
+      raw: { item: { type: 'commandExecution', text: 'secret command output' } },
+    })).toBeNull();
   });
 
   test('retries failed agent runs at most twice and stops after success', async () => {

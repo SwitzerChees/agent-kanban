@@ -267,6 +267,49 @@ describe('task refinements', () => {
     });
   });
 
+  test('lets users stop a question round or discard a completed result without changing the task', async () => {
+    const project = await kanban.createProject({
+      name: 'Cancellable Refinement Project',
+      key: 'CANCELREF',
+      folderPath: path.join(testRoot, 'workspace-cancellable'),
+    }, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Keep the original brief',
+      description: 'Original task description',
+    }, admin);
+
+    const waitingRun = refinements.createTaskRefinement(task!.id, {}, admin);
+    const waitingClaim = refinements.claimNextQueuedRefinement();
+    refinements.requestRefinementInput(waitingRun.id, {
+      questions: [{ id: 'scope', question: 'How broad?', required: true }],
+    }, waitingClaim!.leaseToken);
+    const cancelledQuestions = refinements.cancelTaskRefinement(task!.id, waitingRun.id, admin);
+    expect(cancelledQuestions).toMatchObject({ status: 'cancelled', cancelledAt: expect.any(String) });
+    expect(() => refinements.answerRefinementQuestions(task!.id, waitingRun.id, { scope: 'Broad' }, admin))
+      .toThrowError(expect.objectContaining({ statusMessage: 'refinement_not_awaiting_input' }));
+
+    const completedRun = refinements.createTaskRefinement(task!.id, {}, admin);
+    const completedClaim = refinements.claimNextQueuedRefinement();
+    refinements.completeRefinement(completedRun.id, {
+      complexity: 'simple',
+      resultMarkdown: 'Replacement task description',
+    }, completedClaim!.leaseToken);
+    const discardedResult = refinements.cancelTaskRefinement(task!.id, completedRun.id, admin);
+    expect(discardedResult).toMatchObject({ status: 'cancelled', resultMarkdown: 'Replacement task description' });
+    expect(() => refinements.applyTaskRefinement(task!.id, completedRun.id, {}, admin))
+      .toThrowError(expect.objectContaining({ statusMessage: 'refinement_not_completed' }));
+
+    const unchanged = await kanban.getTaskDetail(task!.id, admin);
+    expect(unchanged.task).toMatchObject({
+      description: 'Original task description',
+      refinedDescription: null,
+      descriptionSource: 'original',
+    });
+    const nextRun = refinements.createTaskRefinement(task!.id, {}, admin);
+    expect(nextRun.status).toBe('queued');
+    refinements.failRefinement(nextRun.id, new Error('test cleanup'));
+  });
+
   test('fences concurrent workers and only recovers expired leases', async () => {
     const project = await kanban.createProject({
       name: 'Leased Refinement Project',

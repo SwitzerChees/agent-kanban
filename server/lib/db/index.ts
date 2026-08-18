@@ -89,7 +89,7 @@ export function ensureDatabase() {
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title TEXT NOT NULL DEFAULT 'New chat',
       harness TEXT NOT NULL DEFAULT 'prime-agent',
-      reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
+      reasoning_effort TEXT NOT NULL DEFAULT 'low',
       status TEXT NOT NULL DEFAULT 'ready',
       is_current INTEGER NOT NULL DEFAULT 0,
       native_session_id TEXT,
@@ -104,6 +104,7 @@ export function ensureDatabase() {
       thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,
       role TEXT NOT NULL,
       content TEXT NOT NULL DEFAULT '',
+      attachments_json TEXT NOT NULL DEFAULT '[]',
       state TEXT NOT NULL DEFAULT 'complete',
       client_request_id TEXT,
       created_at TEXT NOT NULL,
@@ -268,6 +269,7 @@ export function ensureDatabase() {
       awaiting_input_at TEXT,
       completed_at TEXT,
       failed_at TEXT,
+      cancelled_at TEXT,
       applied_at TEXT,
       applied_by TEXT REFERENCES users(id),
       updated_at TEXT NOT NULL,
@@ -407,6 +409,11 @@ export function ensureDatabase() {
     WHERE max_concurrent_tasks < 0 OR max_concurrent_tasks IS NULL;
   `);
 
+  const projectChatMessageColumns = sqlite.prepare('PRAGMA table_info(project_chat_messages)').all() as Array<{ name: string }>;
+  if (!projectChatMessageColumns.some((column) => column.name === 'attachments_json')) {
+    sqlite.exec("ALTER TABLE project_chat_messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';");
+  }
+
   const taskColumns = sqlite.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
   if (!taskColumns.some((column) => column.name === 'unterthema_id')) {
     sqlite.exec('ALTER TABLE tasks ADD COLUMN unterthema_id TEXT REFERENCES unterthemen(id);');
@@ -496,6 +503,7 @@ export function ensureDatabase() {
   addRefinementColumn('awaiting_input_at', 'TEXT');
   addRefinementColumn('completed_at', 'TEXT');
   addRefinementColumn('failed_at', 'TEXT');
+  addRefinementColumn('cancelled_at', 'TEXT');
   addRefinementColumn('applied_at', 'TEXT');
   addRefinementColumn('applied_by', 'TEXT REFERENCES users(id)');
   addRefinementColumn('updated_at', 'TEXT');

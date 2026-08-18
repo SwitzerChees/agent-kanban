@@ -65,12 +65,14 @@ export interface TaskRefinementLabels {
   optional: string;
   answerPlaceholder: string;
   submitAnswers: string;
+  cancelQuestions: string;
   resultTitle: string;
   resultDescription: string;
   descriptionChangedTitle: string;
   descriptionChangedHint: string;
   apply: string;
   applied: string;
+  discardResult: string;
   newRun: string;
   cancelNew: string;
   visualsTitle: string;
@@ -120,12 +122,14 @@ const defaultLabels: TaskRefinementLabels = {
   optional: 'Optional',
   answerPlaceholder: 'Antwort eingeben …',
   submitAnswers: 'Antworten senden und fortfahren',
+  cancelQuestions: 'Refinement abbrechen',
   resultTitle: 'Refinement abgeschlossen',
   resultDescription: 'Das Ergebnis ist versioniert und kann getrennt von der Originalbeschreibung übernommen werden.',
   descriptionChangedTitle: 'Beschreibung wurde inzwischen geändert',
   descriptionChangedHint: 'Dieses Refinement basiert auf einem früheren aktiven Text. Du kannst es trotzdem als neue Refinement-Fassung übernehmen; die Originalbeschreibung bleibt erhalten.',
   apply: 'Als Refinement übernehmen',
   applied: 'Als Refinement übernommen',
+  discardResult: 'Nicht übernehmen',
   newRun: 'Neues Refinement',
   cancelNew: 'Zurück zum Ergebnis',
   visualsTitle: 'Designvorschläge',
@@ -175,12 +179,14 @@ const englishLabels: TaskRefinementLabels = {
   optional: 'Optional',
   answerPlaceholder: 'Enter an answer …',
   submitAnswers: 'Send answers and continue',
+  cancelQuestions: 'Cancel refinement',
   resultTitle: 'Refinement completed',
   resultDescription: 'The result is versioned and can be applied separately from the original description.',
   descriptionChangedTitle: 'The description has changed',
   descriptionChangedHint: 'This refinement is based on an earlier active text. You can still apply it as the new refined version; the original description stays intact.',
   apply: 'Apply as refinement',
   applied: 'Applied as refinement',
+  discardResult: 'Do not apply',
   newRun: 'New refinement',
   cancelNew: 'Back to result',
   visualsTitle: 'Design concepts',
@@ -247,6 +253,7 @@ const emit = defineEmits<{
   start: [payload: { brief: string; visualMode: 'auto' }];
   submitAnswers: [payload: { runId: string; answers: Record<string, string> }];
   apply: [runId: string];
+  cancel: [runId: string];
   retry: [runId: string];
   selectRun: [runId: string];
   dirtyChange: [dirty: boolean];
@@ -613,7 +620,19 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
           </UFormField>
         </div>
 
-        <div class="mt-2 flex justify-end">
+        <div class="mt-2 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <UButton
+            v-if="activeRun?.id"
+            type="button"
+            color="neutral"
+            variant="ghost"
+            icon="i-lucide-x"
+            size="lg"
+            :disabled="props.busy"
+            @click="emit('cancel', activeRun.id)"
+          >
+            {{ t.cancelQuestions }}
+          </UButton>
           <UButton
             type="submit"
             icon="i-lucide-send"
@@ -658,6 +677,18 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
                 @click="activeRun?.id && emit('apply', activeRun.id)"
               >
                 {{ activeRun?.appliedAt ? t.applied : t.apply }}
+              </UButton>
+              <UButton
+                v-if="!activeRun?.appliedAt"
+                type="button"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                icon="i-lucide-x"
+                :disabled="props.busy"
+                @click="activeRun?.id && emit('cancel', activeRun.id)"
+              >
+                {{ t.discardResult }}
               </UButton>
               <UButton
                 type="button"

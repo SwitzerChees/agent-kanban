@@ -15,8 +15,16 @@ import {
 import { getProject } from './kanban';
 
 const DEFAULT_CHAT_HARNESS: AgentHarness = 'prime-agent';
-const DEFAULT_CHAT_EFFORT: ReasoningEffort = 'xhigh';
+const DEFAULT_CHAT_EFFORT: ReasoningEffort = 'low';
 const MAX_HISTORY = 100;
+
+export interface ProjectChatMessageAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  storagePath: string;
+}
 
 export interface CreateProjectChatInput {
   harness?: unknown;
@@ -175,10 +183,30 @@ export function listChatMessages(threadId: string) {
       id: message.id,
       role: message.role,
       content: message.content,
+      attachments: parseAttachments(message.attachmentsJson).map((attachment) => ({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        url: `/api/project-chats/${threadId}/attachments/${attachment.id}`,
+      })),
       state: message.state,
       createdAt: message.createdAt,
       updatedAt: message.updatedAt,
     }));
+}
+
+export function getProjectChatAttachment(threadId: string, attachmentId: string, user: User) {
+  authorizeProjectChat(threadId, user);
+  const messages = db.select({ attachmentsJson: schema.projectChatMessages.attachmentsJson })
+    .from(schema.projectChatMessages)
+    .where(eq(schema.projectChatMessages.threadId, threadId))
+    .all();
+  const attachment = messages
+    .flatMap((message) => parseAttachments(message.attachmentsJson))
+    .find((candidate) => candidate.id === attachmentId);
+  if (!attachment) throw createError({ statusCode: 404, statusMessage: 'chat_attachment_not_found' });
+  return attachment;
 }
 
 export function listProjectChatEvents(threadId: string, after: number, limit = 250) {
@@ -306,5 +334,22 @@ function parsePayload(value: string) {
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
+  }
+}
+
+function parseAttachments(value: string): ProjectChatMessageAttachment[] {
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is ProjectChatMessageAttachment => (
+      item && typeof item === 'object'
+      && typeof item.id === 'string'
+      && typeof item.fileName === 'string'
+      && typeof item.mimeType === 'string'
+      && typeof item.size === 'number'
+      && typeof item.storagePath === 'string'
+    ));
+  } catch {
+    return [];
   }
 }

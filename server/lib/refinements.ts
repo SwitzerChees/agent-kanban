@@ -8,7 +8,7 @@ import { getProject } from './kanban';
 import { activeTaskDescription, publicTaskDescription } from './task-description';
 import type { AgentHarness, ReasoningEffort } from './agent-harness';
 
-export type RefinementStatus = 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed';
+export type RefinementStatus = 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed' | 'cancelled';
 export type RefinementComplexity = 'simple' | 'moderate' | 'complex';
 export type RefinementVisualMode = 'auto' | 'off' | 'force';
 export type RefinementAnswer = string | string[] | boolean | null;
@@ -161,6 +161,7 @@ export function createTaskRefinement(taskId: string, input: {
         awaitingInputAt: null,
         completedAt: null,
         failedAt: null,
+        cancelledAt: null,
         appliedAt: null,
         appliedBy: null,
         updatedAt: now,
@@ -339,6 +340,45 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
     refinement: requirePublicRefinement(refinementId),
     task: publicTaskDescription(requireTask(taskId)),
   };
+}
+
+export function cancelTaskRefinement(taskId: string, refinementId: string, user: User) {
+  const { task } = authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  if (!['awaiting_input', 'completed'].includes(refinement.status)) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_not_cancellable' });
+  }
+  if (refinement.appliedAt) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_already_applied' });
+  }
+
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    const updated = tx.update(schema.taskRefinements).set({
+      status: 'cancelled',
+      cancelledAt: now,
+      error: null,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      heartbeatAt: null,
+      updatedAt: now,
+    }).where(and(
+      eq(schema.taskRefinements.id, refinementId),
+      inArray(schema.taskRefinements.status, ['awaiting_input', 'completed']),
+      isNull(schema.taskRefinements.appliedAt),
+    )).run();
+    if (updated.changes !== 1) {
+      throw createError({ statusCode: 409, statusMessage: 'refinement_state_changed' });
+    }
+    insertActivity(tx, task.projectId, task.id, user.id, 'refinement_cancelled', {
+      refinementId,
+      version: refinement.version,
+      previousStatus: refinement.status,
+    }, now);
+  });
+
+  return requirePublicRefinement(refinementId);
 }
 
 /**

@@ -187,7 +187,7 @@ interface TaskRefinementApi {
   id: string;
   taskId: string;
   version: number;
-  status: 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed' | 'cancelled';
   requestedBy: string;
   requestedByName?: string | null;
   brief?: string | null;
@@ -208,6 +208,7 @@ interface TaskRefinementApi {
   awaitingInputAt?: string | null;
   completedAt?: string | null;
   failedAt?: string | null;
+  cancelledAt?: string | null;
   appliedAt?: string | null;
   updatedAt: string;
 }
@@ -2486,6 +2487,30 @@ async function submitRefinementAnswers(payload: { runId: string; answers: Record
   }
 }
 
+async function cancelTaskRefinement(runId: string) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  const message = locale.value === 'de'
+    ? 'Möchtest du dieses Refinement wirklich beenden? Das Ergebnis wird nicht in den Task übernommen.'
+    : 'Do you really want to stop this refinement? Its result will not be applied to the task.';
+  if (!confirm(message)) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ refinement: TaskRefinementApi }>(`/api/tasks/${taskId}/refinements/${runId}/cancel`, {
+      method: 'POST',
+    });
+    taskRefinements.value = taskRefinements.value.map((run) => run.id === response.refinement.id ? response.refinement : run);
+    selectedRefinementId.value = response.refinement.id;
+    refinementDraftDirty.value = false;
+    stopRefinementPolling();
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    refinementBusy.value = false;
+  }
+}
+
 function refinementDescriptionChangedFor(runId: string) {
   const run = taskRefinements.value.find((item) => item.id === runId);
   if (!run) return false;
@@ -3940,8 +3965,9 @@ const latestAgentTimelineUpdate = (events: TaskEvent[]) => {
       };
     }
     if (event.action === 'codex_completed') {
+      const summary = metadataString(parseMetadata(event.metadata).summary);
       return {
-        body: t.value.agentRunCompleted,
+        body: summary || t.value.agentRunCompleted,
         createdAt: event.createdAt,
         tone: 'success' as const,
       };
@@ -5214,6 +5240,7 @@ const humanError = (error: unknown) => {
     refinement_already_active: { en: 'This task already has a refinement in progress.', de: 'Für diese Aufgabe läuft bereits ein Refinement.' },
     refinement_not_awaiting_input: { en: 'This refinement is not waiting for answers.', de: 'Dieses Refinement wartet aktuell nicht auf Antworten.' },
     refinement_not_completed: { en: 'The refinement is not completed yet.', de: 'Das Refinement ist noch nicht abgeschlossen.' },
+    refinement_not_cancellable: { en: 'This refinement can no longer be cancelled.', de: 'Dieses Refinement kann nicht mehr abgebrochen werden.' },
     refinement_description_changed: { en: 'The description changed after refinement started. You can review the warning and still apply the result.', de: 'Die Beschreibung wurde nach dem Start des Refinements geändert. Du kannst den Hinweis prüfen und das Ergebnis trotzdem übernehmen.' },
     refinement_source_changed: { en: 'The task changed while the refinement was being applied. Please try again.', de: 'Die Aufgabe wurde während der Übernahme geändert. Bitte versuche es erneut.' },
     source_changed: { en: 'The task changed while the refinement was being applied. Please try again.', de: 'Die Aufgabe wurde während der Übernahme geändert. Bitte versuche es erneut.' },
@@ -7503,6 +7530,7 @@ const humanError = (error: unknown) => {
                 @start="startTaskRefinement"
                 @submit-answers="submitRefinementAnswers"
                 @apply="requestApplyTaskRefinement"
+                @cancel="cancelTaskRefinement"
                 @retry="retryTaskRefinement"
                 @select-run="selectTaskRefinement"
                 @dirty-change="refinementDraftDirty = $event"

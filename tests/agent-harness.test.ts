@@ -212,6 +212,15 @@ describe('agent harness runtime contracts', () => {
       type: 'message_end',
       message: { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] },
     }, 'prime-agent')).toEqual({ text: 'Hello world', full: true });
+    expect(assistantTextFromEvent({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta' },
+      delta: 'Live update',
+    }, 'prime-agent')).toEqual({ text: 'Live update', full: false });
+    expect(assistantTextFromEvent({
+      type: 'text',
+      part: { type: 'text', text: 'OpenCode update' },
+    }, 'opencode')).toEqual({ text: 'OpenCode update', full: true });
   });
 
   test('reduces raw tool events to generic project or web activity', () => {

@@ -82,7 +82,7 @@ describe('private project chats', () => {
   test('keeps exactly one current chat per project and owner', () => {
     const first = chatModule.createProjectChat(projectId, {}, owner).chat;
     expect(first.harness).toBe('prime-agent');
-    expect(first.reasoningEffort).toBe('xhigh');
+    expect(first.reasoningEffort).toBe('low');
     expect(chatModule.getCurrentProjectChat(projectId, owner).chat?.id).toBe(first.id);
 
     const second = chatModule.createProjectChat(projectId, {
@@ -126,5 +126,38 @@ describe('private project chats', () => {
     expect(chatModule.listProjectChatEvents(thread.id, firstId)).toEqual([
       expect.objectContaining({ id: secondId, type: 'message_updated', payload: { content: 'Hello' } }),
     ]);
+  });
+
+  test('keeps chat attachments private, visible in history, and explicit in the agent prompt', () => {
+    const thread = chatModule.createProjectChat(projectId, {}, owner).chat;
+    const now = new Date().toISOString();
+    const attachment = {
+      id: randomUUID(),
+      fileName: 'product sketch.png',
+      mimeType: 'image/png',
+      size: 128,
+      storagePath: path.join(testRoot, 'data', 'chat-sessions', thread.id, 'uploads', 'product-sketch.png'),
+    };
+    dbModule.db.insert(dbModule.schema.projectChatMessages).values({
+      id: randomUUID(),
+      threadId: thread.id,
+      role: 'user',
+      content: 'Please review this.',
+      attachmentsJson: JSON.stringify([attachment]),
+      state: 'complete',
+      clientRequestId: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+
+    const payload = chatModule.getProjectChat(thread.id, owner);
+    expect(payload.messages[0]?.attachments).toEqual([expect.objectContaining({
+      id: attachment.id,
+      fileName: attachment.fileName,
+      url: `/api/project-chats/${thread.id}/attachments/${attachment.id}`,
+    })]);
+    expect(JSON.stringify(payload)).not.toContain(attachment.storagePath);
+    expect(runtimeModule.buildProjectChatPrompt('Please review this.', [attachment]))
+      .toContain('untrusted reference data');
   });
 });

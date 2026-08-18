@@ -273,7 +273,12 @@ class LocalTaskDispatcher {
       const agentsContext = await loadAgentsContext(taskWorktree.projectPath);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : taskWorktree.projectPath;
       const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
-      const taskPromptPrefix = [agentsPromptPrefix, agentRuntimeSafetyInstructions(), agentWaitInstructions()]
+      const taskPromptPrefix = [
+        agentsPromptPrefix,
+        agentRuntimeSafetyInstructions(),
+        agentCompletionHandoffInstructions(),
+        agentWaitInstructions(),
+      ]
         .filter(Boolean)
         .join('\n\n---\n\n');
       const runStartedAt = new Date().toISOString();
@@ -292,6 +297,7 @@ class LocalTaskDispatcher {
       let seenSteeringAt = runStartedAt;
       let seenAttachmentAt = runStartedAt;
       let agentMessageBuffer = '';
+      let latestCompletionSummary = '';
       let lastAgentUpdateLogMs = 0;
       let agentBrowserEvidenceLogged = false;
       const flushAgentUpdate = (force = false) => {
@@ -346,6 +352,9 @@ class LocalTaskDispatcher {
             return;
           }
           if (event.event === 'item/completed') {
+            const completedBody = normalizeAgentMessage(agentMessageBuffer)
+              ?? completionSummaryFromAgentEvent(event);
+            if (completedBody) latestCompletionSummary = completedBody;
             flushAgentUpdate(true);
             agentMessageBuffer = '';
           }
@@ -495,6 +504,7 @@ class LocalTaskDispatcher {
       logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', {
         nextColumn: reviewColumn?.key ?? null,
         harness: queued.agentHarness,
+        summary: latestCompletionSummary || null,
       });
       notifyVoiceJobStatus(queued.id, 'done');
       runtimeLogger.info('local agent task completed', {
@@ -619,6 +629,16 @@ export function agentRuntimeSafetyInstructions() {
     '- Run memory-intensive validation commands sequentially, especially builds, typechecks, test suites, and browser sessions.',
     '- Never run commands in parallel when they write the same generated workspace state (for example `.nuxt`).',
     '- Reuse an existing development server when possible and stop it as soon as the required verification is complete.',
+  ].join('\n');
+}
+
+export function agentCompletionHandoffInstructions() {
+  return [
+    'Completion handoff:',
+    '- End your final response with a short, user-facing summary in the same language as the task.',
+    '- Explain the outcome at a big-picture product level, not as a list of implementation details or changed code symbols.',
+    '- Include a separate short section with concrete places or flows the user can test.',
+    '- Mention any remaining limitation plainly. Do not claim completion before the requested validation succeeds.',
   ].join('\n');
 }
 
@@ -945,6 +965,26 @@ function normalizeAgentMessage(message: string) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   return normalized ? normalized.slice(-3000) : null;
+}
+
+export function completionSummaryFromAgentEvent(event: Pick<CodexRuntimeEvent, 'event' | 'raw'>) {
+  if (event.event !== 'item/completed') return null;
+  const raw = recordValue(event.raw);
+  const item = recordValue(raw.item);
+  const type = String(item.type ?? '').toLowerCase();
+  if (!type.includes('agent') || !type.includes('message')) return null;
+  return normalizeAgentMessage(textValue(item.text ?? item.content));
+}
+
+function textValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(textValue).join('');
+  const record = recordValue(value);
+  return textValue(record.text ?? record.content ?? '');
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function parseMetadataString(metadata: string | null, key: string) {
