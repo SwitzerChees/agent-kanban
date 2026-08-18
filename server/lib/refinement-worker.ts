@@ -11,6 +11,7 @@ import { runRefinementCodexTurn } from './refinement-codex';
 import { runExternalRefinementTurn } from './external-agent';
 import { CODEX_MODEL } from './agent-harness';
 import { resolveServiceConfig } from './config';
+import { appDataDir } from './db';
 import { storeTaskAttachment } from './kanban';
 import { runtimeLogger } from './logger';
 import {
@@ -384,12 +385,15 @@ export async function processClaimedRefinement(context: RefinementContext, signa
         signal,
         onEvent,
       })
-    : await runExternalRefinementTurn({
+      : await runExternalRefinementTurn({
         harness: context.agentHarness,
         reasoningEffort: context.reasoningEffort,
         workspacePath: context.projectFolderPath,
         prompt,
         outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
+        validateOutput: parseRefinementOutput,
+        nativeSessionId: context.threadId,
+        sessionRoot: appDataDir('refinement-sessions', context.projectId, context.taskId, context.id),
         signal,
         timeoutMs: config.codex.turnTimeoutMs,
         onEvent,
@@ -500,13 +504,19 @@ ${taskContext}${answersContext}${agents}
 Produce a proportional refinement:
 - For a small change, stay concise and avoid invented complexity.
 - For a substantial change, explain the concrete integration path, affected application behavior and data flows, migration or compatibility concerns, security/accessibility/performance risks, mitigations, and verifiable acceptance criteria.
+- Make the completed result progressively more detailed. The reader must understand the important point before reaching any technical material:
+  1. result.summary is the first section. Write only 2-4 short sentences in plain everyday language. State what will change, why it matters, and the most important caveat. Do not use file paths, API names, architecture terms, acronyms, or implementation steps there.
+  2. result.applicationImpact is the second, still non-technical section. Use a short list describing what users, operators, or the product will experience differently. Focus on behavior and outcomes, not code.
+  3. result.acceptanceCriteria should be understandable as observable outcomes wherever possible.
+  4. Put implementation depth only in result.integrationPlan, risks, openQuestions, and notes. These fields form the technical section at the bottom and may contain paths, data flows, compatibility concerns, and detailed engineering guidance.
+- Keep summary and applicationImpact deliberately brief even when the technical section needs substantial detail. Avoid repeating the same information across sections.
 - Identify relevant existing modules or patterns by path when useful, but do not fabricate files or APIs.
 - Challenge assumptions. Ask the user only about decisions that materially change the solution and cannot be resolved safely from code or established project conventions.
 - Challenge questions in this UI version are free-text only: use type text and an empty options array.
 - ${remainingQuestionRounds > 0
     ? `There are ${remainingQuestionRounds} of ${MAX_QUESTION_ROUNDS} challenge-question rounds remaining. Return status needs_input only when blocking clarification is genuinely valuable.`
     : 'All challenge-question rounds are used. You must return status completed, state reasonable assumptions, and place non-blocking uncertainty in openQuestions.'}
-- When returning needs_input, do not generate images yet. Return focused questions and a short provisional summary; the same Codex thread will resume with the answers.
+- When returning needs_input, do not generate images yet. Return focused questions and a short provisional summary; the same harness session will resume with the answers.
 - When returning completed, questions must be empty and result.summary, integrationPlan, applicationImpact, risks, acceptanceCriteria, openQuestions, and notes must form an implementation-ready brief.
 - ${visualGuidance}
 - If you generate images, align them with the application’s existing visual language after inspecting its UI implementation and available screenshots. Reference every generated image in visuals using the exact returned image item id, plus a useful caption and the generation prompt. Never return more than two image references.

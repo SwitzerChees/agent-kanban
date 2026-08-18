@@ -6,7 +6,7 @@ import {
   QWEN_OPENCODE_MODEL,
   harnessExecutable,
 } from '../server/lib/agent-harness';
-import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent';
+import { buildExternalArgs, buildExternalRefinementPrompt, parseJsonObject } from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
 import { buildTaskHarnessRunner, taskHarnessResourceProperties } from '../server/lib/task-harness-sandbox';
 import { taskCodexSandboxOverrides } from '../server/lib/codex';
@@ -94,6 +94,38 @@ describe('agent harness runtime contracts', () => {
       onEvent: () => {},
     });
     expect(args[args.indexOf('--extension') + 1]).toMatch(/refinement-tool-budget\.ts$/);
+  });
+
+  test('keeps external refinement sessions resumable and demands strict repair output', () => {
+    const common = {
+      reasoningEffort: 'medium' as const,
+      workspacePath: '/tmp/agent-kanban-harness-test',
+      prompt: 'Refine the task.',
+      signal: new AbortController().signal,
+      timeoutMs: 60_000,
+      autonomous: false,
+      turnNumber: 2,
+      onEvent: () => {},
+      nativeSessionId: 'refinement-session-1',
+      sessionRoot: '/tmp/refinement-session-root',
+    };
+    expect(buildExternalArgs({ ...common, harness: 'opencode' }))
+      .toEqual(expect.arrayContaining(['--session', 'refinement-session-1']));
+    const primeArgs = buildExternalArgs({ ...common, harness: 'prime-agent' });
+    expect(primeArgs).toEqual(expect.arrayContaining([
+      '--session-dir', '/tmp/refinement-session-root/prime-sessions',
+      '--resume', 'refinement-session-1',
+    ]));
+    expect(primeArgs).not.toContain('--no-session');
+
+    const repair = buildExternalRefinementPrompt({
+      harness: 'opencode',
+      prompt: 'Original prompt',
+      outputSchema: { type: 'object', required: ['status'] },
+    }, true);
+    expect(repair).toContain('previous response did not match');
+    expect(repair).toContain('Return exactly one JSON object and nothing else');
+    expect(repair).not.toContain('Original prompt');
   });
 
   test('accepts only a terminal, bounded external wait request', () => {

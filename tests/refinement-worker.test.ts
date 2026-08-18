@@ -75,6 +75,29 @@ describe('refinement worker contracts', () => {
     expect(prompt).toContain('Use DESIGN.md.');
   });
 
+  test('requires the same progressive final format for every harness', () => {
+    const prompts = ['codex', 'opencode', 'prime-agent'].map((agentHarness) => worker.buildRefinementPrompt(
+      sampleContext({ agentHarness: agentHarness as RefinementContext['agentHarness'] }),
+      {
+        agentsPath: null,
+        agentsContent: null,
+        agentsTruncated: false,
+        usedQuestionRounds: 0,
+      },
+    ));
+
+    for (const prompt of prompts) {
+      const summary = prompt.indexOf('result.summary is the first section');
+      const productDetails = prompt.indexOf('result.applicationImpact is the second');
+      const technicalDetails = prompt.indexOf('Put implementation depth only in result.integrationPlan');
+      expect(summary).toBeGreaterThan(0);
+      expect(productDetails).toBeGreaterThan(summary);
+      expect(technicalDetails).toBeGreaterThan(productDetails);
+      expect(prompt).toContain('2-4 short sentences in plain everyday language');
+      expect(prompt).toContain('same harness session will resume');
+    }
+  });
+
   test('accepts real generated image bytes but rejects symlinks and non-images', async () => {
     const pngPath = path.join(testRoot, 'concept.png');
     const linkPath = path.join(testRoot, 'concept-link.png');

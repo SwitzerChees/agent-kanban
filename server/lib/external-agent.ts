@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { CodexRuntimeEvent, Issue } from './types';
 import { renderPrompt } from './template';
@@ -60,6 +61,9 @@ export interface RunExternalRefinementOptions {
   workspacePath: string;
   prompt: string;
   outputSchema: Record<string, unknown>;
+  validateOutput?: (value: unknown) => unknown;
+  nativeSessionId?: string | null;
+  sessionRoot?: string;
   signal: AbortSignal;
   timeoutMs: number;
   onEvent?: (event: CodexRuntimeEvent) => void;
@@ -140,9 +144,49 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
 }
 
 export async function runExternalRefinementTurn(options: RunExternalRefinementOptions) {
-  const prompt = [
-    options.prompt,
-    ...(options.harness === 'prime-agent'
+  if (options.sessionRoot) await mkdir(path.join(options.sessionRoot, 'prime-sessions'), { recursive: true });
+  let nativeSessionId = options.nativeSessionId ?? null;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const result = await runExternalProcess({
+      harness: options.harness,
+      reasoningEffort: options.reasoningEffort,
+      workspacePath: options.workspacePath,
+      prompt: buildExternalRefinementPrompt(options, attempt > 1),
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+      autonomous: false,
+      turnNumber: attempt,
+      onEvent: options.onEvent ?? (() => {}),
+      nativeSessionId,
+      sessionRoot: options.sessionRoot,
+    });
+    nativeSessionId = result.sessionId ?? nativeSessionId;
+    try {
+      const parsed = parseJsonObject(result.text);
+      const output = options.validateOutput ? options.validateOutput(parsed) : parsed;
+      return {
+        output,
+        threadId: nativeSessionId,
+        images: [] as Array<{ id: string; status: string; revisedPrompt: string | null; savedPath: string | null; result: string }>,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error('external_harness_invalid_json');
+}
+
+export function buildExternalRefinementPrompt(
+  options: Pick<RunExternalRefinementOptions, 'harness' | 'prompt' | 'outputSchema'>,
+  repair = false,
+) {
+  return [
+    repair
+      ? 'Your previous response did not match the required structure. Correct it now without doing more repository inspection.'
+      : options.prompt,
+    ...(options.harness === 'prime-agent' && !repair
       ? [
           '',
           'Prime Agent inspection budget: batch related repository reads and use no more than 16 tool calls. When the tool budget is exhausted, stop inspecting and return the best grounded structured result immediately.',
@@ -152,24 +196,8 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
     'The required structured output must validate against this JSON Schema:',
     JSON.stringify(options.outputSchema),
     '',
-    'Return the JSON object only. Do not wrap it in a Markdown fence or add commentary.',
+    'Return exactly one JSON object and nothing else. Do not use a Markdown fence or add commentary before or after it. Include every required field even when its value is an empty array.',
   ].join('\n');
-  const result = await runExternalProcess({
-    harness: options.harness,
-    reasoningEffort: options.reasoningEffort,
-    workspacePath: options.workspacePath,
-    prompt,
-    signal: options.signal,
-    timeoutMs: options.timeoutMs,
-    autonomous: false,
-    turnNumber: 1,
-    onEvent: options.onEvent ?? (() => {}),
-  });
-  return {
-    output: parseJsonObject(result.text),
-    threadId: result.sessionId,
-    images: [] as Array<{ id: string; status: string; revisedPrompt: string | null; savedPath: string | null; result: string }>,
-  };
 }
 
 export interface RunExternalProcessOptions {

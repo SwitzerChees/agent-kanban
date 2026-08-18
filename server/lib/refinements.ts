@@ -727,27 +727,30 @@ export function releaseRefinementLease(refinementId: string, leaseToken: string)
 }
 
 export function renderRefinementMarkdown(result: RefinementResult): string {
-  const sections: string[] = [`## Zusammenfassung\n\n${result.summary.trim()}`];
-  pushListSection(sections, 'Integration', result.integrationPlan);
-  pushListSection(sections, 'Auswirkungen auf die Anwendung', result.applicationImpact);
+  const sections: string[] = [`## Kurz gesagt\n\n${result.summary.trim()}`];
+  pushListSection(sections, 'Was sich dadurch ändert', result.applicationImpact);
+  pushListSection(sections, 'Woran man erkennt, dass es fertig ist', result.acceptanceCriteria, true);
+
+  const technicalSections: string[] = [];
+  pushListSection(technicalSections, 'Umsetzung im bestehenden System', result.integrationPlan, false, 3);
   if (result.risks?.length) {
-    sections.push(`## Risiken\n\n${result.risks.map((item) => {
+    technicalSections.push(`### Risiken und Gegenmassnahmen\n\n${result.risks.map((item) => {
       if (typeof item === 'string') return `- ${item}`;
       const severity = item.severity ? ` **[${item.severity.toUpperCase()}]**` : '';
       const mitigation = item.mitigation ? ` — Gegenmassnahme: ${item.mitigation}` : '';
       return `-${severity} ${item.risk}${mitigation}`;
     }).join('\n')}`);
   }
-  pushListSection(sections, 'Akzeptanzkriterien', result.acceptanceCriteria, true);
-  pushListSection(sections, 'Offene Fragen', result.openQuestions);
-  pushListSection(sections, 'Hinweise', result.notes);
+  pushListSection(technicalSections, 'Offene technische Fragen', result.openQuestions, false, 3);
+  pushListSection(technicalSections, 'Technische Hinweise', result.notes, false, 3);
+  if (technicalSections.length) sections.push(`## Technische Details\n\n${technicalSections.join('\n\n')}`);
   return sections.join('\n\n').trim();
 }
 
-function pushListSection(sections: string[], title: string, values?: string[], checklist = false) {
+function pushListSection(sections: string[], title: string, values?: string[], checklist = false, headingLevel = 2) {
   if (!values?.length) return;
   const prefix = checklist ? '- [ ]' : '-';
-  sections.push(`## ${title}\n\n${values.map((value) => `${prefix} ${value}`).join('\n')}`);
+  sections.push(`${'#'.repeat(headingLevel)} ${title}\n\n${values.map((value) => `${prefix} ${value}`).join('\n')}`);
 }
 
 function authorizeTask(taskId: string, user: User) {

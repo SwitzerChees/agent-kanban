@@ -131,7 +131,13 @@ describe('task refinements', () => {
       }],
     }, resumed!.leaseToken);
     expect(completed.status).toBe('completed');
-    expect(completed.resultMarkdown).toContain('## Akzeptanzkriterien');
+    const resultMarkdown = completed.resultMarkdown ?? '';
+    expect(resultMarkdown).toContain('## Kurz gesagt');
+    expect(resultMarkdown).toContain('## Was sich dadurch ändert');
+    expect(resultMarkdown).toContain('## Woran man erkennt, dass es fertig ist');
+    expect(resultMarkdown).toContain('## Technische Details');
+    expect(resultMarkdown.indexOf('## Technische Details'))
+      .toBeGreaterThan(resultMarkdown.indexOf('## Was sich dadurch ändert'));
     expect(completed.result).toMatchObject({ summary: 'Create a contributor-focused overview.' });
     expect(completed.visuals).toEqual([expect.objectContaining({ attachmentId: 'visual-attachment-id' })]);
 
