@@ -10,6 +10,7 @@ import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent
 import {
   activityFromEvent,
   assistantTextFromEvent,
+  buildSandboxRunner,
   buildProjectChatArgs,
   projectChatSystemPrompt,
   sessionIdFromEvent,
@@ -67,6 +68,23 @@ describe('agent harness runtime contracts', () => {
       expect(buildProjectChatArgs({ ...common, harness, nativeSessionId: null }).join(' '))
         .not.toContain(common.prompt);
     }
+  });
+
+  test('gives Prime Agent a writable session-local configuration directory', () => {
+    const runner = buildSandboxRunner({
+      executable: 'prime-agent',
+      args: ['--print'],
+      unitName: 'chat-test',
+      workspacePath: '/tmp/project-chat',
+      sessionRoot: '/tmp/project-chat-session',
+      harness: 'prime-agent',
+      mode: 'read_only',
+      credentialConfigPath: '/tmp/project-chat-session/kanban.json',
+      skillDirectory: '/tmp/project-chat-session/skills/agent-kanban-control',
+      artifactDirectory: '/tmp/project-chat-session/artifacts',
+    });
+    expect(runner.env.PRIME_AGENT_CODING_AGENT_DIR).toBe('/tmp/project-chat-session/prime-agent');
+    expect(runner.args).toContain('--setenv=PRIME_AGENT_CODING_AGENT_DIR=/tmp/project-chat-session/prime-agent');
   });
 
   test('gives the voice orchestrator a writable chat-worktree contract without creating board tasks', () => {

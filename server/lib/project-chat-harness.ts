@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { cp, mkdir, readdir, symlink } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, readdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -225,14 +225,16 @@ interface SandboxRunnerOptions {
   artifactDirectory: string;
 }
 
-function buildSandboxRunner(options: SandboxRunnerOptions) {
+export function buildSandboxRunner(options: SandboxRunnerOptions) {
   const home = os.homedir();
   const codexHome = path.join(options.sessionRoot, 'codex-home');
+  const primeAgentHome = path.join(options.sessionRoot, 'prime-agent');
   const env = {
     ...process.env,
     NO_COLOR: '1',
     FORCE_COLOR: '0',
     CODEX_HOME: codexHome,
+    PRIME_AGENT_CODING_AGENT_DIR: primeAgentHome,
     XDG_DATA_HOME: path.join(options.sessionRoot, 'xdg-data'),
     XDG_STATE_HOME: path.join(options.sessionRoot, 'xdg-state'),
     XDG_CACHE_HOME: path.join(options.sessionRoot, 'xdg-cache'),
@@ -280,6 +282,7 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
       '--setenv=NO_COLOR=1',
       '--setenv=FORCE_COLOR=0',
       `--setenv=CODEX_HOME=${codexHome}`,
+      `--setenv=PRIME_AGENT_CODING_AGENT_DIR=${primeAgentHome}`,
       `--setenv=XDG_DATA_HOME=${env.XDG_DATA_HOME}`,
       `--setenv=XDG_STATE_HOME=${env.XDG_STATE_HOME}`,
       `--setenv=XDG_CACHE_HOME=${env.XDG_CACHE_HOME}`,
@@ -298,6 +301,7 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
 async function prepareSessionDirectories(sessionRoot: string) {
   const skillDirectory = path.join(sessionRoot, 'skills', 'agent-kanban-control');
   const artifactDirectory = path.join(sessionRoot, 'artifacts');
+  const primeAgentHome = path.join(sessionRoot, 'prime-agent');
   await Promise.all([
     mkdir(sessionRoot, { recursive: true }),
     mkdir(path.join(sessionRoot, 'prime-sessions'), { recursive: true }),
@@ -305,9 +309,18 @@ async function prepareSessionDirectories(sessionRoot: string) {
     mkdir(path.join(sessionRoot, 'xdg-state'), { recursive: true }),
     mkdir(path.join(sessionRoot, 'xdg-cache'), { recursive: true }),
     mkdir(path.join(sessionRoot, 'codex-home'), { recursive: true }),
+    mkdir(primeAgentHome, { recursive: true, mode: 0o700 }),
     mkdir(path.dirname(skillDirectory), { recursive: true }),
     mkdir(artifactDirectory, { recursive: true }),
   ]);
+  const sourcePrimeAgentHome = path.join(os.homedir(), '.prime', 'agent');
+  for (const name of ['auth.json', 'models.json', 'settings.json']) {
+    const source = path.join(sourcePrimeAgentHome, name);
+    const target = path.join(primeAgentHome, name);
+    if (!fs.existsSync(source)) continue;
+    await copyFile(source, target);
+    await chmod(target, 0o600);
+  }
   const sourceHome = path.join(os.homedir(), '.codex');
   const targetHome = path.join(sessionRoot, 'codex-home');
   for (const name of ['auth.json', 'config.toml', 'plugins']) {
