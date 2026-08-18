@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { mkdir, symlink } from 'node:fs/promises';
+import { cp, mkdir, readdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -23,13 +23,23 @@ export interface ProjectChatHarnessTurnOptions {
   reasoningEffort: ReasoningEffort;
   workspacePath: string;
   sessionRoot: string;
+  credentialConfigPath: string;
   nativeSessionId: string | null;
   mode?: ProjectChatMode;
   prompt: string;
   signal: AbortSignal;
   onText: (fragment: string) => void;
   onActivity: (activity: ProjectChatActivity) => void;
+  onToolActivity?: (activity: ProjectChatToolActivity) => void;
   onUnit?: (unitName: string | null) => void;
+}
+
+export interface ProjectChatToolActivity {
+  id: string;
+  kind: 'command' | 'file' | 'web' | 'kanban' | 'tool';
+  label: string;
+  detail: string | null;
+  status: 'running' | 'completed' | 'failed';
 }
 
 export interface ProjectChatHarnessTurnResult {
@@ -38,26 +48,29 @@ export interface ProjectChatHarnessTurnResult {
 }
 
 const CHAT_SYSTEM_PROMPT = `You are the private project chat inside Agent Kanban.
-Answer conversationally about the source code in the current project. You may read files, search the project, use safe diagnostic tools, search the web, and use installed research skills such as agent-browser when useful.
+Answer conversationally about the source code in the current project. You may read files, search the project, use safe diagnostic tools, search the web, and use installed skills such as agent-browser and agent-kanban-control when useful.
 
 This is a strictly read-only conversation:
 - Never create, edit, delete, rename, format, stage, commit, push, or otherwise modify project files or Git state.
-- Never run package installation, migrations, deployments, services, or commands whose purpose is to change external state.
+- Never run package installation, migrations, deployments, services, or commands whose purpose is to change external state, except explicit Agent Kanban actions requested by the user through the agent-kanban-control skill.
 - Browser use is research-only. Do not submit forms, send messages, purchase anything, or make account changes.
 - Do not expose secrets, credentials, raw tool payloads, or hidden reasoning.
-- If the user asks for a code change, explain what should be changed but do not perform it.
+- If the user asks for a code change, explain what should be changed but do not perform it. Agent Kanban board changes are allowed and are authenticated with exactly the current user's permissions.
 
-The operating-system sandbox enforces read-only access to the source tree. Temporary files and browser state belong only in the provided session area.`;
+The operating-system sandbox enforces read-only access to the source tree. Temporary files and browser state belong only in the provided session area.
+Use the agent-kanban-control skill from AGENT_KANBAN_SKILL_DIR for board operations. Never reveal its credential config. Save screenshots or generated images in AGENT_KANBAN_CHAT_ARTIFACT_DIR and include them in the answer with Markdown image syntax so the chat can show them inline.`;
 
 const ORCHESTRATOR_SYSTEM_PROMPT = `You are the task-independent background orchestrator for the private project chat inside Agent Kanban.
 Work directly in the current chat-owned, isolated Git worktree. Inspect the project, use tools, edit files, and run focused tests when that is necessary to fulfil the user's request.
 
 Operating rules:
-- This is not a Kanban task. Never create a task, card, ticket, issue, or other board item.
+- This chat is not itself a Kanban task. Create, update, move, or queue board items only when the user explicitly asks for that Agent Kanban action; never create them as a side effect of source-code work.
 - Keep all project changes inside this isolated chat worktree. Never commit, push, merge, deploy, publish, send messages, purchase anything, or change external systems unless the user explicitly requested that consequential action and it has already been confirmed by the application.
 - Do not expose secrets, credentials, raw tool payloads, or hidden reasoning.
 - Give concise, useful progress in your response and end with the concrete result, relevant validation, and any remaining limitation.
-- If a request is ambiguous in a way that could cause harmful or materially different work, explain the missing decision instead of guessing.`;
+- If a request is ambiguous in a way that could cause harmful or materially different work, explain the missing decision instead of guessing.
+- Agent Kanban board operations explicitly requested by the user are allowed through the agent-kanban-control skill and use exactly that user's permissions.
+- Use the skill from AGENT_KANBAN_SKILL_DIR. Save screenshots or generated images in AGENT_KANBAN_CHAT_ARTIFACT_DIR and include them with Markdown image syntax.`;
 
 export function projectChatSystemPrompt(mode: ProjectChatMode = 'read_only') {
   return mode === 'orchestrator' ? ORCHESTRATOR_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
@@ -67,7 +80,7 @@ export async function runProjectChatHarnessTurn(
   options: ProjectChatHarnessTurnOptions,
 ): Promise<ProjectChatHarnessTurnResult> {
   assertNotAborted(options.signal);
-  await prepareSessionDirectories(options.sessionRoot);
+  const session = await prepareSessionDirectories(options.sessionRoot);
 
   const localCodex = path.join(os.homedir(), '.local', 'bin', 'codex');
   const executable = options.harness === 'codex'
@@ -83,6 +96,9 @@ export async function runProjectChatHarnessTurn(
     sessionRoot: options.sessionRoot,
     harness: options.harness,
     mode: options.mode ?? 'read_only',
+    credentialConfigPath: options.credentialConfigPath,
+    skillDirectory: session.skillDirectory,
+    artifactDirectory: session.artifactDirectory,
   });
   options.onUnit?.(unitName);
 
@@ -117,6 +133,8 @@ export async function runProjectChatHarnessTurn(
       lastActivity = activity;
       options.onActivity(activity);
     }
+    const toolActivity = toolActivityFromEvent(event);
+    if (toolActivity) options.onToolActivity?.(toolActivity);
 
     const candidate = assistantTextFromEvent(event, options.harness);
     if (!candidate) return;
@@ -202,6 +220,9 @@ interface SandboxRunnerOptions {
   sessionRoot: string;
   harness: AgentHarness;
   mode: ProjectChatMode;
+  credentialConfigPath: string;
+  skillDirectory: string;
+  artifactDirectory: string;
 }
 
 function buildSandboxRunner(options: SandboxRunnerOptions) {
@@ -216,6 +237,9 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
     XDG_STATE_HOME: path.join(options.sessionRoot, 'xdg-state'),
     XDG_CACHE_HOME: path.join(options.sessionRoot, 'xdg-cache'),
     AGENT_BROWSER_SESSION: `project-chat-${safeUnitPart(options.unitName).slice(-32)}`,
+    AGENT_KANBAN_CONFIG: options.credentialConfigPath,
+    AGENT_KANBAN_SKILL_DIR: options.skillDirectory,
+    AGENT_KANBAN_CHAT_ARTIFACT_DIR: options.artifactDirectory,
   };
 
   if (process.env.KANBAN_CHAT_DISABLE_SYSTEMD_SANDBOX === '1') {
@@ -223,6 +247,7 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
   }
 
   const properties = [
+    'ReadOnlyPaths=/',
     'ProtectHome=read-only',
     `ReadWritePaths=${options.sessionRoot}`,
     options.mode === 'orchestrator'
@@ -231,6 +256,7 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
     'NoNewPrivileges=yes',
     'RestrictSUIDSGID=yes',
     'PrivateDevices=yes',
+    'PrivateTmp=yes',
   ];
   const browserHome = path.join(home, '.agent-browser');
   if (fs.existsSync(browserHome)) properties.push(`ReadWritePaths=${browserHome}`);
@@ -258,6 +284,9 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
       `--setenv=XDG_STATE_HOME=${env.XDG_STATE_HOME}`,
       `--setenv=XDG_CACHE_HOME=${env.XDG_CACHE_HOME}`,
       `--setenv=AGENT_BROWSER_SESSION=${env.AGENT_BROWSER_SESSION}`,
+      `--setenv=AGENT_KANBAN_CONFIG=${env.AGENT_KANBAN_CONFIG}`,
+      `--setenv=AGENT_KANBAN_SKILL_DIR=${env.AGENT_KANBAN_SKILL_DIR}`,
+      `--setenv=AGENT_KANBAN_CHAT_ARTIFACT_DIR=${env.AGENT_KANBAN_CHAT_ARTIFACT_DIR}`,
       ...properties.map((property) => `--property=${property}`),
       '--',
       options.executable,
@@ -267,6 +296,8 @@ function buildSandboxRunner(options: SandboxRunnerOptions) {
 }
 
 async function prepareSessionDirectories(sessionRoot: string) {
+  const skillDirectory = path.join(sessionRoot, 'skills', 'agent-kanban-control');
+  const artifactDirectory = path.join(sessionRoot, 'artifacts');
   await Promise.all([
     mkdir(sessionRoot, { recursive: true }),
     mkdir(path.join(sessionRoot, 'prime-sessions'), { recursive: true }),
@@ -274,15 +305,34 @@ async function prepareSessionDirectories(sessionRoot: string) {
     mkdir(path.join(sessionRoot, 'xdg-state'), { recursive: true }),
     mkdir(path.join(sessionRoot, 'xdg-cache'), { recursive: true }),
     mkdir(path.join(sessionRoot, 'codex-home'), { recursive: true }),
+    mkdir(path.dirname(skillDirectory), { recursive: true }),
+    mkdir(artifactDirectory, { recursive: true }),
   ]);
   const sourceHome = path.join(os.homedir(), '.codex');
   const targetHome = path.join(sessionRoot, 'codex-home');
-  for (const name of ['auth.json', 'config.toml', 'skills', 'plugins']) {
+  for (const name of ['auth.json', 'config.toml', 'plugins']) {
     const source = path.join(sourceHome, name);
     const target = path.join(targetHome, name);
     if (!fs.existsSync(source) || fs.existsSync(target)) continue;
     await symlink(source, target, fs.statSync(source).isDirectory() ? 'dir' : 'file').catch(() => undefined);
   }
+  const sourceSkills = path.join(sourceHome, 'skills');
+  const targetSkills = path.join(targetHome, 'skills');
+  await mkdir(targetSkills, { recursive: true });
+  if (fs.existsSync(sourceSkills)) {
+    for (const entry of await readdir(sourceSkills, { withFileTypes: true })) {
+      const target = path.join(targetSkills, entry.name);
+      if (fs.existsSync(target) || entry.name === 'agent-kanban-control') continue;
+      await symlink(path.join(sourceSkills, entry.name), target, entry.isDirectory() ? 'dir' : 'file').catch(() => undefined);
+    }
+  }
+  const bundledSkill = path.resolve(process.cwd(), 'skills', 'agent-kanban-control');
+  if (fs.existsSync(bundledSkill)) {
+    await cp(bundledSkill, skillDirectory, { recursive: true, force: true });
+    const codexSkill = path.join(targetSkills, 'agent-kanban-control');
+    if (!fs.existsSync(codexSkill)) await symlink(skillDirectory, codexSkill, 'dir').catch(() => undefined);
+  }
+  return { skillDirectory, artifactDirectory };
 }
 
 export function sessionIdFromEvent(event: Record<string, unknown>, harness: AgentHarness) {
@@ -346,6 +396,56 @@ export function activityFromEvent(event: Record<string, unknown>): ProjectChatAc
   if (/file|read|grep|glob|command|shell|exec|terminal/.test(type)) return 'project';
   if (/tool|function|mcp|ipython/.test(type)) return 'tool';
   return null;
+}
+
+export function toolActivityFromEvent(event: Record<string, unknown>): ProjectChatToolActivity | null {
+  const item = asRecord(event.item);
+  const eventType = stringValue(event.type) ?? '';
+  const itemType = stringValue(item.type) ?? '';
+  const toolName = stringValue(event.toolName) ?? stringValue(event.name) ?? stringValue(item.name) ?? '';
+  const combined = `${eventType} ${itemType} ${toolName}`.toLowerCase();
+  if (!/(tool|command|exec|shell|file_change|mcp|function|browser|web)/.test(combined)) return null;
+
+  const status: ProjectChatToolActivity['status'] = /fail|error/.test(combined)
+    ? 'failed'
+    : /completed|complete|end|result|finish/.test(combined) ? 'completed' : 'running';
+  const command = stringValue(item.command) ?? stringValue(event.command);
+  const rawDetail = command
+    ?? stringValue(event.path)
+    ?? stringValue(item.path)
+    ?? stringValue(asRecord(event.args).path)
+    ?? stringValue(asRecord(event.input).path)
+    ?? null;
+  const detail = rawDetail ? sanitizeToolDetail(rawDetail) : null;
+  const kind: ProjectChatToolActivity['kind'] = /agent-kanban|kanban/.test(`${toolName} ${command ?? ''}`.toLowerCase())
+    ? 'kanban'
+    : /browser|web|https?:/.test(`${combined} ${command ?? ''}`) ? 'web'
+      : /file|patch|edit|write/.test(combined) ? 'file'
+        : /command|exec|shell/.test(combined) ? 'command' : 'tool';
+  const labels = {
+    kanban: 'Agent Kanban steuern',
+    web: 'Web-Recherche',
+    file: status === 'running' ? 'Datei bearbeiten' : 'Datei geprüft',
+    command: status === 'running' ? 'Befehl ausführen' : 'Befehl abgeschlossen',
+    tool: toolName ? `Tool: ${toolName}` : 'Tool verwenden',
+  };
+  return {
+    id: stringValue(event.id) ?? stringValue(item.id) ?? stringValue(event.callId) ?? `${kind}-${toolName}-${detail ?? eventType}`.slice(0, 180),
+    kind,
+    label: labels[kind],
+    detail,
+    status,
+  };
+}
+
+function sanitizeToolDetail(value: string) {
+  return value
+    .replace(/(ak_pat_[A-Za-z0-9_-]+)/g, '<redacted>')
+    .replace(/(--?(?:token|password|secret|api[_-]?key)(?:=|\s+))\S+/gi, '$1<redacted>')
+    .replace(/(authorization\s*:\s*bearer\s+)\S+/gi, '$1<redacted>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
 }
 
 function newTextFragment(existing: string, candidate: string, full: boolean) {

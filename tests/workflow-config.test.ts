@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseWorkflowSource } from '../server/lib/workflow';
 import { resolveServiceConfig, validateDispatchConfig } from '../server/lib/config';
 import type { WorkflowDefinition } from '../server/lib/types';
 
 describe('workflow and config', () => {
+  it('keeps production Codex runs confined to the task workspace', () => {
+    const workflow = parseWorkflowSource(readFileSync(path.resolve('WORKFLOW.md'), 'utf8'));
+    expect(workflow.config.codex).toMatchObject({
+      thread_sandbox: 'workspace-write',
+    });
+    expect(workflow.config.codex).not.toHaveProperty('turn_sandbox_policy');
+  });
+
   it('parses YAML front matter and trims prompt body', () => {
     const parsed = parseWorkflowSource(`---
 tracker:

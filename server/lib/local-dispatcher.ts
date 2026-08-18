@@ -12,7 +12,7 @@ import { logTaskActivity } from './kanban';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { checkAgentsCompletionGate } from './completion-gate';
 import { activeTaskDescription } from './task-description';
-import type { Issue } from './types';
+import type { CodexRuntimeEvent, Issue } from './types';
 import { notifyVoiceJobProgress, notifyVoiceJobStatus } from './voice-agent';
 
 let dispatcher: LocalTaskDispatcher | null = null;
@@ -176,7 +176,7 @@ class LocalTaskDispatcher {
         harness: queued.agentHarness,
         reasoning_effort: queued.reasoningEffort,
       });
-      await runTaskAgentHarness({
+      const harnessOptions = {
         harness: queued.agentHarness,
         reasoningEffort: queued.reasoningEffort,
         config: config.codex,
@@ -184,10 +184,9 @@ class LocalTaskDispatcher {
         issue,
         promptTemplate: workflow.prompt_template || defaultTaskPrompt(),
         promptPrefix: agentsPromptPrefix,
-        attempt: null,
         maxTurns: Math.min(config.agent.maxTurns, Number.parseInt(process.env.KANBAN_AGENT_MAX_TURNS ?? String(config.agent.maxTurns), 10)),
         signal: controller.signal,
-        onEvent: (event) => {
+        onEvent: (event: CodexRuntimeEvent) => {
           runtimeLogger.info('local agent event', {
             task_id: queued.id,
             task_key: queued.key,
@@ -268,6 +267,31 @@ class LocalTaskDispatcher {
           taskIdentifier: queued.key,
           taskTitle: queued.title,
         }),
+      };
+      await runWithAgentRetries({
+        retries: configuredAgentRetries(),
+        signal: controller.signal,
+        run: (attempt) => runTaskAgentHarness({
+          ...harnessOptions,
+          attempt: attempt === 0 ? null : attempt,
+        }),
+        onRetry: (retryNumber, error) => {
+          agentMessageBuffer = '';
+          const message = error instanceof Error ? error.message : String(error);
+          logTaskActivity(queued.projectId, queued.id, null, 'codex_retrying', {
+            attempt: retryNumber,
+            maxRetries: configuredAgentRetries(),
+            error: message,
+          });
+          notifyVoiceJobProgress(queued.id, `Agent run failed. Retrying automatically (${retryNumber}/${configuredAgentRetries()}).`);
+          runtimeLogger.warn('retrying failed local agent task', {
+            task_id: queued.id,
+            task_key: queued.key,
+            harness: queued.agentHarness,
+            retry: retryNumber,
+            error: message,
+          });
+        },
       });
 
       if (controller.signal.aborted) return;
@@ -314,6 +338,50 @@ class LocalTaskDispatcher {
       this.runningTasks.delete(queued.id);
     }
   }
+}
+
+export function configuredAgentRetries() {
+  const requested = Number.parseInt(process.env.KANBAN_AGENT_RETRY_COUNT ?? '2', 10);
+  return Number.isFinite(requested) ? Math.min(2, Math.max(1, requested)) : 2;
+}
+
+export async function runWithAgentRetries<T>(options: {
+  retries: number;
+  signal: AbortSignal;
+  run: (attempt: number) => Promise<T>;
+  onRetry?: (attempt: number, error: unknown) => void | Promise<void>;
+  retryDelayMs?: number;
+}) {
+  const retries = Math.min(2, Math.max(0, Math.trunc(options.retries)));
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (options.signal.aborted) throw new Error('turn_cancelled');
+    try {
+      return await options.run(attempt);
+    } catch (error) {
+      lastError = error;
+      if (options.signal.aborted || attempt >= retries) throw error;
+      await options.onRetry?.(attempt + 1, error);
+      await abortableDelay(options.retryDelayMs ?? 1_500, options.signal);
+    }
+  }
+  throw lastError;
+}
+
+function abortableDelay(ms: number, signal: AbortSignal) {
+  if (signal.aborted) return Promise.reject(new Error('turn_cancelled'));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    timer.unref();
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('turn_cancelled'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export function taskSlotAvailability(projectId: string, harness: AgentHarness) {

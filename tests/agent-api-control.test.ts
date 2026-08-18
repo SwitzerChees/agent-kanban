@@ -29,6 +29,37 @@ afterAll(() => {
 });
 
 describe('external agent task controls', () => {
+  test('retries failed agent runs at most twice and stops after success', async () => {
+    const attempts: number[] = [];
+    const retries: number[] = [];
+    const result = await localDispatcher.runWithAgentRetries({
+      retries: 2,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+      run: async (attempt) => {
+        attempts.push(attempt);
+        if (attempt < 2) throw new Error('temporary_failure');
+        return 'done';
+      },
+      onRetry: (retry) => { retries.push(retry); },
+    });
+    expect(result).toBe('done');
+    expect(attempts).toEqual([0, 1, 2]);
+    expect(retries).toEqual([1, 2]);
+
+    const cappedAttempts: number[] = [];
+    await expect(localDispatcher.runWithAgentRetries({
+      retries: 99,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+      run: async (attempt) => {
+        cappedAttempts.push(attempt);
+        throw new Error('permanent_failure');
+      },
+    })).rejects.toThrow('permanent_failure');
+    expect(cappedAttempts).toEqual([0, 1, 2]);
+  });
+
   test('persists project and harness concurrency limits and combines both slot checks', async () => {
     const project = await kanban.createProject({
       name: 'Concurrency Project',

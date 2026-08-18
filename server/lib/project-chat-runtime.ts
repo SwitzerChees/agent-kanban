@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { and, eq, isNull, or } from 'drizzle-orm';
@@ -9,6 +10,7 @@ import type { User } from './db/schema';
 import { loadAgentsContext } from './agents-context';
 import { prepareTaskWorktree } from './git-workspaces';
 import { runtimeLogger } from './logger';
+import { createApiToken, revokeApiToken } from './security/auth';
 import {
   appendProjectChatEvent,
   authorizeProjectChat,
@@ -253,6 +255,7 @@ export class ProjectChatRuntime {
     mode: ProjectChatMode;
     voiceCommandId: string | null;
   }) {
+    let credential: { path: string; tokenId: string; userId: string } | null = null;
     let draft = '';
     let flushTimer: NodeJS.Timeout | null = null;
     let lastActivity: ProjectChatActivity | null = null;
@@ -324,6 +327,7 @@ export class ProjectChatRuntime {
       });
       const agentsContext = await loadAgentsContext(worktree.projectPath);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : worktree.projectPath;
+      credential = await createProjectChatCredential(input.threadId, thread.userId);
       db.update(schema.projectChatThreads).set({ sourceRevision: worktree.revision })
         .where(eq(schema.projectChatThreads.id, input.threadId)).run();
 
@@ -333,6 +337,7 @@ export class ProjectChatRuntime {
         reasoningEffort: thread.reasoningEffort,
         workspacePath,
         sessionRoot: appDataDir('chat-sessions', input.threadId),
+        credentialConfigPath: credential.path,
         nativeSessionId: thread.nativeSessionId,
         mode: input.mode,
         prompt: input.userContent,
@@ -346,13 +351,20 @@ export class ProjectChatRuntime {
           lastActivity = activity;
           appendProjectChatEvent(input.threadId, 'activity', { activity, phase: 'running' });
         },
+        onToolActivity: (activity) => {
+          appendProjectChatEvent(input.threadId, 'tool_activity', { ...activity });
+        },
         onUnit: (unitName) => {
           const job = this.jobs.get(input.threadId);
           if (job) job.unitName = unitName;
         },
       });
       if (flushTimer) flushDraft();
-      draft = result.text;
+      const resultText = rewriteProjectChatArtifacts(result.text, input.threadId, [
+        worktree.worktreeRoot,
+        appDataDir('chat-sessions', input.threadId, 'artifacts'),
+      ]);
+      draft = resultText;
       if (input.mode === 'read_only') {
         const dirty = await worktreeIsDirty(worktree.worktreeRoot);
         if (dirty) throw new Error('chat_read_only_violation');
@@ -361,7 +373,7 @@ export class ProjectChatRuntime {
       const now = new Date().toISOString();
       db.transaction((tx) => {
         tx.update(schema.projectChatMessages).set({
-          content: result.text,
+          content: resultText,
           state: 'complete',
           updatedAt: now,
         }).where(eq(schema.projectChatMessages.id, input.assistantMessageId)).run();
@@ -376,7 +388,7 @@ export class ProjectChatRuntime {
           type: 'message_completed',
           payload: JSON.stringify({
             messageId: input.assistantMessageId,
-            content: result.text,
+            content: resultText,
             state: 'complete',
           }),
           createdAt: now,
@@ -394,7 +406,7 @@ export class ProjectChatRuntime {
               title: input.userContent,
               harness: thread.harness,
               status: 'done',
-              detail: conciseVoiceProgress(result.text) || 'Die Hintergrundarbeit ist abgeschlossen.',
+              detail: conciseVoiceProgress(resultText) || 'Die Hintergrundarbeit ist abgeschlossen.',
               announce: true,
             }),
             createdAt: now,
@@ -452,6 +464,10 @@ export class ProjectChatRuntime {
         });
       }
     } finally {
+      if (credential) {
+        revokeApiToken(credential.userId, credential.tokenId);
+        await unlink(credential.path).catch(() => undefined);
+      }
       const followUps = this.jobs.get(input.threadId)?.followUps ?? [];
       this.jobs.delete(input.threadId);
       const next = followUps.shift();
@@ -472,6 +488,42 @@ export class ProjectChatRuntime {
       }
     }
   }
+}
+
+async function createProjectChatCredential(threadId: string, userId: string) {
+  const sessionRoot = appDataDir('chat-sessions', threadId);
+  await mkdir(sessionRoot, { recursive: true });
+  const issued = createApiToken(userId, `Project chat ${threadId.slice(0, 8)}`, 30);
+  const credentialPath = path.join(sessionRoot, `agent-kanban-${randomUUID()}.json`);
+  const port = Number.parseInt(process.env.PORT ?? '3000', 10) || 3000;
+  const baseUrl = (process.env.KANBAN_INTERNAL_URL ?? `http://127.0.0.1:${port}`).replace(/\/$/, '');
+  try {
+    await writeFile(credentialPath, `${JSON.stringify({ base_url: baseUrl, token: issued.token }, null, 2)}\n`, { mode: 0o600 });
+    return { path: credentialPath, tokenId: issued.apiToken.id, userId };
+  } catch (error) {
+    revokeApiToken(userId, issued.apiToken.id);
+    throw error;
+  }
+}
+
+export function rewriteProjectChatArtifacts(content: string, threadId: string, allowedRoots: string[]) {
+  return content.replace(/!\[([^\]]*)\]\((file:\/\/[^)\s]+|\/[^)\s]+)(?:\s+"[^"]*")?\)/g, (match, alt: string, rawPath: string) => {
+    let absolutePath: string;
+    try {
+      absolutePath = rawPath.startsWith('file://') ? new URL(rawPath).pathname : decodeURIComponent(rawPath);
+    } catch {
+      return match;
+    }
+    const resolved = path.resolve(absolutePath);
+    if (!allowedRoots.some((root) => isWithinPath(resolved, path.resolve(root)))) return match;
+    const artifactId = Buffer.from(resolved, 'utf8').toString('base64url');
+    return `![${alt}](/api/project-chats/${threadId}/artifacts/${artifactId})`;
+  });
+}
+
+function isWithinPath(candidate: string, root: string) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 export function turnMessageTimestamps(now = Date.now()) {

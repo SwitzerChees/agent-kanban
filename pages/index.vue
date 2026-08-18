@@ -603,6 +603,7 @@ const dictionary = {
     sendComment: 'Send comment',
     noComments: 'No comments yet',
     agentRunFailed: 'The latest AI run failed: {error}',
+    agentRunRetrying: 'The AI run failed temporarily and is being retried automatically ({attempt}/{max}).',
     agentRunCompleted: 'The AI run finished and is ready for review.',
     agentRunStarted: 'A new AI run has started.',
     agentWorktreeResumeFailed: 'The existing task worktree could not be resumed because its branch name changed.',
@@ -927,6 +928,7 @@ const dictionary = {
     sendComment: 'Kommentar senden',
     noComments: 'Noch keine Kommentare',
     agentRunFailed: 'Der letzte KI-Lauf ist fehlgeschlagen: {error}',
+    agentRunRetrying: 'Der KI-Lauf ist vorübergehend fehlgeschlagen und wird automatisch erneut versucht ({attempt}/{max}).',
     agentRunCompleted: 'Der KI-Lauf ist abgeschlossen und bereit zur Prüfung.',
     agentRunStarted: 'Ein neuer KI-Lauf wurde gestartet.',
     agentWorktreeResumeFailed: 'Der vorhandene Task-Worktree konnte wegen eines geänderten Branch-Namens nicht wiederaufgenommen werden.',
@@ -3098,17 +3100,21 @@ const requestFollowUpAction = async () => {
   if (!followUpMessage.value.trim() && !followUpFiles.value.length) return;
   errorMessage.value = null;
   taskSubmitting.value = true;
-  const body = followUpMessage.value.trim() || t.value.followUpFilesOnlyMessage;
+  let body = followUpMessage.value.trim() || t.value.followUpFilesOnlyMessage;
   let filesUploaded = false;
   try {
     if (followUpFiles.value.length) {
       const filesToUpload = [...followUpFiles.value];
+      const existingAttachmentIds = new Set(taskAttachments.value.map((attachment) => attachment.id));
       const attachmentForm = new FormData();
       await appendTaskFiles(attachmentForm, filesToUpload);
-      await $fetch(`/api/tasks/${selectedTaskId.value}/attachments`, { method: 'POST', body: attachmentForm });
+      const detail = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/attachments`, { method: 'POST', body: attachmentForm });
+      const uploadedAttachments = detail.task.attachments.filter((attachment) => !existingAttachmentIds.has(attachment.id));
+      body = resolvePendingFileReferences(body, filesToUpload, uploadedAttachments);
+      followUpMessage.value = body;
       removePendingTaskFiles(filesToUpload);
       filesUploaded = true;
-      selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}`);
+      selectedTaskDetail.value = detail;
     }
     selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/messages`, {
       method: 'POST',
@@ -3665,12 +3671,13 @@ const pendingFileReferenceUrl = (id: string) => `#pending-file-${id}`;
 const escapeMarkdownLinkLabel = (value: string) => value.replace(/([\\\[\]])/g, '\\$1');
 const syncFileReferenceLabel = (url: string, fileName: string) => {
   const nextLabel = `#${escapeMarkdownLinkLabel(fileName)}`;
-  taskForm.description = taskForm.description.replace(
+  const replaceLabel = (markdown: string) => markdown.replace(
     /\[([^\]]*(?:\\\][^\]]*)*)\]\(([^)\s]+)([^)]*)\)/g,
-    (link, _label: string, href: string, suffix: string) => href === url
-      ? `[${nextLabel}](${href}${suffix})`
-      : link,
+    (link, _label: string, href: string, suffix: string) => href === url ? `[${nextLabel}](${href}${suffix})` : link,
   );
+  taskForm.description = replaceLabel(taskForm.description);
+  taskMessage.value = replaceLabel(taskMessage.value);
+  followUpMessage.value = replaceLabel(followUpMessage.value);
 };
 const resolvePendingFileReferences = (
   markdown: string,
@@ -3889,6 +3896,16 @@ const latestAgentTimelineUpdate = (events: TaskEvent[]) => {
         body: t.value.agentRunCompleted,
         createdAt: event.createdAt,
         tone: 'success' as const,
+      };
+    }
+    if (event.action === 'codex_retrying') {
+      const metadata = parseMetadata(event.metadata);
+      return {
+        body: t.value.agentRunRetrying
+          .replace('{attempt}', String(metadata.attempt ?? '?'))
+          .replace('{max}', String(metadata.maxRetries ?? metadata.maxAttempts ?? '?')),
+        createdAt: event.createdAt,
+        tone: 'info' as const,
       };
     }
     if (event.action === 'codex_started') {
@@ -6171,6 +6188,7 @@ const humanError = (error: unknown) => {
                               :style="{ '--task-accent': topicAccent(topic) }"
                               :class="{
                                 'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running',
+                                'ring-2 ring-red-500 bg-red-50/80 dark:ring-red-500 dark:bg-red-950/35': task.agentStatus === 'failed',
                                 'ak-task-card-mentioned': Boolean(task.unreadMentionCount),
                                 'opacity-50': draggedTaskId === task.id,
                               }"
@@ -6195,6 +6213,13 @@ const humanError = (error: unknown) => {
                               <div class="mb-2 flex items-center justify-between gap-2">
                                 <UBadge variant="subtle" color="neutral" class="shrink-0 whitespace-nowrap">{{ task.key }}</UBadge>
                                 <div class="flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    v-if="task.agentStatus === 'failed'"
+                                    class="inline-flex shrink-0 items-center gap-1 rounded-md bg-red-100 px-2 py-1 text-[10px] font-bold text-red-800 dark:bg-red-950 dark:text-red-200"
+                                  >
+                                    <UIcon name="i-lucide-circle-alert" class="size-3" />
+                                    {{ taskStatusLabel(task.agentStatus) }}
+                                  </span>
                                   <span
                                     v-if="task.unreadMentionCount"
                                     class="inline-flex shrink-0 items-center gap-1 rounded-md bg-teal-100 px-2 py-1 text-[10px] font-bold text-teal-800 dark:bg-teal-950 dark:text-teal-200"
@@ -6713,7 +6738,7 @@ const humanError = (error: unknown) => {
               aria-labelledby="task-tab-task"
               class="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_19rem]"
             >
-              <div class="min-w-0 p-4 sm:p-6 lg:p-7">
+              <div class="min-w-0 p-4 sm:p-6">
                 <template v-if="hasAgentActivity">
                   <div class="mb-6 flex items-start gap-3 rounded-xl bg-zinc-100 px-4 py-3 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
                     <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-400 dark:ring-zinc-700">
@@ -7093,6 +7118,18 @@ const humanError = (error: unknown) => {
                   </div>
 
                   <div class="border-t border-zinc-200 pt-5 dark:border-zinc-800">
+                    <USwitch
+                      v-model="taskForm.agentEnabled"
+                      color="primary"
+                      size="lg"
+                      :label="t.aiExecution"
+                      :description="t.aiExecutionHelp"
+                      :disabled="editingTask?.agentStatus === 'running'"
+                      :ui="{ root: 'items-start', label: 'text-sm font-semibold text-zinc-900 dark:text-zinc-100', description: 'text-xs leading-5 text-zinc-500 dark:text-zinc-400' }"
+                    />
+                  </div>
+
+                  <div v-if="taskForm.agentEnabled" class="border-t border-zinc-200 pt-5 dark:border-zinc-800">
                     <div class="flex items-start gap-3">
                       <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-teal-300 dark:ring-zinc-700">
                         <UIcon name="i-lucide-terminal-square" class="size-4" />
@@ -7131,18 +7168,6 @@ const humanError = (error: unknown) => {
                         <span data-testid="task-model-label" class="min-w-0 truncate font-mono font-medium text-zinc-800 dark:text-zinc-200">{{ selectedHarnessModel }}</span>
                       </div>
                     </div>
-                  </div>
-
-                  <div class="border-t border-zinc-200 pt-5 dark:border-zinc-800">
-                    <USwitch
-                      v-model="taskForm.agentEnabled"
-                      color="primary"
-                      size="lg"
-                      :label="t.aiExecution"
-                      :description="t.aiExecutionHelp"
-                      :disabled="editingTask?.agentStatus === 'running'"
-                      :ui="{ root: 'items-start', label: 'text-sm font-semibold text-zinc-900 dark:text-zinc-100', description: 'text-xs leading-5 text-zinc-500 dark:text-zinc-400' }"
-                    />
                   </div>
 
                   <div class="border-t border-zinc-200 pt-5 dark:border-zinc-800">
@@ -7258,14 +7283,37 @@ const humanError = (error: unknown) => {
                       </div>
                     </div>
 
-                    <UTextarea
-                      v-model="followUpMessage"
-                      class="w-full"
-                      :rows="4"
-                      size="lg"
-                      :placeholder="t.followUpPlaceholder"
-                      @paste="handlePaste"
-                    />
+                    <div class="ak-markdown-editor overflow-hidden rounded-xl border border-amber-300 bg-white transition focus-within:border-amber-500 focus-within:ring-2 focus-within:ring-amber-500/20 dark:border-amber-800 dark:bg-zinc-950">
+                      <UEditor
+                        v-slot="{ editor }"
+                        v-model="followUpMessage"
+                        content-type="markdown"
+                        :handlers="fileReferenceHandlers"
+                        :image="false"
+                        :mention="false"
+                        :placeholder="t.followUpPlaceholder"
+                        :ui="{ content: 'min-h-32', base: 'min-h-32 px-4 py-3 sm:px-4' }"
+                        @paste="handlePaste"
+                      >
+                        <UEditorToolbar
+                          layout="fixed"
+                          :editor="editor"
+                          :items="editorToolbarItems"
+                          class="ak-editor-toolbar border-b border-amber-200 bg-amber-50/80 px-2 py-1.5 dark:border-amber-900 dark:bg-amber-950/30"
+                        />
+                        <UEditorSuggestionMenu
+                          v-if="fileReferenceItems.length"
+                          :editor="editor"
+                          char="#"
+                          plugin-key="followUpFileAttachmentMenu"
+                          :items="fileReferenceItems"
+                          :limit="8"
+                          :suggestion="{ allowSpaces: true }"
+                          :options="{ strategy: 'fixed', placement: 'bottom-start' }"
+                          :append-to="appendEditorMenuToBody"
+                        />
+                      </UEditor>
+                    </div>
 
                     <TaskFilePicker
                       :files="followUpFiles"

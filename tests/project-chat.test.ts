@@ -58,6 +58,19 @@ afterAll(() => {
 });
 
 describe('private project chats', () => {
+  test('rewrites only inline images inside the chat-owned folders', () => {
+    const artifactRoot = path.join(testRoot, 'data', 'chat-sessions', 'chat-1', 'artifacts');
+    const imagePath = path.join(artifactRoot, 'screen.png');
+    const outsidePath = path.join(testRoot, 'secret.png');
+    const rewritten = runtimeModule.rewriteProjectChatArtifacts(
+      `![Screenshot](${imagePath})\n![Outside](${outsidePath})`,
+      'chat-1',
+      [artifactRoot],
+    );
+    expect(rewritten).toContain('/api/project-chats/chat-1/artifacts/');
+    expect(rewritten).toContain(`![Outside](${outsidePath})`);
+  });
+
   test('stores the user message before its assistant placeholder deterministically', () => {
     const timestamps = runtimeModule.turnMessageTimestamps(Date.parse('2026-08-16T20:00:00.000Z'));
     expect(timestamps).toEqual({

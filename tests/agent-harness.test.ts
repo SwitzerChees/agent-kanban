@@ -13,6 +13,7 @@ import {
   buildProjectChatArgs,
   projectChatSystemPrompt,
   sessionIdFromEvent,
+  toolActivityFromEvent,
 } from '../server/lib/project-chat-harness';
 
 describe('agent harness runtime contracts', () => {
@@ -70,8 +71,10 @@ describe('agent harness runtime contracts', () => {
 
   test('gives the voice orchestrator a writable chat-worktree contract without creating board tasks', () => {
     expect(projectChatSystemPrompt('orchestrator')).toContain('isolated Git worktree');
-    expect(projectChatSystemPrompt('orchestrator')).toContain('Never create a task, card, ticket');
+    expect(projectChatSystemPrompt('orchestrator')).toContain('only when the user explicitly asks');
     expect(projectChatSystemPrompt('read_only')).toContain('strictly read-only conversation');
+    expect(projectChatSystemPrompt('read_only')).toContain('agent-kanban-control');
+    expect(projectChatSystemPrompt('read_only')).toContain("current user's permissions");
     const args = buildProjectChatArgs({
       reasoningEffort: 'xhigh',
       workspacePath: '/tmp/project-chat',
@@ -113,5 +116,22 @@ describe('agent harness runtime contracts', () => {
       toolName: 'ipython',
       args: { code: 'agent-browser open https://nuxt.com' },
     })).toBe('web');
+  });
+
+  test('exposes concise, redacted tool activity without raw payloads', () => {
+    expect(toolActivityFromEvent({
+      type: 'item.started',
+      item: { id: 'cmd-1', type: 'command_execution', command: 'python agent_kanban.py request GET /api/projects' },
+    })).toMatchObject({
+      id: 'cmd-1',
+      kind: 'kanban',
+      status: 'running',
+      detail: 'python agent_kanban.py request GET /api/projects',
+    });
+    expect(toolActivityFromEvent({
+      type: 'tool_execution_start',
+      toolName: 'shell',
+      command: '--password private-value',
+    })?.detail).not.toContain('private-value');
   });
 });

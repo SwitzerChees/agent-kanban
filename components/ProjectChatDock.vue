@@ -30,6 +30,14 @@ interface ProjectChatMessage {
   updatedAt: string;
 }
 
+interface ProjectChatToolActivity {
+  id: string;
+  kind: 'command' | 'file' | 'web' | 'kanban' | 'tool';
+  label: string;
+  detail: string | null;
+  status: 'running' | 'completed' | 'failed';
+}
+
 interface ChatCapabilities {
   harnesses: Array<{ value: AgentHarness; available: boolean }>;
   reasoningEfforts: ReasoningEffort[];
@@ -60,7 +68,7 @@ const copy = {
     history: 'Chat history',
     back: 'Back to chat',
     emptyTitle: 'Ask about this project',
-    emptyCopy: 'Explore architecture, understand behavior, or trace code without changing the repository.',
+    emptyCopy: 'Explore the project or manage Agent Kanban with your existing permissions.',
     promptArchitecture: 'How is this project structured?',
     promptFlow: 'Trace the main request flow.',
     promptRisk: 'Where are the most important technical risks?',
@@ -87,6 +95,8 @@ const copy = {
     resize: 'Resize chat window',
     move: 'Drag to move chat window',
     voiceStart: 'Start voice assistant',
+    activityDetails: 'Current actions',
+    sourceScope: 'Project read-only · Kanban with your permissions',
   },
   de: {
     open: 'Privaten Projekt-Chat öffnen',
@@ -97,7 +107,7 @@ const copy = {
     history: 'Chat-Verlauf',
     back: 'Zurück zum Chat',
     emptyTitle: 'Frag etwas über dieses Projekt',
-    emptyCopy: 'Verstehe Architektur, Verhalten und Codepfade, ohne das Repository zu verändern.',
+    emptyCopy: 'Verstehe das Projekt oder steuere Agent Kanban mit deinen bestehenden Berechtigungen.',
     promptArchitecture: 'Wie ist dieses Projekt aufgebaut?',
     promptFlow: 'Zeige mir den wichtigsten Request-Ablauf.',
     promptRisk: 'Wo liegen die wichtigsten technischen Risiken?',
@@ -124,6 +134,8 @@ const copy = {
     resize: 'Chat-Fenster skalieren',
     move: 'Ziehen, um das Chat-Fenster zu verschieben',
     voiceStart: 'Sprachassistent starten',
+    activityDetails: 'Aktuelle Aktionen',
+    sourceScope: 'Projekt nur lesbar · Kanban mit deinen Rechten',
   },
 } as const;
 
@@ -141,6 +153,7 @@ const capabilities = ref<ChatCapabilities | null>(null);
 const latestEventId = ref(0);
 const composer = ref('');
 const currentActivity = ref<'preparing' | 'project' | 'web' | 'tool' | null>(null);
+const toolActivities = ref<ProjectChatToolActivity[]>([]);
 const messageLog = ref<HTMLElement | null>(null);
 const composerInput = ref<HTMLElement | null>(null);
 const voiceConsole = ref<{
@@ -235,6 +248,7 @@ watch(() => props.projectId, async () => {
   history.value = [];
   latestEventId.value = 0;
   currentActivity.value = null;
+  toolActivities.value = [];
   errorMessage.value = '';
   view.value = 'chat';
   stopStreamAnimation();
@@ -422,6 +436,7 @@ function connectStream() {
     updateEventCursor(event);
     if (chat.value) chat.value.status = 'running';
     currentActivity.value = 'preparing';
+    toolActivities.value = [];
   });
   stream.addEventListener('activity', (event) => {
     const payload = eventPayload(event);
@@ -430,6 +445,17 @@ function connectStream() {
     currentActivity.value = payload.phase === 'preparing'
       ? 'preparing'
       : activity === 'web' || activity === 'tool' ? activity : 'project';
+  });
+  stream.addEventListener('tool_activity', (event) => {
+    const payload = eventPayload(event as MessageEvent);
+    updateEventCursor(event, payload);
+    const activity = normalizeToolActivity(payload);
+    if (!activity) return;
+    const index = toolActivities.value.findIndex((item) => item.id === activity.id);
+    if (index >= 0) toolActivities.value.splice(index, 1, activity);
+    else toolActivities.value.push(activity);
+    toolActivities.value = toolActivities.value.slice(-8);
+    scheduleScroll(isNearLatest());
   });
   stream.addEventListener('message_updated', (event) => applyMessageEvent(event, 'streaming'));
   stream.addEventListener('message_completed', (event) => {
@@ -549,6 +575,29 @@ function eventPayload(event: MessageEvent) {
 function updateEventCursor(event: Event, payload?: Record<string, unknown>) {
   const id = Number((event as MessageEvent).lastEventId || payload?.eventId || 0);
   if (Number.isFinite(id)) latestEventId.value = Math.max(latestEventId.value, id);
+}
+
+function normalizeToolActivity(payload: Record<string, unknown>): ProjectChatToolActivity | null {
+  const kind = String(payload.kind ?? '');
+  const status = String(payload.status ?? '');
+  if (!['command', 'file', 'web', 'kanban', 'tool'].includes(kind)
+    || !['running', 'completed', 'failed'].includes(status)) return null;
+  return {
+    id: String(payload.id ?? crypto.randomUUID()),
+    kind: kind as ProjectChatToolActivity['kind'],
+    label: String(payload.label ?? t.value.tool),
+    detail: typeof payload.detail === 'string' && payload.detail.trim() ? payload.detail : null,
+    status: status as ProjectChatToolActivity['status'],
+  };
+}
+
+function toolActivityIcon(activity: ProjectChatToolActivity) {
+  if (activity.status === 'failed') return 'i-lucide-circle-alert';
+  if (activity.kind === 'kanban') return 'i-lucide-columns-3';
+  if (activity.kind === 'web') return 'i-lucide-globe-2';
+  if (activity.kind === 'file') return 'i-lucide-file-pen-line';
+  if (activity.kind === 'command') return 'i-lucide-terminal';
+  return 'i-lucide-wrench';
 }
 
 function closeStream() {
@@ -914,7 +963,7 @@ function friendlyError(error: unknown) {
                         :model-value="message.content"
                         content-type="markdown"
                         :editable="false"
-                        :image="false"
+                        :image="true"
                         :mention="false"
                         class="ak-chat-markdown text-sm leading-6 text-zinc-700 dark:text-zinc-200"
                         :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-700 dark:text-zinc-200' }"
@@ -1001,6 +1050,33 @@ function friendlyError(error: unknown) {
                 <span>{{ reconnecting ? t.reconnecting : activityLabel }}</span>
               </div>
 
+              <div
+                v-if="!voiceActive && running && toolActivities.length"
+                class="mb-2 overflow-hidden rounded-lg bg-white ring-1 ring-zinc-200 dark:bg-zinc-950 dark:ring-zinc-800"
+              >
+                <div class="flex items-center justify-between gap-2 border-b border-zinc-100 px-3 py-2 text-[11px] font-semibold text-zinc-600 dark:border-zinc-800 dark:text-zinc-300">
+                  <span>{{ t.activityDetails }}</span>
+                  <span class="font-mono text-zinc-400">{{ toolActivities.length }}</span>
+                </div>
+                <div class="max-h-32 divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">
+                  <div v-for="activity in toolActivities" :key="activity.id" class="flex min-w-0 items-start gap-2 px-3 py-2 text-[11px] leading-4">
+                    <UIcon
+                      :name="toolActivityIcon(activity)"
+                      class="mt-0.5 size-3.5 shrink-0"
+                      :class="activity.status === 'failed'
+                        ? 'text-red-600 dark:text-red-400'
+                        : activity.status === 'running'
+                          ? 'animate-pulse text-teal-600 dark:text-teal-400'
+                          : 'text-zinc-400'"
+                    />
+                    <span class="min-w-0 flex-1">
+                      <span class="block font-medium text-zinc-700 dark:text-zinc-200">{{ activity.label }}</span>
+                      <code v-if="activity.detail" class="mt-0.5 block truncate font-mono text-[10px] text-zinc-500 dark:text-zinc-400" :title="activity.detail">{{ activity.detail }}</code>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               <div v-if="!voiceActive" ref="composerInput" class="relative rounded-xl bg-white ring-1 ring-zinc-300 focus-within:ring-2 focus-within:ring-teal-600 dark:bg-zinc-950 dark:ring-zinc-700 dark:focus-within:ring-teal-500">
                 <UTextarea
                   v-model="composer"
@@ -1018,7 +1094,7 @@ function friendlyError(error: unknown) {
                 <div class="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2">
                   <span class="inline-flex min-w-0 items-center gap-1.5 truncate px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
                     <UIcon name="i-lucide-shield-check" class="size-3 shrink-0" />
-                    <span class="truncate">Read-only · {{ projectName }}</span>
+                    <span class="truncate">{{ t.sourceScope }} · {{ projectName }}</span>
                   </span>
                   <span class="flex shrink-0 items-center gap-1">
                     <UButton
@@ -1214,6 +1290,15 @@ function friendlyError(error: unknown) {
 
 .ak-project-chat-log {
   scrollbar-gutter: stable;
+}
+
+.ak-chat-markdown :deep(img) {
+  display: block;
+  max-width: 100%;
+  max-height: 28rem;
+  margin-block: 0.75rem;
+  border-radius: 0.75rem;
+  object-fit: contain;
 }
 
 .ak-chat-thinking-dot {

@@ -380,8 +380,8 @@ function handleServerMessage(peer: JsonRpcPeer, message: JsonRpcMessage, onEvent
   }
 
   if (message.method === 'item/permissions/requestApproval') {
-    onEvent({ event: 'approval_auto_approved', timestamp: now(), message: 'permission request accepted for session' });
-    peer.respond(message.id, { permissions: { fileSystem: null, network: null }, scope: 'session' });
+    onEvent({ event: 'approval_denied', timestamp: now(), message: 'permission escalation denied outside the task workspace' });
+    peer.respond(message.id, { permissions: {}, scope: 'turn' });
     return;
   }
 
