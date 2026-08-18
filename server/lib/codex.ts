@@ -71,6 +71,19 @@ export interface TaskHarnessSessionResult {
   waitRequest: AgentWaitRequest | null;
 }
 
+export function taskCodexSandboxOverrides(
+  runtime: boolean,
+  threadSandbox: CodexConfig['threadSandbox'],
+  turnSandboxPolicy: CodexConfig['turnSandboxPolicy'],
+) {
+  return runtime
+    ? {
+        sandbox: 'danger-full-access' as const,
+        sandboxPolicy: { type: 'dangerFullAccess' as const },
+      }
+    : { sandbox: threadSandbox, sandboxPolicy: turnSandboxPolicy };
+}
+
 export async function runCodexSession(options: RunCodexSessionOptions): Promise<TaskHarnessSessionResult> {
   let runner: ReturnType<typeof buildTaskHarnessRunner> | null = null;
   if (options.runtime) {
@@ -117,11 +130,19 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
     });
     peer.notify('initialized', {});
 
+    const sandboxOverrides = taskCodexSandboxOverrides(
+      Boolean(options.runtime),
+      options.config.threadSandbox,
+      options.config.turnSandboxPolicy,
+    );
     const threadParams = compactObject({
       cwd: options.workspacePath,
       model: options.config.model,
       approvalPolicy: options.config.approvalPolicy,
-      sandbox: options.config.threadSandbox,
+      // The transient systemd unit already confines task access to the worktree and
+      // session directories. Running Codex's bwrap sandbox inside that unit breaks
+      // network namespace setup (the nested sandbox cannot configure loopback).
+      sandbox: sandboxOverrides.sandbox,
     });
     const threadResponse = threadId
       ? await peer.request('thread/resume', { ...threadParams, threadId, excludeTurns: true })
@@ -155,7 +176,7 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
         model: options.config.model,
         effort: options.config.reasoningEffort,
         approvalPolicy: options.config.approvalPolicy,
-        sandboxPolicy: options.config.turnSandboxPolicy,
+        sandboxPolicy: sandboxOverrides.sandboxPolicy,
         input: [textInput(prompt)],
       }));
 

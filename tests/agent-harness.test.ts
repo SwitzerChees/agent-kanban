@@ -9,6 +9,7 @@ import {
 import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
 import { buildTaskHarnessRunner } from '../server/lib/task-harness-sandbox';
+import { taskCodexSandboxOverrides } from '../server/lib/codex';
 import {
   activityFromEvent,
   assistantTextFromEvent,
@@ -108,6 +109,17 @@ describe('agent harness runtime contracts', () => {
       '/usr/bin/example-agent',
       'run',
     ]));
+  });
+
+  test('does not nest the Codex bwrap sandbox inside the task systemd sandbox', () => {
+    expect(taskCodexSandboxOverrides(true, 'workspace-write', null)).toEqual({
+      sandbox: 'danger-full-access',
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    });
+    expect(taskCodexSandboxOverrides(false, 'workspace-write', null)).toEqual({
+      sandbox: 'workspace-write',
+      sandboxPolicy: null,
+    });
   });
 
   test('builds resumable, non-autonomous chat turns for every harness', () => {
