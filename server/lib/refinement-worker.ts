@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { z } from 'zod';
-import { loadAgentsContext } from './agents-context';
+import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { syncMasterForRefinement } from './git-workspaces';
 import { runRefinementCodexTurn } from './refinement-codex';
 import { runExternalRefinementTurn } from './external-agent';
@@ -327,12 +327,13 @@ export async function processClaimedRefinement(context: RefinementContext, signa
 
   const workflow = await loadWorkflow();
   const config = resolveServiceConfig(workflow);
-  const agentsContext = await loadAgentsContext(context.projectFolderPath);
+  const agentsContext = await loadAgentsContext(syncedWorkspace.projectPath, syncedWorkspace.gitRoot);
   const usedQuestionRounds = new Set(context.questions.map((question) => question.round)).size;
   const prompt = buildRefinementPrompt(context, {
     agentsPath: agentsContext.path,
     agentsContent: agentsContext.content,
     agentsTruncated: agentsContext.truncated,
+    projectInstructions: buildAgentsPromptPrefix(agentsContext),
     usedQuestionRounds,
   });
 
@@ -446,6 +447,7 @@ export function buildRefinementPrompt(context: RefinementContext, options: {
   agentsPath: string | null;
   agentsContent: string | null;
   agentsTruncated: boolean;
+  projectInstructions?: string;
   usedQuestionRounds: number;
 }) {
   const remainingQuestionRounds = Math.max(MAX_QUESTION_ROUNDS - options.usedQuestionRounds, 0);
@@ -479,7 +481,9 @@ export function buildRefinementPrompt(context: RefinementContext, options: {
         ...answers.map((question) => `- ${question.question}\n  Answer: ${formatAnswer(question.answer)}`),
       ].join('\n')
     : '';
-  const agents = options.agentsContent
+  const agents = options.projectInstructions
+    ? `\n${options.projectInstructions}`
+    : options.agentsContent
     ? [
         '',
         `Project instructions loaded from ${options.agentsPath ?? 'AGENTS.md'}${options.agentsTruncated ? ' (truncated)' : ''}:`,

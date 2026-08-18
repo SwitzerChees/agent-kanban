@@ -26,6 +26,7 @@ export interface ProjectChatHarnessTurnOptions {
   credentialConfigPath: string;
   nativeSessionId: string | null;
   mode?: ProjectChatMode;
+  projectInstructions?: string | null;
   prompt: string;
   signal: AbortSignal;
   onText: (fragment: string) => void;
@@ -73,8 +74,9 @@ Operating rules:
 - Agent Kanban board operations explicitly requested by the user are allowed through the agent-kanban-control skill and use exactly that user's permissions.
 - Use the skill from AGENT_KANBAN_SKILL_DIR. Save screenshots or generated images in AGENT_KANBAN_CHAT_ARTIFACT_DIR and include them with Markdown image syntax.`;
 
-export function projectChatSystemPrompt(mode: ProjectChatMode = 'read_only') {
-  return mode === 'orchestrator' ? ORCHESTRATOR_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
+export function projectChatSystemPrompt(mode: ProjectChatMode = 'read_only', projectInstructions?: string | null) {
+  const base = mode === 'orchestrator' ? ORCHESTRATOR_SYSTEM_PROMPT : CHAT_SYSTEM_PROMPT;
+  return projectInstructions?.trim() ? `${base}\n\n---\n\n${projectInstructions.trim()}` : base;
 }
 
 export async function runProjectChatHarnessTurn(
@@ -108,7 +110,7 @@ export async function runProjectChatHarnessTurn(
     env: runner.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  const systemPrompt = projectChatSystemPrompt(options.mode);
+  const systemPrompt = projectChatSystemPrompt(options.mode, options.projectInstructions);
   child.stdin.end(options.harness === 'prime-agent'
     ? options.prompt
     : `${systemPrompt}\n\n---\n\n${options.prompt}`);
@@ -174,7 +176,7 @@ export async function runProjectChatHarnessTurn(
 }
 
 export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions,
-  'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId' | 'mode'>) {
+  'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId' | 'mode' | 'projectInstructions'>) {
   if (options.harness === 'opencode') {
     return [
       'run',
@@ -196,7 +198,7 @@ export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions
       '--model', QWEN_MODEL_ID,
       '--thinking', options.reasoningEffort,
       '--session-dir', path.join(options.sessionRoot, 'prime-sessions'),
-      '--append-system-prompt', projectChatSystemPrompt(options.mode),
+      '--append-system-prompt', projectChatSystemPrompt(options.mode, options.projectInstructions),
       ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
     ];
   }

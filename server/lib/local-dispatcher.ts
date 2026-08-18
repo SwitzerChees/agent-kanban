@@ -270,7 +270,7 @@ class LocalTaskDispatcher {
         taskKey: queued.key,
       });
       issue.branch_name = taskWorktree.branchName;
-      const agentsContext = await loadAgentsContext(taskWorktree.projectPath);
+      const agentsContext = await loadAgentsContext(taskWorktree.projectPath, taskWorktree.worktreeRoot);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : taskWorktree.projectPath;
       const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
       const taskPromptPrefix = [

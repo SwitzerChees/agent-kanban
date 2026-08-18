@@ -184,6 +184,8 @@ describe('agent harness runtime contracts', () => {
     expect(projectChatSystemPrompt('read_only')).toContain('strictly read-only conversation');
     expect(projectChatSystemPrompt('read_only')).toContain('agent-kanban-control');
     expect(projectChatSystemPrompt('read_only')).toContain("current user's permissions");
+    expect(projectChatSystemPrompt('orchestrator', '# Mandatory Project Instructions\nUse DESIGN.md.'))
+      .toContain('Use DESIGN.md.');
     const args = buildProjectChatArgs({
       reasoningEffort: 'xhigh',
       workspacePath: '/tmp/project-chat',
@@ -195,6 +197,22 @@ describe('agent harness runtime contracts', () => {
       mode: 'orchestrator',
     });
     expect(args).toEqual(expect.arrayContaining(['--agent', 'build']));
+  });
+
+  test('passes injected project guidance to Prime Agent as a system prompt', () => {
+    const args = buildProjectChatArgs({
+      reasoningEffort: 'medium',
+      workspacePath: '/tmp/project-chat',
+      sessionRoot: '/tmp/project-chat-session',
+      threadId: 'chat-guidance',
+      prompt: 'Implement the task.',
+      projectInstructions: '# Mandatory Project Instructions\nFollow DESIGN.md.',
+      harness: 'prime-agent',
+      nativeSessionId: null,
+      mode: 'orchestrator',
+    });
+    const systemPrompt = args[args.indexOf('--append-system-prompt') + 1];
+    expect(systemPrompt).toContain('Follow DESIGN.md.');
   });
 
   test('parses Prime Agent session headers and streaming text events', () => {

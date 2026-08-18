@@ -63,6 +63,7 @@ describe('refinement worker contracts', () => {
       agentsPath: null,
       agentsContent: null,
       agentsTruncated: false,
+      projectInstructions: '# Mandatory Project Instructions\nUse DESIGN.md.',
       usedQuestionRounds: 3,
     });
 
@@ -71,6 +72,7 @@ describe('refinement worker contracts', () => {
     expect(prompt).not.toContain('Answer: Contributors');
     expect(prompt).toContain('All challenge-question rounds are used');
     expect(prompt).toContain('strictly read-only analysis');
+    expect(prompt).toContain('Use DESIGN.md.');
   });
 
   test('accepts real generated image bytes but rejects symlinks and non-images', async () => {

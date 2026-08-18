@@ -7,7 +7,7 @@ import { and, eq, isNull, or } from 'drizzle-orm';
 import { createError } from 'h3';
 import { appDataDir, db, schema } from './db';
 import type { User } from './db/schema';
-import { loadAgentsContext } from './agents-context';
+import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { prepareTaskWorktree } from './git-workspaces';
 import { runtimeLogger } from './logger';
 import { createApiToken, revokeApiToken } from './security/auth';
@@ -377,7 +377,7 @@ export class ProjectChatRuntime {
         taskKey: `${project.key}-chat`,
         signal: input.controller.signal,
       });
-      const agentsContext = await loadAgentsContext(worktree.projectPath);
+      const agentsContext = await loadAgentsContext(worktree.projectPath, worktree.worktreeRoot);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : worktree.projectPath;
       credential = await createProjectChatCredential(input.threadId, thread.userId);
       db.update(schema.projectChatThreads).set({ sourceRevision: worktree.revision })
@@ -392,6 +392,7 @@ export class ProjectChatRuntime {
         credentialConfigPath: credential.path,
         nativeSessionId: thread.nativeSessionId,
         mode: input.mode,
+        projectInstructions: buildAgentsPromptPrefix(agentsContext),
         prompt: input.userContent,
         signal: input.controller.signal,
         onText: (fragment) => {
