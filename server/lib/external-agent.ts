@@ -390,7 +390,22 @@ function assistantText(event: Record<string, unknown>, harness: ExternalHarness,
   if (message.role !== 'assistant') return '';
   const fullText = contentText(message.content);
   if (!fullText) return '';
-  return fullText.startsWith(emitted) ? fullText.slice(emitted.length) : fullText;
+  return remainingAssistantText(fullText, emitted);
+}
+
+export function remainingAssistantText(fullText: string, emitted: string) {
+  if (!emitted) return fullText;
+  if (fullText.startsWith(emitted)) return fullText.slice(emitted.length);
+
+  // Prime can stream the visible JSON without its leading whitespace and then
+  // include that whitespace again in the final message_end snapshot. Treat
+  // both forms as the same content so one response never becomes two adjacent
+  // JSON objects in the refinement parser.
+  const normalizedFullText = fullText.trimStart();
+  const normalizedEmitted = emitted.trimStart();
+  return normalizedFullText.startsWith(normalizedEmitted)
+    ? normalizedFullText.slice(normalizedEmitted.length)
+    : fullText;
 }
 
 function externalSessionId(event: Record<string, unknown>, harness: ExternalHarness) {

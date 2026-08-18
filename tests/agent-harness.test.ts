@@ -11,6 +11,7 @@ import {
   buildExternalRefinementPrompt,
   externalRefinementSessionId,
   parseJsonObject,
+  remainingAssistantText,
 } from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
 import { buildTaskHarnessRunner, taskHarnessResourceProperties } from '../server/lib/task-harness-sandbox';
@@ -139,6 +140,13 @@ describe('agent harness runtime contracts', () => {
     expect(externalRefinementSessionId('prime-agent', true, 'prime-session')).toBeNull();
     expect(externalRefinementSessionId('prime-agent', false, 'prime-session')).toBe('prime-session');
     expect(externalRefinementSessionId('opencode', true, 'opencode-session')).toBe('opencode-session');
+  });
+
+  test('does not duplicate streamed Prime output when message_end restores leading whitespace', () => {
+    const json = '{"status":"completed"}';
+    expect(remainingAssistantText(`\n\n${json}`, json)).toBe('');
+    expect(remainingAssistantText(`\n\n${json} trailing`, json)).toBe(' trailing');
+    expect(remainingAssistantText('different final text', json)).toBe('different final text');
   });
 
   test('accepts only a terminal, bounded external wait request', () => {
