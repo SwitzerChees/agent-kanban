@@ -613,11 +613,6 @@ export function configuredAgentRetries() {
   return Number.isFinite(requested) ? Math.min(2, Math.max(0, requested)) : 1;
 }
 
-export function configuredGlobalAgentConcurrency() {
-  const requested = Number.parseInt(process.env.KANBAN_AGENT_GLOBAL_CONCURRENCY ?? '3', 10);
-  return Number.isFinite(requested) ? Math.min(64, Math.max(1, requested)) : 3;
-}
-
 export function agentRuntimeSafetyInstructions() {
   return [
     'Runtime safety:',
@@ -671,8 +666,6 @@ export function taskSlotAvailability(projectId: string, harness: AgentHarness) {
   if (!project) {
     return {
       available: false,
-      globalLimit: configuredGlobalAgentConcurrency(),
-      globalRunning: 0,
       projectLimit: 0,
       harnessLimit: 0,
       projectRunning: 0,
@@ -693,16 +686,9 @@ export function taskSlotAvailability(projectId: string, harness: AgentHarness) {
       eq(schema.tasks.agentHarness, harness),
       eq(schema.tasks.agentStatus, 'running'),
     )).get()?.value ?? 0;
-  const globalLimit = configuredGlobalAgentConcurrency();
-  const globalRunning = db.select({ value: count() }).from(schema.tasks)
-    .where(eq(schema.tasks.agentStatus, 'running'))
-    .get()?.value ?? 0;
   return {
-    available: globalRunning < globalLimit
-      && projectRunning < project.agentConcurrencyLimit
+    available: projectRunning < project.agentConcurrencyLimit
       && harnessRunning < harnessLimit,
-    globalLimit,
-    globalRunning,
     projectLimit: project.agentConcurrencyLimit,
     harnessLimit,
     projectRunning,

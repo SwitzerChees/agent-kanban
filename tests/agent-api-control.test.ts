@@ -9,7 +9,6 @@ const testRoot = mkdtempSync(path.join(tmpdir(), 'agent-kanban-api-control-'));
 process.env.KANBAN_DATA_DIR = path.join(testRoot, 'data');
 process.env.KANBAN_ADMIN_EMAIL = 'agent-control-test@example.com';
 process.env.KANBAN_ADMIN_PASSWORD = 'agent-control-test-password';
-process.env.KANBAN_AGENT_GLOBAL_CONCURRENCY = '64';
 
 let dbModule: typeof import('../server/lib/db');
 let kanban: typeof import('../server/lib/kanban');
@@ -106,8 +105,6 @@ describe('external agent task controls', () => {
       .where(eq(dbModule.schema.tasks.id, tasks[0]!.id)).run();
     expect(localDispatcher.taskSlotAvailability(project.id, 'codex')).toMatchObject({
       available: true,
-      globalLimit: 64,
-      globalRunning: 1,
       projectRunning: 1,
       harnessRunning: 1,
     });
@@ -121,7 +118,6 @@ describe('external agent task controls', () => {
       .where(eq(dbModule.schema.tasks.id, tasks[2]!.id)).run();
     expect(localDispatcher.taskSlotAvailability(project.id, 'opencode')).toMatchObject({
       available: false,
-      globalRunning: 3,
       projectRunning: 3,
       projectLimit: 3,
     });
@@ -135,45 +131,6 @@ describe('external agent task controls', () => {
       agentHarnessLimits: { codex: 2, opencode: 1, 'prime-agent': 1 },
     });
     expect(localDispatcher.taskSlotAvailability(project.id, 'prime-agent').available).toBe(true);
-  });
-
-  test('enforces one host-wide concurrency ceiling across projects', async () => {
-    const firstProject = await kanban.createProject({
-      name: 'Global Slots One',
-      key: 'GLOBAL1',
-      folderPath: path.join(testRoot, 'global-slots-one'),
-      agentConcurrencyLimit: 4,
-    }, admin);
-    const secondProject = await kanban.createProject({
-      name: 'Global Slots Two',
-      key: 'GLOBAL2',
-      folderPath: path.join(testRoot, 'global-slots-two'),
-      agentConcurrencyLimit: 4,
-    }, admin);
-    const runningTasks = await Promise.all([
-      kanban.createTask(firstProject.id, { title: 'Global one', agentHarness: 'codex' }, admin),
-      kanban.createTask(secondProject.id, { title: 'Global two', agentHarness: 'codex' }, admin),
-    ]);
-    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'running' })
-      .where(eq(dbModule.schema.tasks.id, runningTasks[0]!.id)).run();
-    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'running' })
-      .where(eq(dbModule.schema.tasks.id, runningTasks[1]!.id)).run();
-
-    process.env.KANBAN_AGENT_GLOBAL_CONCURRENCY = '2';
-    try {
-      const availability = localDispatcher.taskSlotAvailability(firstProject.id, 'codex');
-      expect(availability).toMatchObject({
-        available: false,
-        globalLimit: 2,
-      });
-      expect(availability.globalRunning).toBeGreaterThanOrEqual(2);
-    } finally {
-      process.env.KANBAN_AGENT_GLOBAL_CONCURRENCY = '64';
-      dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'idle' })
-        .where(eq(dbModule.schema.tasks.id, runningTasks[0]!.id)).run();
-      dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'idle' })
-        .where(eq(dbModule.schema.tasks.id, runningTasks[1]!.id)).run();
-    }
   });
 
   test('respects the requested creation column and exposes safe queue controls', async () => {
