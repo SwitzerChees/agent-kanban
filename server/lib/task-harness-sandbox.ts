@@ -93,6 +93,7 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
     'PrivateDevices=yes',
     'PrivateTmp=yes',
     'KillMode=control-group',
+    ...taskHarnessResourceProperties(),
   ];
   const gitCommonDirectory = resolveGitCommonDirectory(options.workspacePath);
   if (gitCommonDirectory) properties.push(`ReadWritePaths=${gitCommonDirectory}`);
@@ -131,6 +132,24 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
       ...options.args,
     ],
   };
+}
+
+export function taskHarnessResourceProperties(env: NodeJS.ProcessEnv = process.env) {
+  const memoryHighMb = boundedResourceLimit(env.KANBAN_TASK_MEMORY_HIGH_MB, 2_048, 256, 32_768);
+  const requestedMemoryMaxMb = boundedResourceLimit(env.KANBAN_TASK_MEMORY_MAX_MB, 3_072, 512, 65_536);
+  const memoryMaxMb = Math.max(memoryHighMb, requestedMemoryMaxMb);
+  const tasksMax = boundedResourceLimit(env.KANBAN_TASK_MAX_PROCESSES, 1_024, 64, 16_384);
+  return [
+    `MemoryHigh=${memoryHighMb}M`,
+    `MemoryMax=${memoryMaxMb}M`,
+    `TasksMax=${tasksMax}`,
+    'OOMPolicy=stop',
+  ];
+}
+
+function boundedResourceLimit(value: string | undefined, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number.parseInt(value ?? String(fallback), 10);
+  return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
 }
 
 export async function stopTaskHarnessUnit(unitName: string | null | undefined) {

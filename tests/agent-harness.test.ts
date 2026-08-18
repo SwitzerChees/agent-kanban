@@ -8,7 +8,7 @@ import {
 } from '../server/lib/agent-harness';
 import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
-import { buildTaskHarnessRunner } from '../server/lib/task-harness-sandbox';
+import { buildTaskHarnessRunner, taskHarnessResourceProperties } from '../server/lib/task-harness-sandbox';
 import { taskCodexSandboxOverrides } from '../server/lib/codex';
 import {
   activityFromEvent,
@@ -103,12 +103,29 @@ describe('agent harness runtime contracts', () => {
     expect(first.args).toEqual(expect.arrayContaining([
       '--property=ReadOnlyPaths=/',
       '--property=KillMode=control-group',
+      '--property=MemoryHigh=2048M',
+      '--property=MemoryMax=3072M',
+      '--property=TasksMax=1024',
+      '--property=OOMPolicy=stop',
       '--property=NoNewPrivileges=yes',
       '--setenv=AGENT_BROWSER_SESSION=task-run-123',
       '--',
       '/usr/bin/example-agent',
       'run',
     ]));
+  });
+
+  test('bounds task cgroup resource overrides and keeps the hard limit above the throttle', () => {
+    expect(taskHarnessResourceProperties({
+      KANBAN_TASK_MEMORY_HIGH_MB: '4096',
+      KANBAN_TASK_MEMORY_MAX_MB: '1024',
+      KANBAN_TASK_MAX_PROCESSES: '12',
+    })).toEqual([
+      'MemoryHigh=4096M',
+      'MemoryMax=4096M',
+      'TasksMax=64',
+      'OOMPolicy=stop',
+    ]);
   });
 
   test('does not nest the Codex bwrap sandbox inside the task systemd sandbox', () => {

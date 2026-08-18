@@ -273,7 +273,9 @@ class LocalTaskDispatcher {
       const agentsContext = await loadAgentsContext(taskWorktree.projectPath);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : taskWorktree.projectPath;
       const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
-      const taskPromptPrefix = [agentsPromptPrefix, agentWaitInstructions()].filter(Boolean).join('\n\n---\n\n');
+      const taskPromptPrefix = [agentsPromptPrefix, agentRuntimeSafetyInstructions(), agentWaitInstructions()]
+        .filter(Boolean)
+        .join('\n\n---\n\n');
       const runStartedAt = new Date().toISOString();
       logTaskActivity(queued.projectId, queued.id, null, 'codex_worktree_ready', {
         workspacePath,
@@ -607,8 +609,22 @@ async function cleanupTaskSession(sessionRoot: string, taskId: string, runId: st
 }
 
 export function configuredAgentRetries() {
-  const requested = Number.parseInt(process.env.KANBAN_AGENT_RETRY_COUNT ?? '2', 10);
-  return Number.isFinite(requested) ? Math.min(2, Math.max(1, requested)) : 2;
+  const requested = Number.parseInt(process.env.KANBAN_AGENT_RETRY_COUNT ?? '1', 10);
+  return Number.isFinite(requested) ? Math.min(2, Math.max(0, requested)) : 1;
+}
+
+export function configuredGlobalAgentConcurrency() {
+  const requested = Number.parseInt(process.env.KANBAN_AGENT_GLOBAL_CONCURRENCY ?? '3', 10);
+  return Number.isFinite(requested) ? Math.min(64, Math.max(1, requested)) : 3;
+}
+
+export function agentRuntimeSafetyInstructions() {
+  return [
+    'Runtime safety:',
+    '- Run memory-intensive validation commands sequentially, especially builds, typechecks, test suites, and browser sessions.',
+    '- Never run commands in parallel when they write the same generated workspace state (for example `.nuxt`).',
+    '- Reuse an existing development server when possible and stop it as soon as the required verification is complete.',
+  ].join('\n');
 }
 
 export async function runWithAgentRetries<T>(options: {
@@ -653,7 +669,15 @@ function abortableDelay(ms: number, signal: AbortSignal) {
 export function taskSlotAvailability(projectId: string, harness: AgentHarness) {
   const project = db.select().from(schema.projects).where(eq(schema.projects.id, projectId)).get();
   if (!project) {
-    return { available: false, projectLimit: 0, harnessLimit: 0, projectRunning: 0, harnessRunning: 0 };
+    return {
+      available: false,
+      globalLimit: configuredGlobalAgentConcurrency(),
+      globalRunning: 0,
+      projectLimit: 0,
+      harnessLimit: 0,
+      projectRunning: 0,
+      harnessRunning: 0,
+    };
   }
   const harnessLimit = db.select().from(schema.projectHarnessLimits)
     .where(and(
@@ -669,8 +693,16 @@ export function taskSlotAvailability(projectId: string, harness: AgentHarness) {
       eq(schema.tasks.agentHarness, harness),
       eq(schema.tasks.agentStatus, 'running'),
     )).get()?.value ?? 0;
+  const globalLimit = configuredGlobalAgentConcurrency();
+  const globalRunning = db.select({ value: count() }).from(schema.tasks)
+    .where(eq(schema.tasks.agentStatus, 'running'))
+    .get()?.value ?? 0;
   return {
-    available: projectRunning < project.agentConcurrencyLimit && harnessRunning < harnessLimit,
+    available: globalRunning < globalLimit
+      && projectRunning < project.agentConcurrencyLimit
+      && harnessRunning < harnessLimit,
+    globalLimit,
+    globalRunning,
     projectLimit: project.agentConcurrencyLimit,
     harnessLimit,
     projectRunning,
