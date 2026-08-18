@@ -147,19 +147,26 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
   if (options.sessionRoot) await mkdir(path.join(options.sessionRoot, 'prime-sessions'), { recursive: true });
   let nativeSessionId = options.nativeSessionId ?? null;
   let lastError: unknown = null;
+  let previousResponse: string | null = null;
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const repair = attempt > 1;
     const result = await runExternalProcess({
       harness: options.harness,
       reasoningEffort: options.reasoningEffort,
       workspacePath: options.workspacePath,
-      prompt: buildExternalRefinementPrompt(options, attempt > 1),
+      prompt: buildExternalRefinementPrompt(options, repair, previousResponse),
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       autonomous: false,
       turnNumber: attempt,
       onEvent: options.onEvent ?? (() => {}),
-      nativeSessionId,
+      // Prime's daemon can keep a completed, auto-compacted session registered
+      // for several seconds while its worker shuts down. A structured-output
+      // repair does not need repository history, so start it in a fresh session
+      // and include the invalid response in the repair prompt instead of racing
+      // the daemon's session cleanup.
+      nativeSessionId: externalRefinementSessionId(options.harness, repair, nativeSessionId),
       sessionRoot: options.sessionRoot,
     });
     nativeSessionId = result.sessionId ?? nativeSessionId;
@@ -173,19 +180,32 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
       };
     } catch (error) {
       lastError = error;
+      previousResponse = result.text;
     }
   }
   throw lastError ?? new Error('external_harness_invalid_json');
 }
 
+export function externalRefinementSessionId(
+  harness: ExternalHarness,
+  repair: boolean,
+  nativeSessionId: string | null,
+) {
+  return repair && harness === 'prime-agent' ? null : nativeSessionId;
+}
+
 export function buildExternalRefinementPrompt(
   options: Pick<RunExternalRefinementOptions, 'harness' | 'prompt' | 'outputSchema'>,
   repair = false,
+  previousResponse: string | null = null,
 ) {
   return [
     repair
       ? 'Your previous response did not match the required structure. Correct it now without doing more repository inspection.'
       : options.prompt,
+    ...(repair && previousResponse
+      ? ['', 'Previous response to correct:', previousResponse]
+      : []),
     ...(options.harness === 'prime-agent' && !repair
       ? [
           '',

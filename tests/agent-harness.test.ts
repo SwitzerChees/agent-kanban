@@ -6,7 +6,12 @@ import {
   QWEN_OPENCODE_MODEL,
   harnessExecutable,
 } from '../server/lib/agent-harness';
-import { buildExternalArgs, buildExternalRefinementPrompt, parseJsonObject } from '../server/lib/external-agent';
+import {
+  buildExternalArgs,
+  buildExternalRefinementPrompt,
+  externalRefinementSessionId,
+  parseJsonObject,
+} from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
 import { buildTaskHarnessRunner, taskHarnessResourceProperties } from '../server/lib/task-harness-sandbox';
 import { taskCodexSandboxOverrides } from '../server/lib/codex';
@@ -122,10 +127,18 @@ describe('agent harness runtime contracts', () => {
       harness: 'opencode',
       prompt: 'Original prompt',
       outputSchema: { type: 'object', required: ['status'] },
-    }, true);
+    }, true, '{"status":"completed","result":{"visuals":[]}}');
     expect(repair).toContain('previous response did not match');
+    expect(repair).toContain('Previous response to correct:');
+    expect(repair).toContain('{"status":"completed","result":{"visuals":[]}}');
     expect(repair).toContain('Return exactly one JSON object and nothing else');
     expect(repair).not.toContain('Original prompt');
+  });
+
+  test('starts only Prime structured-output repair in a fresh session', () => {
+    expect(externalRefinementSessionId('prime-agent', true, 'prime-session')).toBeNull();
+    expect(externalRefinementSessionId('prime-agent', false, 'prime-session')).toBe('prime-session');
+    expect(externalRefinementSessionId('opencode', true, 'opencode-session')).toBe('opencode-session');
   });
 
   test('accepts only a terminal, bounded external wait request', () => {
