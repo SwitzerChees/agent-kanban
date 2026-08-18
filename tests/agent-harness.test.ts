@@ -7,6 +7,8 @@ import {
   harnessExecutable,
 } from '../server/lib/agent-harness';
 import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent';
+import { parseAgentWaitRequest } from '../server/lib/agent-wait';
+import { buildTaskHarnessRunner } from '../server/lib/task-harness-sandbox';
 import {
   activityFromEvent,
   assistantTextFromEvent,
@@ -39,6 +41,19 @@ describe('agent harness runtime contracts', () => {
         '--model', QWEN_MODEL_ID,
         '--thinking', 'xhigh',
       ]));
+    expect(buildExternalArgs({
+      ...common,
+      harness: 'opencode',
+      reasoningEffort: 'medium',
+      nativeSessionId: 'open-task-session',
+    })).toEqual(expect.arrayContaining(['--session', 'open-task-session']));
+    expect(buildExternalArgs({
+      ...common,
+      harness: 'prime-agent',
+      reasoningEffort: 'xhigh',
+      nativeSessionId: 'prime-task-session',
+      sessionRoot: '/tmp/task-session',
+    })).toEqual(expect.arrayContaining(['--session-dir', '/tmp/task-session/prime-sessions', '--resume', 'prime-task-session']));
   });
 
   test('resolves both host installations and accepts plain or fenced structured output', () => {
@@ -46,6 +61,53 @@ describe('agent harness runtime contracts', () => {
     expect(harnessExecutable('prime-agent')).toMatch(/prime-agent$/);
     expect(parseJsonObject('{"ok":true}')).toEqual({ ok: true });
     expect(parseJsonObject('```json\n{"ok":true}\n```')).toEqual({ ok: true });
+  });
+
+  test('accepts only a terminal, bounded external wait request', () => {
+    expect(parseAgentWaitRequest([
+      'CI has been queued.',
+      '<agent-kanban-wait>{"kind":"ci","reason":"GitHub Actions is pending","resumeAfterSeconds":20}</agent-kanban-wait>',
+    ].join('\n'))).toEqual({
+      kind: 'ci',
+      reason: 'GitHub Actions is pending',
+      resumeAfterSeconds: 60,
+    });
+    expect(parseAgentWaitRequest('<agent-kanban-wait>{"kind":"deployment","reason":"Rollout pending","resumeAfterSeconds":9999}</agent-kanban-wait>'))
+      .toMatchObject({ kind: 'deployment', resumeAfterSeconds: 900 });
+    expect(parseAgentWaitRequest('<agent-kanban-wait>{"kind":"ci","reason":"Pending","resumeAfterSeconds":300}</agent-kanban-wait>\nMore work'))
+      .toBeNull();
+    expect(parseAgentWaitRequest('<agent-kanban-wait>{"kind":"work","reason":"Implementing","resumeAfterSeconds":300}</agent-kanban-wait>'))
+      .toBeNull();
+  });
+
+  test('isolates each task run in one persistent browser session and one killable systemd cgroup', () => {
+    const common = {
+      executable: '/usr/bin/example-agent',
+      args: ['run'],
+      workspacePath: '/tmp/agent-kanban-task/tree',
+      sessionRoot: '/tmp/agent-kanban-sessions/run-123',
+      harness: 'codex' as const,
+    };
+    const first = buildTaskHarnessRunner({
+      ...common,
+      unitName: 'agent-kanban-task-task1-run1-0-a',
+    });
+    const nextTurn = buildTaskHarnessRunner({
+      ...common,
+      unitName: 'agent-kanban-task-task1-run1-0-b',
+    });
+    expect(first.command).toBe('sudo');
+    expect(first.unitName).toBe('agent-kanban-task-task1-run1-0-a');
+    expect(first.browserSession).toBe(nextTurn.browserSession);
+    expect(first.args).toEqual(expect.arrayContaining([
+      '--property=ReadOnlyPaths=/',
+      '--property=KillMode=control-group',
+      '--property=NoNewPrivileges=yes',
+      '--setenv=AGENT_BROWSER_SESSION=task-run-123',
+      '--',
+      '/usr/bin/example-agent',
+      'run',
+    ]));
   });
 
   test('builds resumable, non-autonomous chat turns for every harness', () => {

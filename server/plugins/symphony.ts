@@ -11,8 +11,8 @@ export default defineNitroPlugin((nitroApp) => {
   const refinementWorker = startRefinementWorker();
   const projectChat = startProjectChatRuntime();
   nitroApp.hooks.hook('close', async () => {
-    taskDispatcher.stop();
     await Promise.all([
+      taskDispatcher.stop(),
       refinementWorker.stop(),
       projectChat.stop(),
     ]);

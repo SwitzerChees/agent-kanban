@@ -189,11 +189,29 @@ export const tasks = sqliteTable('tasks', {
   clientRequestId: text('client_request_id'),
   assigneeId: text('assignee_id').references(() => users.id),
   agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
-  agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'failed', 'done'] }).notNull().default('idle'),
+  agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'waiting_external', 'failed', 'done'] }).notNull().default('idle'),
   agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('xhigh'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const taskAgentRuns = sqliteTable('task_agent_runs', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull(),
+  status: text('status', { enum: ['running', 'waiting_external', 'completed', 'failed', 'cancelled'] }).notNull(),
+  nativeSessionId: text('native_session_id'),
+  currentUnitName: text('current_unit_name'),
+  browserSessionName: text('browser_session_name'),
+  waitKind: text('wait_kind', { enum: ['ci', 'deployment', 'rate_limit', 'other'] }),
+  waitReason: text('wait_reason'),
+  resumeAt: text('resume_at'),
+  waitCount: integer('wait_count').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  startedAt: text('started_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  completedAt: text('completed_at'),
 });
 
 export const taskRefinements = sqliteTable('task_refinements', {
@@ -301,6 +319,7 @@ export type Oberthema = typeof oberthemen.$inferSelect;
 export type Unterthema = typeof unterthemen.$inferSelect;
 export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type TaskAgentRun = typeof taskAgentRuns.$inferSelect;
 export type TaskRefinement = typeof taskRefinements.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type TaskTag = typeof taskTags.$inferSelect;

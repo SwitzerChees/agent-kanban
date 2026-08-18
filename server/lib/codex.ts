@@ -2,6 +2,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { CodexConfig, CodexRuntimeEvent, Issue } from './types';
 import { renderPrompt } from './template';
 import { runtimeLogger } from './logger';
+import { parseAgentWaitRequest, type AgentWaitRequest } from './agent-wait';
+import {
+  buildTaskHarnessRunner,
+  prepareTaskHarnessSession,
+  stopTaskHarnessUnit,
+} from './task-harness-sandbox';
 
 type JsonRpcMessage = {
   id?: string | number;
@@ -34,6 +40,12 @@ export interface CodexSteeringBatch {
   markDelivered?: () => void;
 }
 
+export interface TaskHarnessRuntimeOptions {
+  unitName: string;
+  sessionRoot: string;
+  onUnit?: (unitName: string | null, browserSession: string | null) => void;
+}
+
 interface RunCodexSessionOptions {
   config: CodexConfig;
   workspacePath: string;
@@ -49,11 +61,38 @@ interface RunCodexSessionOptions {
   loadSteering?: (context: { threadId: string; turnId: string; turnNumber: number }) => Promise<CodexSteeringBatch | null>;
   steeringPollMs?: number;
   completionCheck?: (issue: Issue) => Promise<CompletionCheckResult | null>;
+  nativeSessionId?: string | null;
+  onSession?: (nativeSessionId: string) => void;
+  runtime?: TaskHarnessRuntimeOptions;
 }
 
-export async function runCodexSession(options: RunCodexSessionOptions): Promise<void> {
-  const peer = new JsonRpcPeer(options.config.command, options.workspacePath, options.config.readTimeoutMs);
-  let threadId: string | null = null;
+export interface TaskHarnessSessionResult {
+  nativeSessionId: string | null;
+  waitRequest: AgentWaitRequest | null;
+}
+
+export async function runCodexSession(options: RunCodexSessionOptions): Promise<TaskHarnessSessionResult> {
+  let runner: ReturnType<typeof buildTaskHarnessRunner> | null = null;
+  if (options.runtime) {
+    await prepareTaskHarnessSession(options.runtime.sessionRoot);
+    runner = buildTaskHarnessRunner({
+      unitName: options.runtime.unitName,
+      executable: '/bin/bash',
+      args: ['-lc', options.config.command],
+      workspacePath: options.workspacePath,
+      sessionRoot: options.runtime.sessionRoot,
+      harness: 'codex',
+    });
+    options.runtime.onUnit?.(runner.unitName, runner.browserSession);
+  }
+  const peer = new JsonRpcPeer(
+    runner?.command ?? '/bin/bash',
+    runner?.args ?? ['-lc', options.config.command],
+    runner?.env ?? process.env,
+    options.workspacePath,
+    options.config.readTimeoutMs,
+  );
+  let threadId: string | null = options.nativeSessionId ?? null;
 
   options.signal.addEventListener('abort', () => peer.stop('SIGTERM'), { once: true });
 
@@ -78,18 +117,24 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
     });
     peer.notify('initialized', {});
 
-    const threadResponse = await peer.request('thread/start', compactObject({
+    const threadParams = compactObject({
       cwd: options.workspacePath,
       model: options.config.model,
       approvalPolicy: options.config.approvalPolicy,
       sandbox: options.config.threadSandbox,
-      ephemeral: true,
-      serviceName: 'symphony',
-    }));
+    });
+    const threadResponse = threadId
+      ? await peer.request('thread/resume', { ...threadParams, threadId, excludeTurns: true })
+      : await peer.request('thread/start', {
+          ...threadParams,
+          ephemeral: false,
+          serviceName: 'agent-kanban-task',
+        });
     threadId = readPath<string>(threadResponse, ['thread', 'id']) ?? null;
     if (!threadId) {
       throw new Error('response_error: thread/start did not return thread.id');
     }
+    options.onSession?.(threadId);
 
     let currentIssue = options.issue;
     let nextPrompt: string | null = null;
@@ -146,6 +191,9 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
         await stopSteeringPump();
       }
 
+      const waitRequest = parseAgentWaitRequest(peer.consumeAgentText(threadId, turnId));
+      if (waitRequest) return { nativeSessionId: threadId, waitRequest };
+
       const refreshedIssue = await options.refreshIssue();
       if (refreshedIssue) currentIssue = refreshedIssue;
       const completionCheck = await options.completionCheck?.(currentIssue);
@@ -182,8 +230,11 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
       const continuationIssue = await options.refreshIssue();
       if (continuationIssue) currentIssue = continuationIssue;
     }
+    return { nativeSessionId: threadId, waitRequest: null };
   } finally {
     peer.stop('SIGTERM');
+    await stopTaskHarnessUnit(runner?.unitName);
+    options.runtime?.onUnit?.(null, null);
   }
 }
 
@@ -193,9 +244,14 @@ class JsonRpcPeer {
   private buffer = '';
   private pending = new Map<string | number, PendingRequest>();
   private notificationHandlers = new Set<(message: JsonRpcMessage) => void>();
+  private agentText = new Map<string, string>();
+  private exitHandlers = new Set<(error: Error) => void>();
+  private exitError: Error | null = null;
 
   constructor(
     private readonly command: string,
+    private readonly args: string[],
+    private readonly env: NodeJS.ProcessEnv,
     private readonly cwd: string,
     private readonly readTimeoutMs: number,
   ) {}
@@ -206,9 +262,10 @@ class JsonRpcPeer {
 
   start(onMessage: (message: JsonRpcMessage) => void): Promise<void> {
     this.notificationHandlers.add(onMessage);
-    this.child = spawn('bash', ['-lc', this.command], {
+    this.exitError = null;
+    this.child = spawn(this.command, this.args, {
       cwd: this.cwd,
-      env: process.env,
+      env: this.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -218,11 +275,14 @@ class JsonRpcPeer {
       if (message) runtimeLogger.debug('codex stderr', { message: message.slice(-1000) });
     });
     this.child.on('exit', (code, signal) => {
+      const error = new Error(`port_exit: code=${code} signal=${signal ?? ''}`);
+      this.exitError = error;
       for (const pending of this.pending.values()) {
         clearTimeout(pending.timer);
-        pending.reject(new Error(`port_exit: code=${code} signal=${signal ?? ''}`));
+        pending.reject(error);
       }
       this.pending.clear();
+      for (const handler of this.exitHandlers) handler(error);
     });
 
     return Promise.resolve();
@@ -265,17 +325,27 @@ class JsonRpcPeer {
     onEvent: (event: CodexRuntimeEvent) => void,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
+      if (this.exitError) {
+        reject(this.exitError);
+        return;
+      }
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error(`turn_timeout: ${turnId}`));
       }, timeoutMs);
+      const onExit = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
 
       const handler = (message: JsonRpcMessage) => {
         const method = message.method;
         const params = asRecord(message.params);
         if (method) {
           const event = eventFromNotification(method, params, threadId, turnId, this.pid());
-          if (event) onEvent(event);
+          if (event) {
+            onEvent(event);
+          }
         }
 
         if (method === 'turn/completed' && params.threadId === threadId && readPath(params, ['turn', 'id']) === turnId) {
@@ -297,9 +367,18 @@ class JsonRpcPeer {
       const cleanup = () => {
         clearTimeout(timer);
         this.notificationHandlers.delete(handler);
+        this.exitHandlers.delete(onExit);
       };
       this.notificationHandlers.add(handler);
+      this.exitHandlers.add(onExit);
     });
+  }
+
+  consumeAgentText(threadId: string, turnId: string) {
+    const key = `${threadId}:${turnId}`;
+    const text = this.agentText.get(key) ?? '';
+    this.agentText.delete(key);
+    return text;
   }
 
   stop(signal: NodeJS.Signals) {
@@ -352,9 +431,38 @@ class JsonRpcPeer {
       return;
     }
 
+    this.captureAgentNotification(message);
+
     for (const handler of this.notificationHandlers) {
       handler(message);
     }
+  }
+
+  private captureAgentText(event: CodexRuntimeEvent, threadId: string, turnId: string) {
+    const key = `${threadId}:${turnId}`;
+    if (event.event === 'item/agentMessage/delta') {
+      this.agentText.set(key, `${this.agentText.get(key) ?? ''}${event.message ?? ''}`);
+      return;
+    }
+    if (event.event !== 'item/completed') return;
+    const raw = asRecord(event.raw);
+    const item = asRecord(raw.item);
+    const type = String(item.type ?? '').toLowerCase();
+    if (!type.includes('agent') || !type.includes('message')) return;
+    const full = extractText(item.text ?? item.content);
+    if (full) this.agentText.set(key, full);
+  }
+
+  private captureAgentNotification(message: JsonRpcMessage) {
+    if (!message.method) return;
+    const params = asRecord(message.params);
+    const threadId = typeof params.threadId === 'string' ? params.threadId : null;
+    const turnId = typeof params.turnId === 'string'
+      ? params.turnId
+      : readPath<string>(params, ['turn', 'id']) ?? null;
+    if (!threadId || !turnId) return;
+    const event = eventFromNotification(message.method, params, threadId, turnId, this.pid());
+    if (event) this.captureAgentText(event, threadId, turnId);
   }
 }
 

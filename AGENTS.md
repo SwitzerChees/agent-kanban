@@ -9,11 +9,17 @@
 - When a task is moved to Done, remove its worktree if it is clean and retain
   the local branch as a recovery point. Never force-remove a dirty worktree;
   defer cleanup and record the reason instead.
-- Before active local development, stop the service if it is running so `bun dev` can bind the port:
+- Use the low-downtime production flow for normal changes: keep the current
+  `agent-kanban.service` running, implement and validate in the task-owned
+  worktree, integrate the verified commit into a clean `master`, run
+  `bun run build` from `master` while the old Node process is still serving,
+  and perform exactly one short `sudo systemctl restart agent-kanban` after a
+  successful build. Verify the service and port `3000` immediately afterward.
+- Only stop the service before development when `bun dev` is actually needed,
+  because the development server must bind the production port:
   `sudo systemctl stop agent-kanban`
 - Useful checks:
   `systemctl status agent-kanban --no-pager`
   `journalctl -u agent-kanban -f`
-- After production changes, run `bun run build` and restart the service:
-  `sudo systemctl restart agent-kanban`
+- Never restart production for an unverified or failed build.
 - The service is enabled for boot with `systemctl enable agent-kanban`.

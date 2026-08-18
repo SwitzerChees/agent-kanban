@@ -280,7 +280,7 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   if (refinement.appliedAt) {
     throw createError({ statusCode: 409, statusMessage: 'refinement_already_applied' });
   }
-  if (task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed') {
+  if (task.agentStatus === 'running' || task.agentStatus === 'waiting_external' || task.agentStatus === 'done' || task.agentStatus === 'failed') {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
   const currentDescription = activeTaskDescription(task);

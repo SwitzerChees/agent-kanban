@@ -160,6 +160,112 @@ describe('external agent task controls', () => {
     expect(kanban.queueTaskAgent(task!.id, admin, 'api_retry').task.agentStatus).toBe('queued');
   });
 
+  test('parks external waits without consuming a slot and supports resume, steering, cancel, and Done cleanup', async () => {
+    const project = await kanban.createProject({
+      name: 'External Wait Project',
+      key: 'WAITS',
+      folderPath: path.join(testRoot, 'wait-workspace'),
+      agentConcurrencyLimit: 1,
+    }, admin);
+    const board = kanban.getBoard(project.id, admin);
+    const todo = board.columns.find((column) => column.key === 'todo')!;
+    const done = board.columns.find((column) => column.done)!;
+    const task = await kanban.createTask(project.id, {
+      title: 'Wait for CI',
+      columnId: todo.id,
+      agentEnabled: true,
+      agentHarness: 'codex',
+    }, admin);
+    const now = new Date().toISOString();
+    const runId = 'wait-run-control';
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'waiting_external' })
+      .where(eq(dbModule.schema.tasks.id, task!.id)).run();
+    dbModule.db.insert(dbModule.schema.taskAgentRuns).values({
+      id: runId,
+      taskId: task!.id,
+      harness: 'codex',
+      status: 'waiting_external',
+      nativeSessionId: 'codex-thread-1',
+      currentUnitName: null,
+      browserSessionName: null,
+      waitKind: 'ci',
+      waitReason: 'Checks are pending',
+      resumeAt: new Date(Date.now() + 300_000).toISOString(),
+      waitCount: 1,
+      createdAt: now,
+      startedAt: now,
+      updatedAt: now,
+      completedAt: null,
+    }).run();
+
+    expect(localDispatcher.taskSlotAvailability(project.id, 'codex')).toMatchObject({
+      available: true,
+      projectRunning: 0,
+      harnessRunning: 0,
+    });
+    expect(kanban.getTaskDetail(task!.id, admin).agentRun).toMatchObject({
+      id: runId,
+      status: 'waiting_external',
+      waitKind: 'ci',
+      waitReason: 'Checks are pending',
+    });
+
+    expect(kanban.queueTaskAgent(task!.id, admin).task.agentStatus).toBe('queued');
+    let persistedRun = dbModule.db.select().from(dbModule.schema.taskAgentRuns)
+      .where(eq(dbModule.schema.taskAgentRuns.id, runId)).get()!;
+    expect(persistedRun).toMatchObject({ status: 'waiting_external', nativeSessionId: 'codex-thread-1' });
+    expect(Date.parse(persistedRun.resumeAt!)).toBeLessThanOrEqual(Date.now());
+
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'waiting_external' })
+      .where(eq(dbModule.schema.tasks.id, task!.id)).run();
+    dbModule.db.update(dbModule.schema.taskAgentRuns).set({ resumeAt: new Date(Date.now() + 300_000).toISOString() })
+      .where(eq(dbModule.schema.taskAgentRuns.id, runId)).run();
+    kanban.addTaskMessage(task!.id, 'Also verify the deployment.', admin);
+    expect(dbModule.db.select().from(dbModule.schema.tasks)
+      .where(eq(dbModule.schema.tasks.id, task!.id)).get()!.agentStatus).toBe('queued');
+
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'waiting_external' })
+      .where(eq(dbModule.schema.tasks.id, task!.id)).run();
+    expect(kanban.cancelTaskAgent(task!.id, admin).task).toMatchObject({
+      agentEnabled: false,
+      agentStatus: 'idle',
+    });
+    persistedRun = dbModule.db.select().from(dbModule.schema.taskAgentRuns)
+      .where(eq(dbModule.schema.taskAgentRuns.id, runId)).get()!;
+    expect(persistedRun).toMatchObject({ status: 'cancelled', resumeAt: null, completedAt: expect.any(String) });
+
+    const doneTask = await kanban.createTask(project.id, {
+      title: 'Complete while parked',
+      columnId: todo.id,
+      agentEnabled: true,
+    }, admin);
+    const doneRunId = 'wait-run-done';
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'waiting_external' })
+      .where(eq(dbModule.schema.tasks.id, doneTask!.id)).run();
+    dbModule.db.insert(dbModule.schema.taskAgentRuns).values({
+      id: doneRunId,
+      taskId: doneTask!.id,
+      harness: 'codex',
+      status: 'waiting_external',
+      nativeSessionId: 'codex-thread-2',
+      currentUnitName: null,
+      browserSessionName: null,
+      waitKind: 'deployment',
+      waitReason: 'Rollout is pending',
+      resumeAt: new Date(Date.now() + 300_000).toISOString(),
+      waitCount: 1,
+      createdAt: now,
+      startedAt: now,
+      updatedAt: now,
+      completedAt: null,
+    }).run();
+    await expect(kanban.updateTask(doneTask!.id, { columnId: done.id }, admin))
+      .resolves.toMatchObject({ agentStatus: 'done', columnId: done.id });
+    expect(dbModule.db.select().from(dbModule.schema.taskAgentRuns)
+      .where(eq(dbModule.schema.taskAgentRuns.id, doneRunId)).get())
+      .toMatchObject({ status: 'cancelled', resumeAt: null, completedAt: expect.any(String) });
+  });
+
   test('keeps project authorization identical to the browser user', async () => {
     const project = await kanban.createProject({
       name: 'Private Harness Project',

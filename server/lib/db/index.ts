@@ -221,6 +221,24 @@ export function ensureDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS task_agent_runs (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      harness TEXT NOT NULL,
+      status TEXT NOT NULL,
+      native_session_id TEXT,
+      current_unit_name TEXT,
+      browser_session_name TEXT,
+      wait_kind TEXT,
+      wait_reason TEXT,
+      resume_at TEXT,
+      wait_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS task_refinements (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -322,6 +340,11 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_task_user ON comment_mentions(task_id, user_id);
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_unread ON comment_mentions(user_id, seen_at);
     CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity(task_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_agent_runs_task ON task_agent_runs(task_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_agent_runs_resume ON task_agent_runs(status, resume_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_agent_runs_active
+      ON task_agent_runs(task_id)
+      WHERE status IN ('running', 'waiting_external');
     CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_current
       ON project_chat_threads(project_id, user_id)
       WHERE is_current = 1;

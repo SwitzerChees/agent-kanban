@@ -1,4 +1,5 @@
-import { and, asc, count, desc, eq, gt, inArray, max } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, lte, max, or } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { appDataDir, db, schema } from './db';
 import { loadWorkflow } from './workflow';
@@ -14,6 +15,15 @@ import { checkAgentsCompletionGate } from './completion-gate';
 import { activeTaskDescription } from './task-description';
 import type { CodexRuntimeEvent, Issue } from './types';
 import { notifyVoiceJobProgress, notifyVoiceJobStatus } from './voice-agent';
+import { agentWaitInstructions } from './agent-wait';
+import {
+  cleanupTaskHarnessSession,
+  closeTaskBrowserSession,
+  listTaskHarnessUnits,
+  stopTaskHarnessUnit,
+  taskHarnessBrowserSession,
+  taskHarnessUnitName,
+} from './task-harness-sandbox';
 
 let dispatcher: LocalTaskDispatcher | null = null;
 
@@ -32,21 +42,26 @@ export function abortLocalTask(taskId: string) {
 class LocalTaskDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private runningTasks = new Map<string, AbortController>();
+  private runningPromises = new Set<Promise<void>>();
+  private started = false;
+  private stopping = false;
 
   start() {
-    if (this.timer) return;
+    if (this.started) return;
+    this.started = true;
+    this.stopping = false;
     this.requeueInterruptedTasks();
     reconcileFailedTaskColumns();
-    this.timer = setInterval(() => {
-      void this.tick();
-    }, Number.parseInt(process.env.KANBAN_AGENT_POLL_MS ?? '5000', 10));
-    void this.tick();
+    void this.startPollingAfterCleanup();
   }
 
-  stop() {
+  async stop() {
+    this.started = false;
+    this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     for (const controller of this.runningTasks.values()) controller.abort();
+    await Promise.allSettled([...this.runningPromises]);
   }
 
   abortTask(taskId: string) {
@@ -56,17 +71,55 @@ class LocalTaskDispatcher {
     return true;
   }
 
+  private async startPollingAfterCleanup() {
+    try {
+      await this.cleanupInterruptedResources();
+    } catch (error) {
+      runtimeLogger.error('task harness startup cleanup failed; dispatcher remains paused', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (this.started) {
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          void this.startPollingAfterCleanup();
+        }, 5_000);
+      }
+      return;
+    }
+    if (!this.started) return;
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, Number.parseInt(process.env.KANBAN_AGENT_POLL_MS ?? '5000', 10));
+    void this.tick();
+  }
+
   private async tick() {
+    this.wakeDueExternalWaits();
     const queuedRows = db.select({ task: schema.tasks, column: schema.columns })
       .from(schema.tasks)
       .innerJoin(schema.columns, eq(schema.tasks.columnId, schema.columns.id))
-      .where(and(eq(schema.tasks.agentEnabled, true), eq(schema.tasks.agentStatus, 'queued'), eq(schema.columns.key, 'todo')))
+      .where(and(
+        eq(schema.tasks.agentEnabled, true),
+        eq(schema.tasks.agentStatus, 'queued'),
+        or(eq(schema.columns.key, 'todo'), eq(schema.columns.key, 'in_progress')),
+      ))
       .orderBy(asc(schema.tasks.projectId), asc(schema.tasks.position), asc(schema.tasks.updatedAt))
       .all();
 
     for (const row of queuedRows) {
       if (!taskSlotAvailability(row.task.projectId, row.task.agentHarness).available) continue;
-      void this.runTask(row.task, row.column);
+      const running = this.runTask(row.task, row.column);
+      this.runningPromises.add(running);
+      void running.then(
+        () => this.runningPromises.delete(running),
+        (error) => {
+          this.runningPromises.delete(running);
+          runtimeLogger.error('unhandled local agent task failure', {
+            task_id: row.task.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
     }
   }
 
@@ -87,6 +140,16 @@ class LocalTaskDispatcher {
         updatedAt: now,
       }).where(eq(schema.tasks.id, row.task.id)).run();
       if (row.task.agentEnabled) {
+        const activeRun = activeTaskAgentRun(row.task.id);
+        if (activeRun) {
+          db.update(schema.taskAgentRuns).set({
+            status: 'waiting_external',
+            waitKind: 'other',
+            waitReason: 'Agent Kanban service restarted during the active turn.',
+            resumeAt: now,
+            updatedAt: now,
+          }).where(eq(schema.taskAgentRuns.id, activeRun.id)).run();
+        }
         logTaskActivity(row.task.projectId, row.task.id, null, 'codex_requeued', {
           reason: 'dispatcher_startup_recovery',
         });
@@ -94,6 +157,64 @@ class LocalTaskDispatcher {
         notifyVoiceJobStatus(row.task.id, 'queued', 'Background agent recovered after a service restart.');
       }
     }
+  }
+
+  private wakeDueExternalWaits() {
+    const now = new Date().toISOString();
+    const dueRuns = db.select().from(schema.taskAgentRuns)
+      .where(and(
+        eq(schema.taskAgentRuns.status, 'waiting_external'),
+        lte(schema.taskAgentRuns.resumeAt, now),
+      ))
+      .all();
+    for (const run of dueRuns) {
+      const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, run.taskId)).get();
+      if (!task || !task.agentEnabled || task.agentStatus !== 'waiting_external') continue;
+      db.update(schema.tasks).set({ agentStatus: 'queued', updatedAt: now })
+        .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.agentStatus, 'waiting_external')))
+        .run();
+      logTaskActivity(task.projectId, task.id, null, 'agent_wait_resumed', {
+        runId: run.id,
+        waitKind: run.waitKind,
+        waitCount: run.waitCount,
+      });
+    }
+  }
+
+  private async cleanupInterruptedResources() {
+    const interruptedRuns = db.select().from(schema.taskAgentRuns)
+      .where(eq(schema.taskAgentRuns.status, 'waiting_external'))
+      .all();
+    const units = await listTaskHarnessUnits();
+    await Promise.allSettled(units.map((unit) => stopTaskHarnessUnit(unit)));
+    if (units.length) runtimeLogger.warn('cleaned interrupted task harness units', { count: units.length });
+    await Promise.allSettled(interruptedRuns.map((run) => closeTaskBrowserSession(run.browserSessionName)));
+    if (interruptedRuns.length) {
+      db.update(schema.taskAgentRuns).set({
+        currentUnitName: null,
+        browserSessionName: null,
+        updatedAt: new Date().toISOString(),
+      }).where(inArray(schema.taskAgentRuns.id, interruptedRuns.map((run) => run.id))).run();
+    }
+    if (units.length) {
+      db.update(schema.taskAgentRuns).set({
+        currentUnitName: null,
+        browserSessionName: null,
+        updatedAt: new Date().toISOString(),
+      }).where(inArray(schema.taskAgentRuns.currentUnitName, units)).run();
+    }
+
+    const terminalRuns = db.select({
+      id: schema.taskAgentRuns.id,
+      taskId: schema.taskAgentRuns.taskId,
+      projectId: schema.tasks.projectId,
+    }).from(schema.taskAgentRuns)
+      .innerJoin(schema.tasks, eq(schema.tasks.id, schema.taskAgentRuns.taskId))
+      .where(inArray(schema.taskAgentRuns.status, ['completed', 'failed', 'cancelled']))
+      .all();
+    await Promise.allSettled(terminalRuns.map((run) => cleanupTaskHarnessSession(
+      appDataDir('task-sessions', run.projectId, run.taskId, run.id),
+    )));
   }
 
   private async runTask(queued: typeof schema.tasks.$inferSelect, queuedColumn: typeof schema.columns.$inferSelect) {
@@ -108,6 +229,9 @@ class LocalTaskDispatcher {
 
     const controller = new AbortController();
     this.runningTasks.set(queued.id, controller);
+    const agentRun = ensureTaskAgentRun(queued);
+    const sessionRoot = appDataDir('task-sessions', project.id, queued.id, agentRun.id);
+    const browserSession = taskHarnessBrowserSession(sessionRoot);
     const inProgressColumn = db.select().from(schema.columns)
       .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_progress')))
       .get();
@@ -121,6 +245,13 @@ class LocalTaskDispatcher {
     })
       .where(eq(schema.tasks.id, queued.id))
       .run();
+    db.update(schema.taskAgentRuns).set({
+      status: 'running',
+      waitKind: null,
+      waitReason: null,
+      resumeAt: null,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(schema.taskAgentRuns.id, agentRun.id)).run();
     logTaskActivity(queued.projectId, queued.id, null, 'codex_started', {
       column: queuedColumn.key,
       harness: queued.agentHarness,
@@ -142,6 +273,7 @@ class LocalTaskDispatcher {
       const agentsContext = await loadAgentsContext(taskWorktree.projectPath);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : taskWorktree.projectPath;
       const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
+      const taskPromptPrefix = [agentsPromptPrefix, agentWaitInstructions()].filter(Boolean).join('\n\n---\n\n');
       const runStartedAt = new Date().toISOString();
       logTaskActivity(queued.projectId, queued.id, null, 'codex_worktree_ready', {
         workspacePath,
@@ -183,7 +315,7 @@ class LocalTaskDispatcher {
         workspacePath,
         issue,
         promptTemplate: workflow.prompt_template || defaultTaskPrompt(),
-        promptPrefix: agentsPromptPrefix,
+        promptPrefix: taskPromptPrefix,
         maxTurns: Math.min(config.agent.maxTurns, Number.parseInt(process.env.KANBAN_AGENT_MAX_TURNS ?? String(config.agent.maxTurns), 10)),
         signal: controller.signal,
         onEvent: (event: CodexRuntimeEvent) => {
@@ -268,13 +400,34 @@ class LocalTaskDispatcher {
           taskTitle: queued.title,
         }),
       };
-      await runWithAgentRetries({
+      let nativeSessionId = agentRun.nativeSessionId;
+      const result = await runWithAgentRetries({
         retries: configuredAgentRetries(),
         signal: controller.signal,
-        run: (attempt) => runTaskAgentHarness({
-          ...harnessOptions,
-          attempt: attempt === 0 ? null : attempt,
-        }),
+        run: (attempt) => {
+          const unitName = taskHarnessUnitName(queued.id, agentRun.id, attempt);
+          return runTaskAgentHarness({
+            ...harnessOptions,
+            attempt: attempt === 0 ? null : attempt,
+            nativeSessionId,
+            onSession: (sessionId) => {
+              nativeSessionId = sessionId;
+              db.update(schema.taskAgentRuns).set({ nativeSessionId: sessionId, updatedAt: new Date().toISOString() })
+                .where(eq(schema.taskAgentRuns.id, agentRun.id)).run();
+            },
+            runtime: {
+              unitName,
+              sessionRoot,
+              onUnit: (activeUnit, browserSession) => {
+                db.update(schema.taskAgentRuns).set({
+                  currentUnitName: activeUnit,
+                  browserSessionName: browserSession,
+                  updatedAt: new Date().toISOString(),
+                }).where(eq(schema.taskAgentRuns.id, agentRun.id)).run();
+              },
+            },
+          });
+        },
         onRetry: (retryNumber, error) => {
           agentMessageBuffer = '';
           const message = error instanceof Error ? error.message : String(error);
@@ -294,12 +447,49 @@ class LocalTaskDispatcher {
         },
       });
 
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) throw new Error('turn_cancelled');
+      await closeTaskBrowserSession(browserSession);
+      if (result.waitRequest) {
+        const now = new Date();
+        const resumeAt = new Date(now.getTime() + result.waitRequest.resumeAfterSeconds * 1000).toISOString();
+        db.update(schema.tasks).set({
+          agentStatus: 'waiting_external',
+          updatedAt: now.toISOString(),
+        }).where(eq(schema.tasks.id, queued.id)).run();
+        db.update(schema.taskAgentRuns).set({
+          status: 'waiting_external',
+          nativeSessionId: result.nativeSessionId,
+          waitKind: result.waitRequest.kind,
+          waitReason: result.waitRequest.reason,
+          resumeAt,
+          waitCount: agentRun.waitCount + 1,
+          currentUnitName: null,
+          browserSessionName: null,
+          updatedAt: now.toISOString(),
+        }).where(eq(schema.taskAgentRuns.id, agentRun.id)).run();
+        logTaskActivity(queued.projectId, queued.id, null, 'agent_waiting_external', {
+          runId: agentRun.id,
+          kind: result.waitRequest.kind,
+          reason: result.waitRequest.reason,
+          resumeAt,
+        });
+        notifyVoiceJobProgress(queued.id, `Waiting externally: ${result.waitRequest.reason}`);
+        runtimeLogger.info('local agent task parked for external wait', {
+          task_id: queued.id,
+          task_key: queued.key,
+          run_id: agentRun.id,
+          kind: result.waitRequest.kind,
+          resume_at: resumeAt,
+        });
+        return;
+      }
       db.update(schema.tasks).set({
         agentStatus: 'done',
         columnId: reviewColumn?.id ?? queued.columnId,
         updatedAt: new Date().toISOString(),
       }).where(eq(schema.tasks.id, queued.id)).run();
+      finishTaskAgentRun(agentRun.id, 'completed');
+      await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
       logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', {
         nextColumn: reviewColumn?.key ?? null,
         harness: queued.agentHarness,
@@ -312,6 +502,18 @@ class LocalTaskDispatcher {
       });
     } catch (error) {
       if (controller.signal.aborted) {
+        await closeTaskBrowserSession(browserSession);
+        const currentTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, queued.id)).get();
+        if (this.stopping && currentTask?.agentStatus === 'running') {
+          runtimeLogger.info('local agent task interrupted for service shutdown', {
+            task_id: queued.id,
+            task_key: queued.key,
+            run_id: agentRun.id,
+          });
+          return;
+        }
+        finishTaskAgentRun(agentRun.id, 'cancelled');
+        await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
         logTaskActivity(queued.projectId, queued.id, null, 'codex_cancelled', {});
         notifyVoiceJobStatus(queued.id, 'cancelled');
         runtimeLogger.info('local codex task cancelled', { task_id: queued.id, task_key: queued.key });
@@ -324,6 +526,9 @@ class LocalTaskDispatcher {
       })
         .where(eq(schema.tasks.id, queued.id))
         .run();
+      finishTaskAgentRun(agentRun.id, 'failed');
+      await closeTaskBrowserSession(browserSession);
+      await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
       logTaskActivity(queued.projectId, queued.id, null, 'codex_failed', {
         error: error instanceof Error ? error.message : String(error),
         nextColumn: reviewColumn?.key ?? null,
@@ -337,6 +542,67 @@ class LocalTaskDispatcher {
     } finally {
       this.runningTasks.delete(queued.id);
     }
+  }
+}
+
+function activeTaskAgentRun(taskId: string) {
+  return db.select().from(schema.taskAgentRuns)
+    .where(and(
+      eq(schema.taskAgentRuns.taskId, taskId),
+      inArray(schema.taskAgentRuns.status, ['running', 'waiting_external']),
+    ))
+    .orderBy(desc(schema.taskAgentRuns.createdAt))
+    .get();
+}
+
+function ensureTaskAgentRun(task: typeof schema.tasks.$inferSelect) {
+  const existing = activeTaskAgentRun(task.id);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const run = {
+    id: randomUUID(),
+    taskId: task.id,
+    harness: task.agentHarness,
+    status: 'running' as const,
+    nativeSessionId: null,
+    currentUnitName: null,
+    browserSessionName: null,
+    waitKind: null,
+    waitReason: null,
+    resumeAt: null,
+    waitCount: 0,
+    createdAt: now,
+    startedAt: now,
+    updatedAt: now,
+    completedAt: null,
+  };
+  db.insert(schema.taskAgentRuns).values(run).run();
+  return run;
+}
+
+function finishTaskAgentRun(runId: string, status: 'completed' | 'failed' | 'cancelled') {
+  const now = new Date().toISOString();
+  db.update(schema.taskAgentRuns).set({
+    status,
+    currentUnitName: null,
+    browserSessionName: null,
+    waitKind: null,
+    waitReason: null,
+    resumeAt: null,
+    updatedAt: now,
+    completedAt: now,
+  }).where(eq(schema.taskAgentRuns.id, runId)).run();
+}
+
+async function cleanupTaskSession(sessionRoot: string, taskId: string, runId: string) {
+  try {
+    await cleanupTaskHarnessSession(sessionRoot);
+  } catch (error) {
+    runtimeLogger.warn('task harness session cleanup failed', {
+      task_id: taskId,
+      run_id: runId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -545,6 +811,13 @@ async function runTaskAgentHarness(options: Parameters<typeof runCodexSession>[0
     refreshIssue: common.refreshIssue,
     shouldContinue: common.shouldContinue,
     completionCheck: common.completionCheck,
+    nativeSessionId: common.nativeSessionId,
+    onSession: common.onSession,
+    runtime: common.runtime ? {
+      unitNamePrefix: common.runtime.unitName,
+      sessionRoot: common.runtime.sessionRoot,
+      onUnit: common.runtime.onUnit,
+    } : undefined,
   });
 }
 

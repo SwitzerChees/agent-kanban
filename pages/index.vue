@@ -113,7 +113,7 @@ interface Task {
   swimlaneId: string | null;
   assigneeId: string | null;
   agentEnabled: boolean;
-  agentStatus: 'idle' | 'queued' | 'running' | 'failed' | 'done';
+  agentStatus: 'idle' | 'queued' | 'running' | 'waiting_external' | 'failed' | 'done';
   agentHarness: AgentHarness;
   reasoningEffort: ReasoningEffort;
   attachments: Attachment[];
@@ -151,6 +151,14 @@ interface TaskDetail {
   task: Task;
   comments: TaskComment[];
   unreadMentionCount: number;
+  agentRun: {
+    id: string;
+    status: 'running' | 'waiting_external';
+    waitKind: 'ci' | 'deployment' | 'rate_limit' | 'other' | null;
+    waitReason: string | null;
+    resumeAt: string | null;
+    waitCount: number;
+  } | null;
   events: TaskEvent[];
 }
 
@@ -499,6 +507,10 @@ const dictionary = {
     noAgentUpdate: 'No AI update yet.',
     steeringHelp: 'Use steering to correct direction while the agent is running. Follow-up work can be requested after review.',
     steeringUnavailable: 'Steering is available once the task is queued or in progress.',
+    waitingExternal: 'The AI is waiting for an external system and currently uses no agent slot.',
+    resumeAgentNow: 'Resume now',
+    cancelAgent: 'Cancel AI run',
+    nextResume: 'Next automatic check: {time}',
     guidance: 'Guidance',
     sendMessage: 'Send message',
     lockedTask: 'Work is in progress. Title and description are locked.',
@@ -824,6 +836,10 @@ const dictionary = {
     noAgentUpdate: 'Noch kein KI-Update vorhanden.',
     steeringHelp: 'Nutze Hinweise, um während der Bearbeitung die Richtung zu korrigieren. Folgearbeit kann nach der Prüfung angefordert werden.',
     steeringUnavailable: 'Hinweise sind verfügbar, sobald die Aufgabe vorgemerkt oder in Bearbeitung ist.',
+    waitingExternal: 'Die KI wartet auf ein externes System und belegt aktuell keinen Agenten-Slot.',
+    resumeAgentNow: 'Jetzt fortfahren',
+    cancelAgent: 'KI-Lauf abbrechen',
+    nextResume: 'Nächste automatische Prüfung: {time}',
     guidance: 'Hinweis',
     sendMessage: 'Nachricht senden',
     lockedTask: 'Die Aufgabe wird bearbeitet. Titel und Beschreibung sind gesperrt.',
@@ -1345,12 +1361,12 @@ const editingTask = computed(() => selectedTaskDetail.value?.task ?? null);
 const backlogColumn = computed(() => board.value?.columns.find((column) => column.key === 'backlog') ?? board.value?.columns[0] ?? null);
 const hasAgentActivity = computed(() => {
   const status = editingTask.value?.agentStatus;
-  if (status === 'running' || status === 'done' || status === 'failed') return true;
+  if (status === 'running' || status === 'waiting_external' || status === 'done' || status === 'failed') return true;
   return selectedTaskDetail.value?.events.some((event) => ['codex_started', 'codex_text_update', 'codex_completed', 'codex_failed'].includes(event.action)) ?? false;
 });
 const canSendGuidance = computed(() => {
   const status = editingTask.value?.agentStatus;
-  return status === 'queued' || status === 'running';
+  return status === 'queued' || status === 'running' || status === 'waiting_external';
 });
 const canRequestFollowUp = computed(() => {
   const status = editingTask.value?.agentStatus;
@@ -1782,6 +1798,9 @@ const handleTaskTabKeydown = async (event: KeyboardEvent, currentKey: TaskTab) =
   document.getElementById(`task-tab-${nextTab.key}`)?.focus();
 };
 const latestAgentUpdate = computed(() => latestAgentTimelineUpdate(selectedTaskDetail.value?.events ?? []));
+const waitingAgentRun = computed(() => selectedTaskDetail.value?.agentRun?.status === 'waiting_external'
+  ? selectedTaskDetail.value.agentRun
+  : null);
 const taskAttachments = computed(() => editingTask.value?.attachments ?? []);
 const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? []).filter(isImageAttachment));
 const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
@@ -3131,6 +3150,34 @@ const requestFollowUpAction = async () => {
   }
 };
 
+const resumeWaitingAgent = async () => {
+  if (!selectedTaskId.value || !selectedProjectId.value || taskSubmitting.value) return;
+  taskSubmitting.value = true;
+  errorMessage.value = null;
+  try {
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/agent/queue`, { method: 'POST' });
+    await loadBoard(selectedProjectId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    taskSubmitting.value = false;
+  }
+};
+
+const cancelWaitingAgent = async () => {
+  if (!selectedTaskId.value || !selectedProjectId.value || taskSubmitting.value) return;
+  taskSubmitting.value = true;
+  errorMessage.value = null;
+  try {
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${selectedTaskId.value}/agent/cancel`, { method: 'POST' });
+    await loadBoard(selectedProjectId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    taskSubmitting.value = false;
+  }
+};
+
 const requestDeleteTask = () => {
   if (!selectedTaskId.value || !selectedProjectId.value || taskSubmitting.value) return;
   deleteTaskModalOpen.value = true;
@@ -3870,6 +3917,7 @@ const taskStatusLabel = (status: Task['agentStatus']) => {
     idle: { en: 'Waiting', de: 'Wartet' },
     queued: { en: 'Ready', de: 'Vorgemerkt' },
     running: { en: 'In progress', de: 'In Bearbeitung' },
+    waiting_external: { en: 'Waiting externally', de: 'Wartet extern' },
     failed: { en: 'Needs review', de: 'Prüfen' },
     done: { en: 'Ready for review', de: 'Bereit zur Prüfung' },
   };
@@ -3907,6 +3955,11 @@ const latestAgentTimelineUpdate = (events: TaskEvent[]) => {
         createdAt: event.createdAt,
         tone: 'info' as const,
       };
+    }
+    if (event.action === 'agent_waiting_external') {
+      const metadata = parseMetadata(event.metadata);
+      const reason = metadataString(metadata.reason) ?? taskStatusLabel('waiting_external');
+      return { body: reason, createdAt: event.createdAt, tone: 'info' as const };
     }
     if (event.action === 'codex_started') {
       return {
@@ -6187,7 +6240,7 @@ const humanError = (error: unknown) => {
                               class="ak-task-card cursor-pointer overflow-hidden"
                               :style="{ '--task-accent': topicAccent(topic) }"
                               :class="{
-                                'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running',
+                                'opacity-80 ring-1 ring-amber-300 dark:ring-amber-700': task.agentStatus === 'running' || task.agentStatus === 'waiting_external',
                                 'ring-2 ring-red-500 bg-red-50/80 dark:ring-red-500 dark:bg-red-950/35': task.agentStatus === 'failed',
                                 'ak-task-card-mentioned': Boolean(task.unreadMentionCount),
                                 'opacity-50': draggedTaskId === task.id,
@@ -6214,10 +6267,13 @@ const humanError = (error: unknown) => {
                                 <UBadge variant="subtle" color="neutral" class="shrink-0 whitespace-nowrap">{{ task.key }}</UBadge>
                                 <div class="flex min-w-0 items-center gap-1.5">
                                   <span
-                                    v-if="task.agentStatus === 'failed'"
-                                    class="inline-flex shrink-0 items-center gap-1 rounded-md bg-red-100 px-2 py-1 text-[10px] font-bold text-red-800 dark:bg-red-950 dark:text-red-200"
+                                    v-if="task.agentStatus === 'failed' || task.agentStatus === 'waiting_external'"
+                                    class="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[10px] font-bold"
+                                    :class="task.agentStatus === 'failed'
+                                      ? 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200'
+                                      : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200'"
                                   >
-                                    <UIcon name="i-lucide-circle-alert" class="size-3" />
+                                    <UIcon :name="task.agentStatus === 'failed' ? 'i-lucide-circle-alert' : 'i-lucide-clock-3'" class="size-3" />
                                     {{ taskStatusLabel(task.agentStatus) }}
                                   </span>
                                   <span
@@ -7010,7 +7066,7 @@ const humanError = (error: unknown) => {
                             class="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-semibold text-zinc-800 outline-none hover:border-zinc-300 hover:bg-white focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-zinc-100 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
                             :maxlength="Math.max(1, 255 - attachment.extension.length)"
                             required
-                            :disabled="editingTask?.agentStatus === 'running' || attachmentSubmitting"
+                            :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external' || attachmentSubmitting"
                             :aria-label="t.renameAttachment + ': ' + attachment.fileName"
                             :title="t.renameAttachmentHint"
                             @change="saveAttachmentRename(attachment, $event.target as HTMLInputElement)"
@@ -7056,7 +7112,7 @@ const humanError = (error: unknown) => {
                           variant="ghost"
                           size="sm"
                           icon="i-lucide-trash-2"
-                          :disabled="editingTask?.agentStatus === 'running'"
+                          :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                           :aria-label="t.deleteAttachment + ': ' + attachment.fileName"
                           :title="t.deleteAttachment"
                           @click="requestDeleteAttachment(attachment)"
@@ -7124,7 +7180,7 @@ const humanError = (error: unknown) => {
                       size="lg"
                       :label="t.aiExecution"
                       :description="t.aiExecutionHelp"
-                      :disabled="editingTask?.agentStatus === 'running'"
+                      :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                       :ui="{ root: 'items-start', label: 'text-sm font-semibold text-zinc-900 dark:text-zinc-100', description: 'text-xs leading-5 text-zinc-500 dark:text-zinc-400' }"
                     />
                   </div>
@@ -7149,7 +7205,7 @@ const humanError = (error: unknown) => {
                           :items="agentHarnessItems"
                           size="lg"
                           icon="i-lucide-bot"
-                          :disabled="editingTask?.agentStatus === 'running'"
+                          :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                         />
                       </UFormField>
                       <UFormField :label="t.reasoningEffort" size="sm">
@@ -7160,7 +7216,7 @@ const humanError = (error: unknown) => {
                           :items="reasoningEffortItems"
                           size="lg"
                           icon="i-lucide-gauge"
-                          :disabled="editingTask?.agentStatus === 'running'"
+                          :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                         />
                       </UFormField>
                       <div class="flex items-center justify-between gap-3 rounded-lg bg-zinc-100/80 px-3 py-2 text-xs dark:bg-zinc-800/70">
@@ -7226,6 +7282,27 @@ const humanError = (error: unknown) => {
               class="min-w-0 p-4 sm:p-6"
             >
               <UAlert class="mb-5" color="neutral" variant="soft" icon="i-lucide-route" :description="t.steeringHelp" />
+
+              <div
+                v-if="waitingAgentRun"
+                class="mb-5 flex flex-col gap-3 rounded-xl bg-amber-50 p-4 text-amber-950 ring-1 ring-amber-200 sm:flex-row sm:items-center sm:justify-between dark:bg-amber-950/30 dark:text-amber-100 dark:ring-amber-800"
+              >
+                <div class="min-w-0">
+                  <p class="text-sm font-semibold">{{ t.waitingExternal }}</p>
+                  <p v-if="waitingAgentRun.waitReason" class="mt-1 text-sm">{{ waitingAgentRun.waitReason }}</p>
+                  <p v-if="waitingAgentRun.resumeAt" class="mt-1 text-xs opacity-75">
+                    {{ t.nextResume.replace('{time}', formatActivityTime(waitingAgentRun.resumeAt)) }}
+                  </p>
+                </div>
+                <div class="flex shrink-0 flex-wrap gap-2">
+                  <UButton color="warning" variant="solid" icon="i-lucide-play" :loading="taskSubmitting" @click="resumeWaitingAgent">
+                    {{ t.resumeAgentNow }}
+                  </UButton>
+                  <UButton color="neutral" variant="soft" icon="i-lucide-square" :disabled="taskSubmitting" @click="cancelWaitingAgent">
+                    {{ t.cancelAgent }}
+                  </UButton>
+                </div>
+              </div>
 
               <div class="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
                 <div class="grid min-w-0 content-start gap-4">
@@ -7611,7 +7688,7 @@ const humanError = (error: unknown) => {
         <template #footer>
           <div v-if="selectedTaskId" class="mr-auto flex items-center gap-1.5">
             <UButton
-              v-if="editingTask?.agentStatus !== 'running'"
+              v-if="editingTask?.agentStatus !== 'running' && editingTask?.agentStatus !== 'waiting_external'"
               color="error"
               variant="ghost"
               icon="i-lucide-trash-2"

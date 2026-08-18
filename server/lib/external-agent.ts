@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import type { CodexRuntimeEvent, Issue } from './types';
 import { renderPrompt } from './template';
 import {
@@ -9,6 +10,13 @@ import {
   type AgentHarness,
   type ReasoningEffort,
 } from './agent-harness';
+import { parseAgentWaitRequest } from './agent-wait';
+import type { TaskHarnessRuntimeOptions, TaskHarnessSessionResult } from './codex';
+import {
+  buildTaskHarnessRunner,
+  prepareTaskHarnessSession,
+  stopTaskHarnessUnit,
+} from './task-harness-sandbox';
 
 type ExternalHarness = Exclude<AgentHarness, 'codex'>;
 
@@ -34,6 +42,9 @@ interface RunExternalAgentSessionOptions {
   refreshIssue: () => Promise<Issue | null>;
   shouldContinue: (issue: Issue) => boolean;
   completionCheck?: (issue: Issue) => Promise<CompletionCheckResult | null>;
+  nativeSessionId?: string | null;
+  onSession?: (nativeSessionId: string) => void;
+  runtime?: Omit<TaskHarnessRuntimeOptions, 'unitName'> & { unitNamePrefix: string };
 }
 
 export interface RunExternalRefinementOptions {
@@ -47,9 +58,10 @@ export interface RunExternalRefinementOptions {
   onEvent?: (event: CodexRuntimeEvent) => void;
 }
 
-export async function runExternalAgentSession(options: RunExternalAgentSessionOptions) {
+export async function runExternalAgentSession(options: RunExternalAgentSessionOptions): Promise<TaskHarnessSessionResult> {
   let currentIssue = options.issue;
   let nextPrompt: string | null = null;
+  let nativeSessionId = options.nativeSessionId ?? null;
 
   for (let turnNumber = 1; turnNumber <= options.maxTurns; turnNumber += 1) {
     assertNotAborted(options.signal);
@@ -61,7 +73,7 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
       ? `${options.promptPrefix.trim()}\n\n---\n\n${renderedPrompt}`
       : renderedPrompt;
 
-    await runExternalProcess({
+    const result = await runExternalProcess({
       harness: options.harness,
       reasoningEffort: options.reasoningEffort,
       workspacePath: options.workspacePath,
@@ -71,7 +83,23 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
       autonomous: true,
       turnNumber,
       onEvent: options.onEvent,
+      nativeSessionId,
+      onSession: (sessionId) => {
+        nativeSessionId = sessionId;
+        options.onSession?.(sessionId);
+      },
+      sessionRoot: options.runtime?.sessionRoot,
+      runtime: options.runtime ? {
+        ...options.runtime,
+        unitName: `${options.runtime.unitNamePrefix}-${turnNumber}`,
+      } : undefined,
     });
+    if (result.sessionId && result.sessionId !== nativeSessionId) {
+      nativeSessionId = result.sessionId;
+      options.onSession?.(nativeSessionId);
+    }
+    const waitRequest = parseAgentWaitRequest(result.text);
+    if (waitRequest) return { nativeSessionId, waitRequest };
 
     const refreshedIssue = await options.refreshIssue();
     if (refreshedIssue) currentIssue = refreshedIssue;
@@ -101,6 +129,7 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
     const continuationIssue = await options.refreshIssue();
     if (continuationIssue) currentIssue = continuationIssue;
   }
+  return { nativeSessionId, waitRequest: null };
 }
 
 export async function runExternalRefinementTurn(options: RunExternalRefinementOptions) {
@@ -130,7 +159,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
   };
 }
 
-interface RunExternalProcessOptions {
+export interface RunExternalProcessOptions {
   harness: ExternalHarness;
   reasoningEffort: ReasoningEffort;
   workspacePath: string;
@@ -140,15 +169,32 @@ interface RunExternalProcessOptions {
   autonomous: boolean;
   turnNumber: number;
   onEvent: (event: CodexRuntimeEvent) => void;
+  nativeSessionId?: string | null;
+  onSession?: (nativeSessionId: string) => void;
+  sessionRoot?: string;
+  runtime?: TaskHarnessRuntimeOptions;
 }
 
 async function runExternalProcess(options: RunExternalProcessOptions) {
   assertNotAborted(options.signal);
   const executable = harnessExecutable(options.harness);
   const args = buildExternalArgs(options);
-  const child = spawn(executable, args, {
+  let runner: ReturnType<typeof buildTaskHarnessRunner> | null = null;
+  if (options.runtime && options.sessionRoot) {
+    await prepareTaskHarnessSession(options.sessionRoot);
+    runner = buildTaskHarnessRunner({
+      unitName: options.runtime.unitName,
+      executable,
+      args,
+      workspacePath: options.workspacePath,
+      sessionRoot: options.sessionRoot,
+      harness: options.harness,
+    });
+    options.runtime.onUnit?.(runner.unitName, runner.browserSession);
+  }
+  const child = spawn(runner?.command ?? executable, runner?.args ?? args, {
     cwd: options.workspacePath,
-    env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+    env: runner?.env ?? { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdoutBuffer = '';
@@ -175,7 +221,11 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
       if (!trimmed.startsWith('[')) text += `${trimmed}\n`;
       return;
     }
-    sessionId = stringValue(event.sessionID) ?? stringValue(event.sessionId) ?? stringValue(event.id) ?? sessionId;
+    const discoveredSessionId = externalSessionId(event, options.harness);
+    if (discoveredSessionId && discoveredSessionId !== sessionId) {
+      sessionId = discoveredSessionId;
+      options.onSession?.(discoveredSessionId);
+    }
     const fragment = assistantText(event, options.harness, emittedAssistantText);
     if (!fragment) return;
     emittedAssistantText += fragment;
@@ -205,23 +255,28 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
     stderrTail = `${stderrTail}${chunk.toString('utf8')}`.slice(-8_000);
   });
 
-  const exit = await waitForExit(child, options.signal, options.timeoutMs);
-  if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
-  if (exit.code !== 0) {
-    const detail = stderrTail.trim().slice(-2_000);
-    throw new Error(`${options.harness}_exit_${exit.code ?? exit.signal ?? 'unknown'}${detail ? `: ${detail}` : ''}`);
-  }
-  if (!text.trim()) throw new Error(`${options.harness}_empty_response`);
+  try {
+    const exit = await waitForExit(child, options.signal, options.timeoutMs);
+    if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
+    if (exit.code !== 0) {
+      const detail = stderrTail.trim().slice(-2_000);
+      throw new Error(`${options.harness}_exit_${exit.code ?? exit.signal ?? 'unknown'}${detail ? `: ${detail}` : ''}`);
+    }
+    if (!text.trim()) throw new Error(`${options.harness}_empty_response`);
 
-  options.onEvent({
-    event: 'item/completed',
-    timestamp: now(),
-    codex_app_server_pid: child.pid ?? null,
-    session_id: sessionId,
-    thread_id: sessionId,
-    message: text.trim(),
-  });
-  return { text: text.trim(), sessionId };
+    options.onEvent({
+      event: 'item/completed',
+      timestamp: now(),
+      codex_app_server_pid: child.pid ?? null,
+      session_id: sessionId,
+      thread_id: sessionId,
+      message: text.trim(),
+    });
+    return { text: text.trim(), sessionId };
+  } finally {
+    await stopTaskHarnessUnit(runner?.unitName);
+    options.runtime?.onUnit?.(null, null);
+  }
 }
 
 export function buildExternalArgs(options: RunExternalProcessOptions) {
@@ -233,6 +288,7 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
       '--variant', options.reasoningEffort,
       ...(options.autonomous ? ['--auto'] : ['--agent', 'explore']),
       '--title', `Agent Kanban ${options.autonomous ? 'implementation' : 'refinement'}`,
+      ...(options.nativeSessionId ? ['--session', options.nativeSessionId] : []),
       options.prompt,
     ];
   }
@@ -243,7 +299,8 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
     '--provider', QWEN_MODEL_PROVIDER,
     '--model', QWEN_MODEL_ID,
     '--thinking', options.reasoningEffort,
-    '--no-session',
+    ...(options.sessionRoot ? ['--session-dir', path.join(options.sessionRoot, 'prime-sessions')] : ['--no-session']),
+    ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
     ...(options.autonomous
       ? ['--autonomous', '--autonomous-max-turns', '12', '--autonomous-timeout-ms', String(options.timeoutMs)]
       : []),
@@ -261,8 +318,10 @@ function assistantText(event: Record<string, unknown>, harness: ExternalHarness,
   }
 
   if (event.type === 'message_update') {
+    const assistantEvent = asRecord(event.assistantMessageEvent);
+    if (assistantEvent.type !== 'text_delta') return '';
     const delta = asRecord(event.delta);
-    return stringValue(delta.text) ?? stringValue(delta.delta) ?? '';
+    return stringValue(assistantEvent.delta) ?? stringValue(delta.text) ?? stringValue(delta.delta) ?? '';
   }
   if (event.type !== 'message_end') return '';
   const message = asRecord(event.message);
@@ -270,6 +329,15 @@ function assistantText(event: Record<string, unknown>, harness: ExternalHarness,
   const fullText = contentText(message.content);
   if (!fullText) return '';
   return fullText.startsWith(emitted) ? fullText.slice(emitted.length) : fullText;
+}
+
+function externalSessionId(event: Record<string, unknown>, harness: ExternalHarness) {
+  if (harness === 'prime-agent' && event.type === 'session') return stringValue(event.id);
+  return stringValue(event.sessionID)
+    ?? stringValue(event.sessionId)
+    ?? stringValue(event.session_id)
+    ?? stringValue(asRecord(event.session).id)
+    ?? null;
 }
 
 function contentText(value: unknown): string {

@@ -490,6 +490,13 @@ export function getTaskDetail(taskId: string, user: User) {
     ))
     .orderBy(asc(schema.activity.createdAt))
     .all();
+  const agentRun = db.select().from(schema.taskAgentRuns)
+    .where(and(
+      eq(schema.taskAgentRuns.taskId, taskId),
+      inArray(schema.taskAgentRuns.status, ['running', 'waiting_external']),
+    ))
+    .orderBy(desc(schema.taskAgentRuns.createdAt))
+    .get() ?? null;
 
   return {
     project,
@@ -511,6 +518,14 @@ export function getTaskDetail(taskId: string, user: User) {
       };
     }),
     unreadMentionCount: commentMentions.filter((mention) => mention.userId === user.id && !mention.seenAt).length,
+    agentRun: agentRun ? {
+      id: agentRun.id,
+      status: agentRun.status,
+      waitKind: agentRun.waitKind,
+      waitReason: agentRun.waitReason,
+      resumeAt: agentRun.resumeAt,
+      waitCount: agentRun.waitCount,
+    } : null,
     events,
   };
 }
@@ -925,24 +940,24 @@ export async function updateTask(taskId: string, input: {
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
   position?: number;
-  agentStatus?: 'idle' | 'queued' | 'running' | 'failed' | 'done';
+  agentStatus?: 'idle' | 'queued' | 'running' | 'waiting_external' | 'failed' | 'done';
 }, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   const project = getProject(task.projectId, user);
   const currentColumn = getProjectColumn(task.projectId, task.columnId);
   let targetColumn = currentColumn;
-  if ((task.agentStatus === 'running' || task.agentStatus === 'done' || task.agentStatus === 'failed')
+  if ((['running', 'waiting_external', 'done', 'failed'].includes(task.agentStatus))
     && (input.title !== undefined || input.description !== undefined || input.descriptionSource !== undefined)) {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
   if (input.descriptionSource === 'refined' && !task.refinedDescription?.trim()) {
     throw createError({ statusCode: 409, statusMessage: 'refined_description_missing' });
   }
-  if (task.agentStatus === 'running' && input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled) {
+  if (['running', 'waiting_external'].includes(task.agentStatus) && input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_agent_mode_locked' });
   }
-  if (task.agentStatus === 'running' && (
+  if (['running', 'waiting_external'].includes(task.agentStatus) && (
     (input.agentHarness !== undefined && input.agentHarness !== task.agentHarness)
     || (input.reasoningEffort !== undefined && input.reasoningEffort !== task.reasoningEffort)
   )) {
@@ -971,16 +986,20 @@ export async function updateTask(taskId: string, input: {
     || nextPlacement.unterthemaId !== task.unterthemaId;
   if (input.columnId) {
     targetColumn = getProjectColumn(task.projectId, input.columnId);
-    if (targetColumn.key === 'todo' && nextAgentEnabled && task.agentStatus !== 'running') {
+    if (targetColumn.done && task.agentStatus === 'running') {
+      throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_complete' });
+    }
+    if (targetColumn.key === 'todo' && nextAgentEnabled && !['running', 'waiting_external'].includes(task.agentStatus)) {
       nextAgentStatus = 'queued';
     } else if (task.agentStatus === 'queued' && targetColumn.key !== 'todo') {
       nextAgentStatus = 'idle';
     }
+    if (targetColumn.done && task.agentStatus === 'waiting_external') nextAgentStatus = 'done';
   }
   if (input.agentEnabled !== undefined) {
     const currentColumn = getProjectColumn(task.projectId, input.columnId ?? task.columnId);
     if (!nextAgentEnabled && task.agentStatus === 'queued') nextAgentStatus = 'idle';
-    if (nextAgentEnabled && currentColumn.key === 'todo' && task.agentStatus !== 'running') nextAgentStatus = 'queued';
+    if (nextAgentEnabled && currentColumn.key === 'todo' && !['running', 'waiting_external'].includes(task.agentStatus)) nextAgentStatus = 'queued';
   }
   if (!nextAgentEnabled && nextAgentStatus === 'queued') nextAgentStatus = 'idle';
 
@@ -1030,7 +1049,34 @@ export async function updateTask(taskId: string, input: {
   if (nextAgentStatus === 'queued' && task.agentStatus !== 'queued') {
     logTaskActivity(task.projectId, taskId, user.id, 'codex_queued', { reason: 'moved_to_todo' });
   }
-  if (!currentColumn.done && targetColumn.done && (task.agentEnabled || ['done', 'failed'].includes(task.agentStatus))) {
+  if (!currentColumn.done && targetColumn.done && task.agentStatus === 'waiting_external') {
+    const now = new Date().toISOString();
+    const waitingRun = db.select().from(schema.taskAgentRuns)
+      .where(and(eq(schema.taskAgentRuns.taskId, task.id), eq(schema.taskAgentRuns.status, 'waiting_external')))
+      .get();
+    if (waitingRun) {
+      db.update(schema.taskAgentRuns).set({
+        status: 'cancelled',
+        currentUnitName: null,
+        browserSessionName: null,
+        waitKind: null,
+        waitReason: null,
+        resumeAt: null,
+        updatedAt: now,
+        completedAt: now,
+      }).where(eq(schema.taskAgentRuns.id, waitingRun.id)).run();
+      await fs.rm(appDataDir('task-sessions', task.projectId, task.id, waitingRun.id), { recursive: true, force: true })
+        .catch((error) => logTaskActivity(task.projectId, task.id, user.id, 'agent_session_cleanup_failed', {
+          runId: waitingRun.id,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      logTaskActivity(task.projectId, task.id, user.id, 'agent_wait_cancelled', {
+        runId: waitingRun.id,
+        reason: 'moved_to_done',
+      });
+    }
+  }
+  if (!currentColumn.done && targetColumn.done && (task.agentEnabled || ['waiting_external', 'done', 'failed'].includes(task.agentStatus))) {
     await cleanupCompletedTaskWorktree(task, project.folderPath, user.id);
   }
   return updated ? publicTaskDescription(updated) : updated;
@@ -1054,6 +1100,11 @@ export function queueTaskAgent(taskId: string, user: User, reason: 'api_queue' |
     position: nextTaskPosition(task.projectId, todoColumn.id, task.oberthemaId, task.unterthemaId),
     updatedAt: new Date().toISOString(),
   }).where(eq(schema.tasks.id, taskId)).run();
+  if (task.agentStatus === 'waiting_external') {
+    db.update(schema.taskAgentRuns).set({ resumeAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+      .where(and(eq(schema.taskAgentRuns.taskId, taskId), eq(schema.taskAgentRuns.status, 'waiting_external')))
+      .run();
+  }
   logTaskActivity(task.projectId, taskId, user.id, 'codex_queued', { reason });
   return getTaskDetail(taskId, user);
 }
@@ -1061,7 +1112,7 @@ export function queueTaskAgent(taskId: string, user: User, reason: 'api_queue' |
 export function cancelTaskAgent(taskId: string, user: User) {
   const { task } = authorizeTaskAccess(taskId, user);
   if (task.agentStatus === 'idle' && !task.agentEnabled) return getTaskDetail(taskId, user);
-  if (!['queued', 'running'].includes(task.agentStatus)) {
+  if (!['queued', 'running', 'waiting_external'].includes(task.agentStatus)) {
     throw createError({ statusCode: 409, statusMessage: 'task_agent_not_cancelable' });
   }
 
@@ -1076,6 +1127,27 @@ export function cancelTaskAgent(taskId: string, user: User) {
     position: nextTaskPosition(task.projectId, todoColumn.id, task.oberthemaId, task.unterthemaId),
     updatedAt: new Date().toISOString(),
   }).where(eq(schema.tasks.id, taskId)).run();
+  if (task.agentStatus === 'waiting_external') {
+    const now = new Date().toISOString();
+    const waitingRun = db.select().from(schema.taskAgentRuns)
+      .where(and(eq(schema.taskAgentRuns.taskId, taskId), eq(schema.taskAgentRuns.status, 'waiting_external')))
+      .get();
+    db.update(schema.taskAgentRuns).set({
+      status: 'cancelled',
+      currentUnitName: null,
+      browserSessionName: null,
+      resumeAt: null,
+      updatedAt: now,
+      completedAt: now,
+    }).where(and(eq(schema.taskAgentRuns.taskId, taskId), eq(schema.taskAgentRuns.status, 'waiting_external'))).run();
+    if (waitingRun) {
+      void fs.rm(appDataDir('task-sessions', task.projectId, task.id, waitingRun.id), { recursive: true, force: true })
+        .catch((error) => logTaskActivity(task.projectId, task.id, user.id, 'agent_session_cleanup_failed', {
+          runId: waitingRun.id,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+    }
+  }
   logTaskActivity(task.projectId, taskId, user.id, 'codex_cancel_requested', {
     previousStatus: task.agentStatus,
   });
@@ -1086,7 +1158,7 @@ export async function deleteTask(taskId: string, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
-  if (task.agentStatus === 'running') {
+  if (['running', 'waiting_external'].includes(task.agentStatus)) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_delete' });
   }
   logTaskActivity(task.projectId, taskId, user.id, 'task_deleted', { key: task.key, title: task.title });
@@ -1213,7 +1285,7 @@ export function getTaskAttachment(taskId: string, attachmentId: string, user: Us
 
 export function renameTaskAttachment(taskId: string, attachmentId: string, fileName: string, user: User) {
   const { task, attachment } = getTaskAttachment(taskId, attachmentId, user);
-  if (task.agentStatus === 'running') {
+  if (['running', 'waiting_external'].includes(task.agentStatus)) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_rename_attachment' });
   }
   const normalizedName = fileName.trim();
@@ -1237,7 +1309,7 @@ export function renameTaskAttachment(taskId: string, attachmentId: string, fileN
 
 export async function deleteTaskAttachment(taskId: string, attachmentId: string, user: User) {
   const { task, attachment, annotation } = getTaskAttachment(taskId, attachmentId, user);
-  if (task.agentStatus === 'running') {
+  if (['running', 'waiting_external'].includes(task.agentStatus)) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_delete_attachment' });
   }
 
@@ -1337,11 +1409,19 @@ export function addTaskMessage(taskId: string, body: string, user: User) {
   const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
   if (!task) throw createError({ statusCode: 404, statusMessage: 'task_not_found' });
   getProject(task.projectId, user);
-  if (!['running', 'queued', 'done', 'failed'].includes(task.agentStatus)) {
+  if (!['running', 'queued', 'waiting_external', 'done', 'failed'].includes(task.agentStatus)) {
     throw createError({ statusCode: 409, statusMessage: 'task_not_accepting_steering' });
   }
   const comment = insertTaskComment(taskId, body, user, 'steering');
   logTaskActivity(task.projectId, taskId, user.id, 'steering_message', { body: comment.body });
+  if (task.agentStatus === 'waiting_external') {
+    const now = new Date().toISOString();
+    db.update(schema.tasks).set({ agentStatus: 'queued', updatedAt: now })
+      .where(and(eq(schema.tasks.id, taskId), eq(schema.tasks.agentStatus, 'waiting_external'))).run();
+    db.update(schema.taskAgentRuns).set({ resumeAt: now, updatedAt: now })
+      .where(and(eq(schema.taskAgentRuns.taskId, taskId), eq(schema.taskAgentRuns.status, 'waiting_external'))).run();
+    logTaskActivity(task.projectId, taskId, user.id, 'agent_wait_wake_requested', { reason: 'steering' });
+  }
   if (task.agentStatus === 'done' || task.agentStatus === 'failed') {
     requeueTaskForFollowUp(task, user.id, comment.body);
   }
