@@ -10,6 +10,7 @@ import { buildExternalArgs, parseJsonObject } from '../server/lib/external-agent
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
 import { buildTaskHarnessRunner, taskHarnessResourceProperties } from '../server/lib/task-harness-sandbox';
 import { taskCodexSandboxOverrides } from '../server/lib/codex';
+import refinementToolBudget, { PRIME_REFINEMENT_MAX_TOOL_CALLS } from '../server/prime-extensions/refinement-tool-budget';
 import {
   activityFromEvent,
   assistantTextFromEvent,
@@ -62,6 +63,37 @@ describe('agent harness runtime contracts', () => {
     expect(harnessExecutable('prime-agent')).toMatch(/prime-agent$/);
     expect(parseJsonObject('{"ok":true}')).toEqual({ ok: true });
     expect(parseJsonObject('```json\n{"ok":true}\n```')).toEqual({ ok: true });
+  });
+
+  test('bounds Prime Agent refinement inspection before its empty-response turn limit', () => {
+    let toolCallHandler: ((event: unknown) => unknown) | null = null;
+    refinementToolBudget({
+      on(event: string, handler: (event: unknown) => unknown) {
+        if (event === 'tool_call') toolCallHandler = handler;
+      },
+    } as never);
+
+    expect(toolCallHandler).not.toBeNull();
+    for (let index = 0; index < PRIME_REFINEMENT_MAX_TOOL_CALLS; index += 1) {
+      expect(toolCallHandler!({})).toBeUndefined();
+    }
+    expect(toolCallHandler!({})).toMatchObject({
+      block: true,
+      reason: expect.stringContaining('return the required final JSON'),
+    });
+
+    const args = buildExternalArgs({
+      harness: 'prime-agent',
+      reasoningEffort: 'xhigh',
+      workspacePath: '/tmp/agent-kanban-harness-test',
+      prompt: 'Refine the task.',
+      signal: new AbortController().signal,
+      timeoutMs: 60_000,
+      autonomous: false,
+      turnNumber: 1,
+      onEvent: () => {},
+    });
+    expect(args[args.indexOf('--extension') + 1]).toMatch(/refinement-tool-budget\.ts$/);
   });
 
   test('accepts only a terminal, bounded external wait request', () => {

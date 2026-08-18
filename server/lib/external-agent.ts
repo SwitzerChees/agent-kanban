@@ -20,6 +20,13 @@ import {
 
 type ExternalHarness = Exclude<AgentHarness, 'codex'>;
 
+const PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION = path.resolve(
+  process.cwd(),
+  'server',
+  'prime-extensions',
+  'refinement-tool-budget.ts',
+);
+
 interface CompletionCheckResult {
   ok: boolean;
   message?: string | null;
@@ -135,6 +142,12 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
 export async function runExternalRefinementTurn(options: RunExternalRefinementOptions) {
   const prompt = [
     options.prompt,
+    ...(options.harness === 'prime-agent'
+      ? [
+          '',
+          'Prime Agent inspection budget: batch related repository reads and use no more than 16 tool calls. When the tool budget is exhausted, stop inspecting and return the best grounded structured result immediately.',
+        ]
+      : []),
     '',
     'The required structured output must validate against this JSON Schema:',
     JSON.stringify(options.outputSchema),
@@ -299,6 +312,7 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
     '--provider', QWEN_MODEL_PROVIDER,
     '--model', QWEN_MODEL_ID,
     '--thinking', options.reasoningEffort,
+    ...(!options.autonomous ? ['--extension', PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION] : []),
     ...(options.sessionRoot ? ['--session-dir', path.join(options.sessionRoot, 'prime-sessions')] : ['--no-session']),
     ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
     ...(options.autonomous
