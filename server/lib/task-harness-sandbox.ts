@@ -6,6 +6,9 @@ import path from 'node:path';
 import { runtimeLogger } from './logger';
 import type { AgentHarness } from './agent-harness';
 
+export const PRIME_TASK_COMPACTION_RESERVE_TOKENS = 32_768;
+export const PRIME_TASK_COMPACTION_KEEP_RECENT_TOKENS = 16_000;
+
 export interface TaskHarnessSandboxOptions {
   unitName: string;
   executable: string;
@@ -89,6 +92,11 @@ export function primeTaskSettings(value: unknown) {
     compaction: {
       ...compaction,
       enabled: true,
+      // The fixed task model has an ~85k context window. Compacting around
+      // 52k leaves enough room for a full tool result and keeps the post-
+      // compaction working set small enough for long implementation runs.
+      reserveTokens: PRIME_TASK_COMPACTION_RESERVE_TOKENS,
+      keepRecentTokens: PRIME_TASK_COMPACTION_KEEP_RECENT_TOKENS,
     },
   };
 }
@@ -193,12 +201,18 @@ function boundedResourceLimit(value: string | undefined, fallback: number, minim
 export async function stopTaskHarnessUnit(unitName: string | null | undefined) {
   if (!unitName) return;
   assertTaskUnitName(unitName);
+  // Successful `systemd-run --wait --collect` invocations are already gone by
+  // the time the child exits. Avoid noisy kill/stop failures for that normal
+  // path while still terminating units that survived cancellation or timeout.
+  if (!await systemctlIsActive(unitName)) return;
   await runSystemctl(['kill', '--kill-whom=all', '--signal=SIGTERM', unitName]);
   const active = await systemctlIsActive(unitName);
   if (active) {
     await runSystemctl(['kill', '--kill-whom=all', '--signal=SIGKILL', unitName]);
   }
-  await runSystemctl(['stop', unitName]);
+  if (await systemctlIsActive(unitName)) {
+    await runSystemctl(['stop', unitName]);
+  }
 }
 
 export function taskHarnessBrowserSession(sessionRoot: string) {

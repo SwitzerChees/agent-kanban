@@ -47,6 +47,8 @@ describe('external agent task controls', () => {
   test('instructs task agents to serialize resource-intensive validation', () => {
     expect(localDispatcher.agentRuntimeSafetyInstructions()).toContain('memory-intensive validation commands sequentially');
     expect(localDispatcher.agentRuntimeSafetyInstructions()).toContain('Never run commands in parallel');
+    expect(localDispatcher.agentRuntimeSafetyInstructions()).toContain('persistent task-owned worktree');
+    expect(localDispatcher.agentRuntimeSafetyInstructions()).toContain('Commit each coherent, validated implementation milestone');
     expect(localDispatcher.agentCompletionHandoffInstructions()).toContain('big-picture product level');
     expect(localDispatcher.agentCompletionHandoffInstructions()).toContain('places or flows the user can test');
   });
@@ -96,6 +98,28 @@ describe('external agent task controls', () => {
       },
     })).rejects.toThrow('permanent_failure');
     expect(cappedAttempts).toEqual([0, 1, 2]);
+  });
+
+  test('does not retry deterministic gate, budget, cancellation, or sandbox failures', async () => {
+    expect(localDispatcher.isRetryableAgentFailure(new Error('prime-agent_empty_response'))).toBe(true);
+    expect(localDispatcher.isRetryableAgentFailure(new Error(
+      'prime-agent_exit_1: Autonomous quality gate still failing; autonomous limit reached: maxTokens reached',
+    ))).toBe(false);
+    expect(localDispatcher.isRetryableAgentFailure(new Error('completion_gate_failed: PR is not merged'))).toBe(false);
+    expect(localDispatcher.isRetryableAgentFailure(new Error('EROFS: read-only file system'))).toBe(false);
+
+    const attempts: number[] = [];
+    await expect(localDispatcher.runWithAgentRetries({
+      retries: 2,
+      signal: new AbortController().signal,
+      retryDelayMs: 0,
+      shouldRetry: localDispatcher.isRetryableAgentFailure,
+      run: async (attempt) => {
+        attempts.push(attempt);
+        throw new Error('completion_gate_failed: still not ready');
+      },
+    })).rejects.toThrow('completion_gate_failed');
+    expect(attempts).toEqual([0]);
   });
 
   test('persists project and harness concurrency limits and combines both slot checks', async () => {

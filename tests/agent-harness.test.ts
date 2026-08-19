@@ -10,11 +10,11 @@ import {
   buildExternalArgs,
   buildExternalRefinementPrompt,
   EXTERNAL_REFINEMENT_MAX_ATTEMPTS,
+  externalTaskPrompt,
   externalRefinementSessionId,
   parseJsonObject,
-  PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS,
-  PRIME_TASK_AUTONOMOUS_MAX_TOKENS,
-  PRIME_TASK_AUTONOMOUS_MAX_TURNS,
+  primeAssistantFragment,
+  primeRuntimeProgress,
   refinementValidationFeedback,
   remainingAssistantText,
 } from '../server/lib/external-agent';
@@ -77,7 +77,7 @@ describe('agent harness runtime contracts', () => {
     })).toEqual(expect.arrayContaining(['--session-dir', '/tmp/task-session/prime-sessions', '--resume', 'prime-task-session']));
   });
 
-  test('keeps Prime autonomous until a committed task branch is ready for the host PR gate', () => {
+  test('lets Agent Kanban own Prime continuations without a cumulative autonomous budget', () => {
     const args = buildExternalArgs({
       harness: 'prime-agent',
       reasoningEffort: 'xhigh',
@@ -89,16 +89,8 @@ describe('agent harness runtime contracts', () => {
       turnNumber: 1,
       onEvent: () => {},
     });
-    expect(args).toEqual(expect.arrayContaining([
-      '--autonomous',
-      '--autonomous-gate-retries', '12',
-      '--autonomous-max-continuations', String(PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS),
-      '--autonomous-max-turns', String(PRIME_TASK_AUTONOMOUS_MAX_TURNS),
-      '--autonomous-max-tokens', String(PRIME_TASK_AUTONOMOUS_MAX_TOKENS),
-      '--autonomous-timeout-ms', '60000',
-    ]));
-    const gate = args[args.indexOf('--autonomous-gate') + 1];
-    expect(gate).toMatch(/^node .*prime-gates\/task-ready\.mjs$/);
+    expect(args).not.toContain('--autonomous');
+    expect(args.some((argument) => argument.startsWith('--autonomous-'))).toBe(false);
   });
 
   test('forces auto-compaction on for isolated Prime task sessions', () => {
@@ -109,7 +101,38 @@ describe('agent harness runtime contracts', () => {
       theme: 'dark',
       compaction: { enabled: true, reserveTokens: 32_768, keepRecentTokens: 16_000 },
     });
-    expect(primeTaskSettings(null)).toEqual({ compaction: { enabled: true } });
+    expect(primeTaskSettings(null)).toEqual({
+      compaction: { enabled: true, reserveTokens: 32_768, keepRecentTokens: 16_000 },
+    });
+  });
+
+  test('injects large project guidance only when creating the Prime session', () => {
+    expect(externalTaskPrompt('Implement it.', '# Mandatory instructions', null))
+      .toBe('# Mandatory instructions\n\n---\n\nImplement it.');
+    expect(externalTaskPrompt('Continue it.', '# Mandatory instructions', 'prime-session'))
+      .toBe('Continue it.');
+  });
+
+  test('surfaces Prime context compaction without exposing its payload', () => {
+    expect(primeRuntimeProgress({ type: 'compaction_start', reason: 'threshold', private: 'hidden' }))
+      .toEqual({
+        event: 'prime/compaction_started',
+        message: 'Prime Agent is compacting its context (threshold).',
+      });
+    expect(primeRuntimeProgress({ type: 'compaction_end', reason: 'threshold', result: { summary: 'hidden' } }))
+      .toEqual({
+        event: 'prime/compaction_completed',
+        message: 'Prime Agent context compaction completed (threshold).',
+      });
+    expect(primeRuntimeProgress({
+      type: 'tool_execution_start',
+      toolName: 'ipython',
+      args: { code: 'await bash("agent-browser open https://test.example")' },
+    })).toEqual({
+      event: 'prime/agent_browser_started',
+      message: 'Prime Agent started an agent-browser verification.',
+    });
+    expect(primeRuntimeProgress({ type: 'message_end' })).toBeNull();
   });
 
   test('resolves both host installations and accepts plain or fenced structured output', () => {
@@ -214,6 +237,28 @@ describe('agent harness runtime contracts', () => {
     expect(remainingAssistantText(`\n\n${json}`, json)).toBe('');
     expect(remainingAssistantText(`\n\n${json} trailing`, json)).toBe(' trailing');
     expect(remainingAssistantText('different final text', json)).toBe('different final text');
+  });
+
+  test('deduplicates every streamed Prime assistant message independently', () => {
+    const firstDelta = primeAssistantFragment({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'First update' },
+    }, '');
+    expect(firstDelta).toEqual({ fragment: 'First update', streamedText: 'First update' });
+    expect(primeAssistantFragment({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'First update' }] },
+    }, firstDelta.streamedText)).toEqual({ fragment: '', streamedText: '' });
+
+    const secondDelta = primeAssistantFragment({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Second update' },
+    }, '');
+    expect(secondDelta).toEqual({ fragment: 'Second update', streamedText: 'Second update' });
+    expect(primeAssistantFragment({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Second update' }] },
+    }, secondDelta.streamedText)).toEqual({ fragment: '', streamedText: '' });
   });
 
   test('accepts only a terminal, bounded external wait request', () => {

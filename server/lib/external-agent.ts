@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { CodexRuntimeEvent, Issue } from './types';
@@ -21,9 +21,6 @@ import {
 
 type ExternalHarness = Exclude<AgentHarness, 'codex'>;
 export const EXTERNAL_REFINEMENT_MAX_ATTEMPTS = 3;
-export const PRIME_TASK_AUTONOMOUS_MAX_TOKENS = 2_000_000;
-export const PRIME_TASK_AUTONOMOUS_MAX_TURNS = 60;
-export const PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS = 12;
 
 const PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION = path.resolve(
   process.cwd(),
@@ -90,9 +87,7 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
       ? await renderPrompt(options.promptTemplate, currentIssue, options.attempt)
       : nextPrompt ?? continuationPrompt(currentIssue, turnNumber, options.maxTurns);
     nextPrompt = null;
-    const prompt = options.promptPrefix?.trim()
-      ? `${options.promptPrefix.trim()}\n\n---\n\n${renderedPrompt}`
-      : renderedPrompt;
+    const prompt = externalTaskPrompt(renderedPrompt, options.promptPrefix, nativeSessionId);
 
     const result = await runExternalProcess({
       harness: options.harness,
@@ -102,6 +97,11 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
       signal: options.signal,
       timeoutMs: options.turnTimeoutMs,
       autonomous: true,
+      // A successful threshold compaction can intentionally end a headless
+      // Prime process without a final text message. The host-side staged gate
+      // decides the next prompt from durable Git state instead of treating
+      // that normal compaction boundary as a process crash.
+      allowEmptyResponse: options.harness === 'prime-agent',
       turnNumber,
       onEvent: options.onEvent,
       nativeSessionId,
@@ -125,17 +125,27 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
     const refreshedIssue = await options.refreshIssue();
     if (refreshedIssue) currentIssue = refreshedIssue;
     const completionCheck = await options.completionCheck?.(currentIssue);
-    if (completionCheck && !completionCheck.ok) {
+    const implementationCheck = options.harness === 'prime-agent'
+      ? await checkPrimeTaskReady(options.workspacePath, options.signal)
+      : null;
+    const mergedPullRequestAlreadyProvesCommit = completionCheck?.ok === true
+      && asRecord(completionCheck.metadata).requiresPullRequest === true;
+    const failedCheck = implementationCheck && !implementationCheck.ok && !mergedPullRequestAlreadyProvesCommit
+      ? implementationCheck
+      : completionCheck && !completionCheck.ok
+        ? completionCheck
+        : null;
+    if (failedCheck) {
       options.onEvent({
-        event: 'completion_gate_failed',
+        event: failedCheck === implementationCheck ? 'implementation_gate_failed' : 'completion_gate_failed',
         timestamp: now(),
-        message: completionCheck.message ?? 'completion gate failed',
-        raw: completionCheck.metadata,
+        message: failedCheck.message ?? 'completion gate failed',
+        raw: failedCheck.metadata,
       });
-      if (turnNumber >= options.maxTurns || !completionCheck.prompt) {
-        throw new Error(`completion_gate_failed: ${completionCheck.message ?? 'missing completion requirements'}`);
+      if (turnNumber >= options.maxTurns || !failedCheck.prompt) {
+        throw new Error(`completion_gate_failed: ${failedCheck.message ?? 'missing completion requirements'}`);
       }
-      nextPrompt = completionCheck.prompt;
+      nextPrompt = failedCheck.prompt;
       continue;
     }
     if (completionCheck?.ok) {
@@ -299,7 +309,7 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
   let stderrTail = '';
   let text = '';
   let sessionId: string | null = null;
-  let emittedAssistantText = '';
+  let streamedAssistantText = '';
 
   options.onEvent({
     event: 'session_started',
@@ -324,9 +334,23 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
       sessionId = discoveredSessionId;
       options.onSession?.(discoveredSessionId);
     }
-    const fragment = assistantText(event, options.harness, emittedAssistantText);
+    const runtimeProgress = options.harness === 'prime-agent' ? primeRuntimeProgress(event) : null;
+    if (runtimeProgress) {
+      options.onEvent({
+        ...runtimeProgress,
+        timestamp: now(),
+        codex_app_server_pid: child.pid ?? null,
+        session_id: sessionId,
+        thread_id: sessionId,
+        raw: event,
+      });
+    }
+    const primeFragment = options.harness === 'prime-agent'
+      ? primeAssistantFragment(event, streamedAssistantText)
+      : null;
+    const fragment = primeFragment?.fragment ?? assistantText(event, options.harness, streamedAssistantText);
+    if (primeFragment) streamedAssistantText = primeFragment.streamedText;
     if (!fragment) return;
-    emittedAssistantText += fragment;
     text += fragment;
     options.onEvent({
       event: 'item/agentMessage/delta',
@@ -404,21 +428,65 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
     ...(!options.autonomous ? ['--extension', PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION] : []),
     ...(options.sessionRoot ? ['--session-dir', path.join(options.sessionRoot, 'prime-sessions')] : ['--no-session']),
     ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
-    ...(options.autonomous
-      ? [
-          '--autonomous',
-          '--autonomous-gate', `node ${PRIME_TASK_READY_GATE}`,
-          '--autonomous-gate-retries', '12',
-          '--autonomous-gate-timeout-ms', '30000',
-          '--autonomous-max-continuations', String(PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS),
-          '--autonomous-max-turns', String(PRIME_TASK_AUTONOMOUS_MAX_TURNS),
-          '--autonomous-max-tokens', String(PRIME_TASK_AUTONOMOUS_MAX_TOKENS),
-          '--autonomous-timeout-ms', String(options.timeoutMs),
-        ]
-      : []),
+    // Agent Kanban owns task continuations and staged completion gates. Prime's
+    // autonomous counters are cumulative token/turn budgets, not context-window
+    // protection, and restarting them around a resumed session can burn through
+    // the same task twice. Prime's native session compaction remains enabled.
     '--',
     options.prompt,
   ];
+}
+
+export function externalTaskPrompt(
+  renderedPrompt: string,
+  promptPrefix: string | null | undefined,
+  nativeSessionId: string | null,
+) {
+  const prefix = promptPrefix?.trim();
+  return prefix && !nativeSessionId
+    ? `${prefix}\n\n---\n\n${renderedPrompt}`
+    : renderedPrompt;
+}
+
+export function checkPrimeTaskReady(workspacePath: string, signal?: AbortSignal): Promise<CompletionCheckResult> {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [PRIME_TASK_READY_GATE], {
+      cwd: workspacePath,
+      encoding: 'utf8',
+      timeout: 30_000,
+      signal,
+    }, (error, stdout, stderr) => {
+      if (!error) {
+        resolve({
+          ok: true,
+          message: stdout.trim() || 'Local implementation checkpoint passed.',
+          metadata: { stage: 'implementation', workspacePath },
+        });
+        return;
+      }
+      const detail = (stderr || stdout || error.message).trim().slice(-4_000);
+      resolve({
+        ok: false,
+        message: `Local implementation checkpoint failed: ${detail || 'task branch is not ready'}`,
+        prompt: buildImplementationRepairPrompt(detail),
+        metadata: { stage: 'implementation', workspacePath, detail },
+      });
+    });
+  });
+}
+
+function buildImplementationRepairPrompt(detail: string) {
+  return [
+    'The local implementation checkpoint is not complete. Continue this same task; do not start the Pull Request handoff yet.',
+    '',
+    `Checkpoint: ${detail || 'The task branch is not yet clean and committed.'}`,
+    '',
+    'Required actions:',
+    '- Preserve and inspect all existing task-worktree changes. Never reset, clean, or discard earlier task progress.',
+    '- Finish the requested implementation and its local validation.',
+    '- Commit coherent milestones as they become valid; do not leave the whole implementation only in the working tree.',
+    '- Before reporting the implementation ready, leave the task branch clean with at least one task commit ahead of origin/master.',
+  ].join('\n');
 }
 
 function assistantText(event: Record<string, unknown>, harness: ExternalHarness, emitted: string) {
@@ -441,6 +509,55 @@ function assistantText(event: Record<string, unknown>, harness: ExternalHarness,
   const fullText = contentText(message.content);
   if (!fullText) return '';
   return remainingAssistantText(fullText, emitted);
+}
+
+export function primeRuntimeProgress(event: Record<string, unknown>): Pick<CodexRuntimeEvent, 'event' | 'message'> | null {
+  if (event.type === 'compaction_start') {
+    const reason = stringValue(event.reason) ?? 'automatic';
+    return {
+      event: 'prime/compaction_started',
+      message: `Prime Agent is compacting its context (${reason}).`,
+    };
+  }
+  if (event.type === 'compaction_end') {
+    const reason = stringValue(event.reason) ?? 'automatic';
+    const error = stringValue(event.errorMessage);
+    return {
+      event: error ? 'prime/compaction_failed' : 'prime/compaction_completed',
+      message: error
+        ? `Prime Agent context compaction failed (${reason}): ${error.slice(0, 1_000)}`
+        : `Prime Agent context compaction completed (${reason}).`,
+    };
+  }
+  if (event.type === 'tool_execution_start' && primeToolUsesAgentBrowser(event)) {
+    return {
+      event: 'prime/agent_browser_started',
+      message: 'Prime Agent started an agent-browser verification.',
+    };
+  }
+  return null;
+}
+
+function primeToolUsesAgentBrowser(event: Record<string, unknown>) {
+  const toolName = stringValue(event.toolName) ?? stringValue(event.tool_name) ?? '';
+  let argumentsText = '';
+  try {
+    argumentsText = JSON.stringify(event.args ?? event.arguments ?? event.input ?? '').slice(0, 20_000);
+  } catch {
+    argumentsText = '';
+  }
+  return `${toolName}\n${argumentsText}`.toLowerCase().includes('agent-browser');
+}
+
+export function primeAssistantFragment(event: Record<string, unknown>, streamedText: string) {
+  const fragment = assistantText(event, 'prime-agent', streamedText);
+  if (event.type === 'message_update') {
+    return { fragment, streamedText: `${streamedText}${fragment}` };
+  }
+  if (event.type === 'message_end') {
+    return { fragment, streamedText: '' };
+  }
+  return { fragment, streamedText };
 }
 
 export function remainingAssistantText(fullText: string, emitted: string) {

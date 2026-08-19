@@ -60,6 +60,7 @@ describe('Git workspace isolation', () => {
       worktreeRoot: firstPath,
       branchName: taskWorktreeBranch('PROJ-1', '11111111-aaaa-bbbb-cccc-111111111111'),
       createdNow: true,
+      recoveryRef: null,
     });
     expect(readFileSync(path.join(first.projectPath, 'remote.txt'), 'utf8')).toBe('task base\n');
     writeFileSync(path.join(first.projectPath, 'task-one.txt'), 'keep this work\n');
@@ -84,7 +85,10 @@ describe('Git workspace isolation', () => {
     expect(reused.createdNow).toBe(false);
     expect(reused.worktreeRoot).toBe(first.worktreeRoot);
     expect(reused.branchName).toBe('codex/proj-1-follow-up-fix');
+    expect(reused.recoveryRef).toMatch(/^refs\/agent-kanban\/recovery\/11111111aaaabbbbcccc111111111111\//);
     expect(readFileSync(path.join(reused.projectPath, 'task-one.txt'), 'utf8')).toBe('keep this work\n');
+    expect(git(reused.worktreeRoot, ['show', `${reused.recoveryRef}:task-one.txt`])).toBe('keep this work');
+    expect(git(reused.worktreeRoot, ['status', '--porcelain'])).toContain('?? task-one.txt');
     expect(git(repository.main, ['status', '--porcelain'])).toBe('');
 
     await expect(removeTaskWorktree({

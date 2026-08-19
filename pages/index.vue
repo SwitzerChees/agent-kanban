@@ -4023,6 +4023,7 @@ const topicBoardRowStarts = computed(() => {
   }
   return starts;
 });
+const topicBoardRowStart = (topicIndex: number) => topicBoardRowStarts.value[topicIndex] ?? 2;
 
 const columnIcon = (column: BoardColumn) => ({
   backlog: 'i-lucide-inbox',
@@ -6261,7 +6262,7 @@ const humanError = (error: unknown) => {
                 <div
                   :data-topic-id="topic.id"
                   :data-topic-order="board.oberthemen.findIndex((item) => item.id === topic.id)"
-                  :style="{ '--topic-accent': topicAccent(topic), gridRow: `${topicBoardRowStarts[topicIdx]} / span ${topicBoardRowSpan(topic.id)}`, gridColumn: 1 }"
+                  :style="{ '--topic-accent': topicAccent(topic), gridRow: `${topicBoardRowStart(topicIdx)} / span ${topicBoardRowSpan(topic.id)}`, gridColumn: 1 }"
                   class="ak-topic-band pointer-events-none z-[15] flex min-h-14 items-start border-r border-zinc-200 transition md:sticky md:left-0 dark:border-zinc-800"
                   :class="draggedOberthemaId === topic.id ? 'opacity-45' : ''"
                 >
@@ -6314,7 +6315,7 @@ const humanError = (error: unknown) => {
                 <div
                   v-for="(column, colIdx) in board.columns"
                   :key="`${topic.id}-summary-${column.id}`"
-                  :style="{ gridRow: topicBoardRowStarts[topicIdx], gridColumn: colIdx + 2 }"
+                  :style="{ gridRow: topicBoardRowStart(topicIdx), gridColumn: colIdx + 2 }"
                   class="ak-topic-summary-cell flex min-h-14 items-center justify-end border-b border-r border-zinc-200 bg-zinc-100 px-3 last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900"
                 >
                   <span class="sr-only">{{ columnName(column) }}</span>
@@ -6328,7 +6329,7 @@ const humanError = (error: unknown) => {
                     <div
                       :id="row.subtopic ? `subtopic-${row.subtopic.id}` : undefined"
                       :data-subtopic-id="row.subtopic?.id"
-                      :style="{ gridRow: topicBoardRowStarts[topicIdx] + 1 + rowIdx, gridColumn: 1 }"
+                      :style="{ gridRow: topicBoardRowStart(topicIdx) + 1 + rowIdx, gridColumn: 1 }"
                       class="z-10 flex min-h-18 items-start border-b border-r border-zinc-200 bg-white px-2 py-2 transition md:sticky md:left-0 dark:border-zinc-800 dark:bg-zinc-950"
                       :class="[
                         row.subtopic && selectedUnterthemaId === row.subtopic.id ? 'ring-2 ring-inset ring-teal-500/40' : '',
@@ -6388,7 +6389,7 @@ const humanError = (error: unknown) => {
                     <div
                       v-for="(column, colIdx) in board.columns"
                       :key="`${row.key}-${column.id}`"
-                      :style="{ gridRow: topicBoardRowStarts[topicIdx] + 1 + rowIdx, gridColumn: colIdx + 2 }"
+                      :style="{ gridRow: topicBoardRowStart(topicIdx) + 1 + rowIdx, gridColumn: colIdx + 2 }"
                       :data-drop-column-id="column.id"
                       :data-drop-column-key="column.key"
                       :data-drop-oberthema-id="topic.id"

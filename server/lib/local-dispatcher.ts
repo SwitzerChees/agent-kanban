@@ -341,6 +341,7 @@ class LocalTaskDispatcher {
         branch: taskWorktree.branchName,
         revision: taskWorktree.revision,
         createdNow: taskWorktree.createdNow,
+        recoveryRef: taskWorktree.recoveryRef,
       });
       logTaskActivity(queued.projectId, queued.id, null, agentsContext.path ? 'agents_context_loaded' : 'agents_context_missing', {
         path: agentsContext.path,
@@ -388,6 +389,11 @@ class LocalTaskDispatcher {
             session_id: event.session_id,
             message: event.message,
           });
+          if (event.event.startsWith('prime/compaction_') && event.message) {
+            logTaskActivity(queued.projectId, queued.id, null, 'codex_text_update', { body: event.message });
+            notifyVoiceJobProgress(queued.id, event.message);
+            return;
+          }
           const browserEvidence = agentBrowserEvidenceMessage(event);
           if (browserEvidence && !agentBrowserEvidenceLogged) {
             agentBrowserEvidenceLogged = true;
@@ -468,6 +474,7 @@ class LocalTaskDispatcher {
       const result = await runWithAgentRetries({
         retries: configuredAgentRetries(),
         signal: controller.signal,
+        shouldRetry: isRetryableAgentFailure,
         run: (attempt) => {
           const unitName = taskHarnessUnitName(queued.id, agentRun.id, attempt);
           return runTaskAgentHarness({
@@ -765,6 +772,8 @@ function lastTaskActivityTimestamp(taskId: string): number | null {
 export function agentRuntimeSafetyInstructions() {
   return [
     'Runtime safety:',
+    '- This is a persistent task-owned worktree. Inspect and preserve existing task changes before editing; never use reset, clean, checkout, or another destructive command to discard them.',
+    '- Commit each coherent, validated implementation milestone before starting the next one so progress remains recoverable across process failures or compaction.',
     '- Run memory-intensive validation commands sequentially, especially builds, typechecks, test suites, and browser sessions.',
     '- Never run commands in parallel when they write the same generated workspace state (for example `.nuxt`).',
     '- Reuse an existing development server when possible and stop it as soon as the required verification is complete.',
@@ -786,6 +795,7 @@ export async function runWithAgentRetries<T>(options: {
   signal: AbortSignal;
   run: (attempt: number) => Promise<T>;
   onRetry?: (attempt: number, error: unknown) => void | Promise<void>;
+  shouldRetry?: (error: unknown) => boolean;
   retryDelayMs?: number;
 }) {
   const retries = Math.min(2, Math.max(0, Math.trunc(options.retries)));
@@ -796,12 +806,28 @@ export async function runWithAgentRetries<T>(options: {
       return await options.run(attempt);
     } catch (error) {
       lastError = error;
-      if (options.signal.aborted || attempt >= retries) throw error;
+      if (options.signal.aborted || attempt >= retries || options.shouldRetry?.(error) === false) throw error;
       await options.onRetry?.(attempt + 1, error);
       await abortableDelay(options.retryDelayMs ?? 1_500, options.signal);
     }
   }
   throw lastError;
+}
+
+export function isRetryableAgentFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return ![
+    'completion_gate_failed:',
+    'Autonomous quality gate still failing',
+    'autonomous limit reached:',
+    'maxTokens reached',
+    'maxTurns reached',
+    'maxContinuations reached',
+    'turn_cancelled',
+    'read-only file system',
+    'EROFS:',
+    'EACCES:',
+  ].some((marker) => message.includes(marker));
 }
 
 function abortableDelay(ms: number, signal: AbortSignal) {

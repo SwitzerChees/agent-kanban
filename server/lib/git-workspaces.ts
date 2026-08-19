@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdir, stat, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, stat, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const GIT_TIMEOUT_MS = 120_000;
@@ -22,6 +23,7 @@ export interface TaskWorktree {
   branchName: string;
   revision: string;
   createdNow: boolean;
+  recoveryRef: string | null;
 }
 
 export class GitWorkspaceError extends Error {
@@ -108,7 +110,13 @@ export async function prepareTaskWorktree(input: {
   const branchName = taskWorktreeBranch(input.taskKey, input.taskId);
   return withRepositoryLock(repository.gitRoot, async () => {
     if (await pathExists(worktreeRoot)) {
-      return validateExistingTaskWorktree(repository, worktreeRoot, input.signal);
+      try {
+        const worktree = await validateExistingTaskWorktree(repository, worktreeRoot, input.signal);
+        const recoveryRef = await createDirtyWorktreeRecoveryRef(worktree, input.taskId, input.signal);
+        return { ...worktree, recoveryRef };
+      } catch (error) {
+        throw taskWorktreeError(`Could not preserve and reuse the isolated worktree for ${input.taskKey}.`, error);
+      }
     }
 
     try {
@@ -125,7 +133,7 @@ export async function prepareTaskWorktree(input: {
         : ['worktree', 'add', '-b', branchName, worktreeRoot, 'origin/master'];
       await runGit(addArgs, repository.gitRoot, input.signal);
       const worktree = await validateExistingTaskWorktree(repository, worktreeRoot, input.signal);
-      return { ...worktree, createdNow: true };
+      return { ...worktree, createdNow: true, recoveryRef: null };
     } catch (error) {
       await runGit(['worktree', 'remove', '--force', worktreeRoot], repository.gitRoot).catch(() => undefined);
       await rm(worktreeRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -202,9 +210,49 @@ async function validateExistingTaskWorktree(
       branchName,
       revision,
       createdNow: false,
+      recoveryRef: null,
     };
   } catch (error) {
     throw taskWorktreeError('The existing task worktree is invalid.', error);
+  }
+}
+
+async function createDirtyWorktreeRecoveryRef(
+  worktree: TaskWorktree,
+  taskId: string,
+  signal?: AbortSignal,
+) {
+  const status = (await runGit(['status', '--porcelain=v1', '-uall'], worktree.worktreeRoot, signal)).trim();
+  if (!status) return null;
+
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'agent-kanban-recovery-index-'));
+  const temporaryIndex = path.join(temporaryDirectory, 'index');
+  const indexEnvironment = {
+    GIT_INDEX_FILE: temporaryIndex,
+    GIT_AUTHOR_NAME: 'Agent Kanban Recovery',
+    GIT_AUTHOR_EMAIL: 'recovery@agent-kanban.local',
+    GIT_COMMITTER_NAME: 'Agent Kanban Recovery',
+    GIT_COMMITTER_EMAIL: 'recovery@agent-kanban.local',
+  };
+  try {
+    await runGit(['read-tree', 'HEAD'], worktree.worktreeRoot, signal, indexEnvironment);
+    await runGit(['add', '-A', '--', '.'], worktree.worktreeRoot, signal, indexEnvironment);
+    const tree = (await runGit(['write-tree'], worktree.worktreeRoot, signal, indexEnvironment)).trim();
+    const parent = (await runGit(['rev-parse', 'HEAD'], worktree.worktreeRoot, signal)).trim();
+    const commit = (await runGit([
+      'commit-tree',
+      tree,
+      '-p',
+      parent,
+      '-m',
+      `Agent Kanban recovery snapshot for ${taskId}`,
+    ], worktree.worktreeRoot, signal, indexEnvironment)).trim();
+    const safeTaskId = taskId.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 32) || 'task';
+    const recoveryRef = `refs/agent-kanban/recovery/${safeTaskId}/latest`;
+    await runGit(['update-ref', recoveryRef, commit], worktree.gitRoot, signal);
+    return recoveryRef;
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }
 
@@ -235,7 +283,12 @@ async function withRepositoryLock<T>(gitRoot: string, action: () => Promise<T>):
   }
 }
 
-function runGit(args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+function runGit(
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+  environment: NodeJS.ProcessEnv = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', args, {
       cwd,
@@ -245,6 +298,7 @@ function runGit(args: string[], cwd: string, signal?: AbortSignal): Promise<stri
       signal,
       env: {
         ...process.env,
+        ...environment,
         GIT_TERMINAL_PROMPT: '0',
         GIT_OPTIONAL_LOCKS: '1',
       },
