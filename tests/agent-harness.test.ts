@@ -328,6 +328,10 @@ describe('agent harness runtime contracts', () => {
     });
     expect(runner.env.PRIME_AGENT_CODING_AGENT_DIR).toBe('/tmp/project-chat-session/prime-agent');
     expect(runner.args).toContain('--setenv=PRIME_AGENT_CODING_AGENT_DIR=/tmp/project-chat-session/prime-agent');
+    expect(runner.env.PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR)
+      .toBe('/tmp/project-chat-session/prime-supervisor');
+    expect(runner.args)
+      .toContain('--setenv=PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=/tmp/project-chat-session/prime-supervisor');
   });
 
   test('gives the voice orchestrator a writable chat-worktree contract without creating board tasks', () => {

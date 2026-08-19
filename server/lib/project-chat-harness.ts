@@ -232,12 +232,14 @@ export function buildSandboxRunner(options: SandboxRunnerOptions) {
   const home = os.homedir();
   const codexHome = path.join(options.sessionRoot, 'codex-home');
   const primeAgentHome = path.join(options.sessionRoot, 'prime-agent');
+  const primeSupervisorRegistry = path.join(options.sessionRoot, 'prime-supervisor');
   const env = {
     ...process.env,
     NO_COLOR: '1',
     FORCE_COLOR: '0',
     CODEX_HOME: codexHome,
     PRIME_AGENT_CODING_AGENT_DIR: primeAgentHome,
+    PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR: primeSupervisorRegistry,
     XDG_DATA_HOME: path.join(options.sessionRoot, 'xdg-data'),
     XDG_STATE_HOME: path.join(options.sessionRoot, 'xdg-state'),
     XDG_CACHE_HOME: path.join(options.sessionRoot, 'xdg-cache'),
@@ -286,6 +288,7 @@ export function buildSandboxRunner(options: SandboxRunnerOptions) {
       '--setenv=FORCE_COLOR=0',
       `--setenv=CODEX_HOME=${codexHome}`,
       `--setenv=PRIME_AGENT_CODING_AGENT_DIR=${primeAgentHome}`,
+      `--setenv=PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=${primeSupervisorRegistry}`,
       `--setenv=XDG_DATA_HOME=${env.XDG_DATA_HOME}`,
       `--setenv=XDG_STATE_HOME=${env.XDG_STATE_HOME}`,
       `--setenv=XDG_CACHE_HOME=${env.XDG_CACHE_HOME}`,
@@ -313,6 +316,7 @@ async function prepareSessionDirectories(sessionRoot: string) {
     mkdir(path.join(sessionRoot, 'xdg-cache'), { recursive: true }),
     mkdir(path.join(sessionRoot, 'codex-home'), { recursive: true }),
     mkdir(primeAgentHome, { recursive: true, mode: 0o700 }),
+    mkdir(path.join(sessionRoot, 'prime-supervisor'), { recursive: true, mode: 0o700 }),
     mkdir(path.dirname(skillDirectory), { recursive: true }),
     mkdir(artifactDirectory, { recursive: true }),
   ]);
