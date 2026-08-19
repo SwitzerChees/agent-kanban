@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { chmod, copyFile, mkdir, readdir, rm, symlink } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentHarness } from './agent-harness';
@@ -43,6 +43,21 @@ export async function prepareTaskHarnessSession(sessionRoot: string) {
     await copyFile(source, target);
     await chmod(target, 0o600);
   }
+  const taskPrimeSettingsPath = path.join(primeAgentHome, 'settings.json');
+  let taskPrimeSettings: unknown = {};
+  if (fs.existsSync(taskPrimeSettingsPath)) {
+    try {
+      taskPrimeSettings = JSON.parse(await readFile(taskPrimeSettingsPath, 'utf8'));
+    } catch {
+      taskPrimeSettings = {};
+    }
+  }
+  await writeFile(
+    taskPrimeSettingsPath,
+    `${JSON.stringify(primeTaskSettings(taskPrimeSettings), null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  await chmod(taskPrimeSettingsPath, 0o600);
 
   const sourceCodexHome = path.join(os.homedir(), '.codex');
   for (const name of ['auth.json', 'config.toml', 'plugins']) {
@@ -61,6 +76,24 @@ export async function prepareTaskHarnessSession(sessionRoot: string) {
       await symlink(path.join(sourceSkills, entry.name), target, entry.isDirectory() ? 'dir' : 'file').catch(() => undefined);
     }
   }
+}
+
+export function primeTaskSettings(value: unknown) {
+  const settings = recordValue(value);
+  const compaction = recordValue(settings.compaction);
+  return {
+    ...settings,
+    compaction: {
+      ...compaction,
+      enabled: true,
+    },
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): TaskHarnessRunner {

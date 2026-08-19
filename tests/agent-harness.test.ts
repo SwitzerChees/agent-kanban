@@ -9,16 +9,18 @@ import {
 import {
   buildExternalArgs,
   buildExternalRefinementPrompt,
-  DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS,
   EXTERNAL_REFINEMENT_MAX_ATTEMPTS,
   externalRefinementSessionId,
   parseJsonObject,
-  primeAutonomousMaxTokens,
   refinementValidationFeedback,
   remainingAssistantText,
 } from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
-import { buildTaskHarnessRunner, taskHarnessResourceProperties } from '../server/lib/task-harness-sandbox';
+import {
+  buildTaskHarnessRunner,
+  primeTaskSettings,
+  taskHarnessResourceProperties,
+} from '../server/lib/task-harness-sandbox';
 import { taskCodexSandboxOverrides } from '../server/lib/codex';
 import refinementToolBudget, { PRIME_REFINEMENT_MAX_TOOL_CALLS } from '../server/prime-extensions/refinement-tool-budget';
 import {
@@ -56,7 +58,6 @@ describe('agent harness runtime contracts', () => {
         '--provider', QWEN_MODEL_PROVIDER,
         '--model', QWEN_MODEL_ID,
         '--thinking', 'xhigh',
-        '--autonomous-max-tokens', String(DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS),
       ]));
     expect(buildExternalArgs({
       ...common,
@@ -73,12 +74,31 @@ describe('agent harness runtime contracts', () => {
     })).toEqual(expect.arrayContaining(['--session-dir', '/tmp/task-session/prime-sessions', '--resume', 'prime-task-session']));
   });
 
-  test('gives autonomous Prime tasks a configurable bounded token budget', () => {
-    expect(primeAutonomousMaxTokens({})).toBe(400_000);
-    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: '600000' })).toBe(600_000);
-    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: '12000' })).toBe(80_000);
-    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: '9000000' })).toBe(2_000_000);
-    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: 'invalid' })).toBe(400_000);
+  test('lets Agent Kanban own Prime task continuations without a second token budget', () => {
+    const args = buildExternalArgs({
+      harness: 'prime-agent',
+      reasoningEffort: 'xhigh',
+      workspacePath: '/tmp/agent-kanban-harness-test',
+      prompt: 'Implement the task.',
+      signal: new AbortController().signal,
+      timeoutMs: 60_000,
+      autonomous: true,
+      turnNumber: 1,
+      onEvent: () => {},
+    });
+    expect(args).not.toContain('--autonomous');
+    expect(args.some((arg) => arg.startsWith('--autonomous-'))).toBe(false);
+  });
+
+  test('forces auto-compaction on for isolated Prime task sessions', () => {
+    expect(primeTaskSettings({
+      theme: 'dark',
+      compaction: { enabled: false, reserveTokens: 32_768, keepRecentTokens: 16_000 },
+    })).toEqual({
+      theme: 'dark',
+      compaction: { enabled: true, reserveTokens: 32_768, keepRecentTokens: 16_000 },
+    });
+    expect(primeTaskSettings(null)).toEqual({ compaction: { enabled: true } });
   });
 
   test('resolves both host installations and accepts plain or fenced structured output', () => {

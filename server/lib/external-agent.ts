@@ -21,7 +21,6 @@ import {
 
 type ExternalHarness = Exclude<AgentHarness, 'codex'>;
 export const EXTERNAL_REFINEMENT_MAX_ATTEMPTS = 3;
-export const DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS = 400_000;
 
 const PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION = path.resolve(
   process.cwd(),
@@ -396,26 +395,13 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
     ...(!options.autonomous ? ['--extension', PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION] : []),
     ...(options.sessionRoot ? ['--session-dir', path.join(options.sessionRoot, 'prime-sessions')] : ['--no-session']),
     ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
-    ...(options.autonomous
-      ? [
-          '--autonomous',
-          '--autonomous-max-turns', '12',
-          '--autonomous-max-tokens', String(primeAutonomousMaxTokens()),
-          '--autonomous-timeout-ms', String(options.timeoutMs),
-        ]
-      : []),
+    // Agent Kanban owns implementation continuations and completion gates.
+    // Prime's autonomous host would add a second, cumulative token budget
+    // which is not reset by auto-compaction and can abort otherwise healthy
+    // persistent sessions before our completion gate gets to evaluate them.
     '--',
     options.prompt,
   ];
-}
-
-export function primeAutonomousMaxTokens(env: NodeJS.ProcessEnv = process.env) {
-  const parsed = Number.parseInt(
-    env.KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS ?? String(DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS),
-    10,
-  );
-  if (!Number.isFinite(parsed)) return DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS;
-  return Math.min(2_000_000, Math.max(80_000, parsed));
 }
 
 function assistantText(event: Record<string, unknown>, harness: ExternalHarness, emitted: string) {
