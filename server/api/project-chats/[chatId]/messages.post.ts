@@ -1,10 +1,11 @@
-import { createError, getHeader, getRouterParam, readBody, readMultipartFormData } from 'h3';
+import { createError, getHeader, getRouterParam, readBody, readFormData } from 'h3';
 import { z } from 'zod';
 import {
   PROJECT_CHAT_MAX_TOTAL_ATTACHMENT_BYTES,
   projectChatRuntime,
   type UploadedProjectChatFile,
 } from '../../../lib/project-chat-runtime';
+import { formDataFiles, formDataText } from '../../../lib/form-data';
 import { requireSessionUser } from '../../../lib/security/auth';
 
 const bodySchema = z.object({
@@ -20,18 +21,18 @@ export default defineEventHandler(async (event) => {
     if (Number.isFinite(contentLength) && contentLength > PROJECT_CHAT_MAX_TOTAL_ATTACHMENT_BYTES + 1024 * 1024) {
       throw createError({ statusCode: 413, statusMessage: 'chat_attachments_too_large' });
     }
-    const parts = await readMultipartFormData(event);
+    const formData = await readFormData(event);
     const body = bodySchema.parse({
-      message: partText(parts, 'message'),
-      clientRequestId: partText(parts, 'clientRequestId') || null,
+      message: formDataText(formData, 'message'),
+      clientRequestId: formDataText(formData, 'clientRequestId') || null,
     });
-    const files: UploadedProjectChatFile[] = (parts ?? [])
-      .filter((part) => part.name === 'files' && part.filename)
-      .map((part) => ({
-        fileName: part.filename!,
-        mimeType: part.type || 'application/octet-stream',
-        data: Buffer.from(part.data),
-      }));
+    const files: UploadedProjectChatFile[] = await Promise.all(
+      formDataFiles(formData, 'files').map(async (file) => ({
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        data: Buffer.from(await file.arrayBuffer()),
+      })),
+    );
     return await projectChatRuntime().queueMessageWithAttachments(
       chatId,
       body.message,
@@ -49,8 +50,3 @@ export default defineEventHandler(async (event) => {
     user,
   );
 });
-
-function partText(parts: Awaited<ReturnType<typeof readMultipartFormData>>, name: string) {
-  const part = parts?.find((candidate) => candidate.name === name && !candidate.filename);
-  return part?.data ? Buffer.from(part.data).toString('utf8') : '';
-}

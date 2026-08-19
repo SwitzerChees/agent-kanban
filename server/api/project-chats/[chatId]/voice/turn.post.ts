@@ -1,5 +1,6 @@
-import { getHeader, getRouterParam, readMultipartFormData } from 'h3';
+import { createError, getHeader, getRouterParam, readFormData } from 'h3';
 import { z } from 'zod';
+import { formDataFiles, formDataText } from '../../../../lib/form-data';
 import { authorizeProjectChat } from '../../../../lib/project-chat';
 import { requireSessionUser } from '../../../../lib/security/auth';
 import { processVoiceTranscript, transcribeVoiceAudio } from '../../../../lib/voice-agent';
@@ -17,17 +18,17 @@ export default defineEventHandler(async (event) => {
   if (Number.isFinite(contentLength) && contentLength > 10 * 1024 * 1024 + 16 * 1024) {
     throw createError({ statusCode: 413, statusMessage: 'voice_audio_too_large' });
   }
-  const parts = await readMultipartFormData(event);
-  const audio = parts?.find((part) => part.name === 'audio' && part.data);
-  if (!audio?.data) {
+  const formData = await readFormData(event);
+  const audio = formDataFiles(formData, 'audio')[0];
+  if (!audio) {
     throw createError({ statusCode: 400, statusMessage: 'voice_audio_missing' });
   }
   const fields = fieldsSchema.parse({
-    locale: partText(parts, 'locale') || 'de',
-    echoReference: partText(parts, 'echoReference') || undefined,
+    locale: formDataText(formData, 'locale') || 'de',
+    echoReference: formDataText(formData, 'echoReference') || undefined,
   });
   const transcript = await transcribeVoiceAudio(
-    Buffer.from(audio.data),
+    Buffer.from(await audio.arrayBuffer()),
     audio.type || 'audio/wav',
     user.id,
   );
@@ -39,8 +40,3 @@ export default defineEventHandler(async (event) => {
     user,
   });
 });
-
-function partText(parts: Awaited<ReturnType<typeof readMultipartFormData>>, name: string) {
-  const part = parts?.find((candidate) => candidate.name === name && !candidate.filename);
-  return part?.data ? Buffer.from(part.data).toString('utf8') : '';
-}
