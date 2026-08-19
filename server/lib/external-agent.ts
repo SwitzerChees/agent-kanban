@@ -149,6 +149,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
   let nativeSessionId = options.nativeSessionId ?? null;
   let lastError: unknown = null;
   let previousResponse: string | null = null;
+  let validationFeedback: string | null = null;
 
   for (let attempt = 1; attempt <= EXTERNAL_REFINEMENT_MAX_ATTEMPTS; attempt += 1) {
     const repair = attempt > 1;
@@ -156,7 +157,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
       harness: options.harness,
       reasoningEffort: options.reasoningEffort,
       workspacePath: options.workspacePath,
-      prompt: buildExternalRefinementPrompt(options, repair, previousResponse),
+      prompt: buildExternalRefinementPrompt(options, repair, previousResponse, validationFeedback),
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       autonomous: false,
@@ -175,6 +176,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
     if (!result.text.trim()) {
       lastError = new Error(`${options.harness}_empty_response`);
       previousResponse = null;
+      validationFeedback = null;
       if (repair) break;
       if (options.harness === 'prime-agent' && nativeSessionId) {
         await abortableDelay(6_500, options.signal);
@@ -192,6 +194,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
     } catch (error) {
       lastError = error;
       previousResponse = result.text;
+      validationFeedback = refinementValidationFeedback(error);
     }
   }
   throw lastError ?? new Error('external_harness_invalid_json');
@@ -210,6 +213,7 @@ export function buildExternalRefinementPrompt(
   options: Pick<RunExternalRefinementOptions, 'harness' | 'prompt' | 'outputSchema'>,
   repair = false,
   previousResponse: string | null = null,
+  validationFeedback: string | null = null,
 ) {
   return [
     repair
@@ -219,6 +223,9 @@ export function buildExternalRefinementPrompt(
       : options.prompt,
     ...(repair && previousResponse
       ? ['', 'Previous response to correct:', previousResponse]
+      : []),
+    ...(repair && validationFeedback
+      ? ['', 'Validation feedback that must be fixed:', validationFeedback]
       : []),
     ...(options.harness === 'prime-agent' && !repair
       ? [
@@ -232,6 +239,11 @@ export function buildExternalRefinementPrompt(
     '',
     'Return exactly one JSON object and nothing else. Do not use a Markdown fence or add commentary before or after it. Include every required field even when its value is an empty array.',
   ].join('\n');
+}
+
+export function refinementValidationFeedback(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.trim().slice(0, 2_000) || 'The response failed validation.';
 }
 
 export interface RunExternalProcessOptions {

@@ -43,6 +43,32 @@ describe('refinement worker contracts', () => {
       status: 'needs_input',
       questions: [],
     })).toThrowError(/needs_input requires at least one question/);
+
+    expect(() => worker.parseRefinementOutput({
+      ...completed,
+      result: {
+        ...completed.result,
+        summary: 'THATEASY-77 ergänzt eine API-Route und speichert einen SHA-256-Token in der Datenbank.',
+      },
+    }, 'de')).toThrowError(/plain product value and visible behavior/);
+
+    expect(() => worker.parseRefinementOutput({
+      ...completed,
+      result: {
+        ...completed.result,
+        summary: 'Users can request a password reset from the login page. They receive a link and can choose a new password without contacting support.',
+        applicationImpact: ['Users can regain access to their account on their own.'],
+      },
+    }, 'de')).toThrowError(/must be written in German/);
+
+    expect(worker.parseRefinementOutput({
+      ...completed,
+      result: {
+        ...completed.result,
+        summary: 'Wer sein Passwort vergessen hat, kann selbst einen Link zum Zurücksetzen anfordern. So ist der Zugang ohne Hilfe durch den Support wieder möglich.',
+        applicationImpact: ['Betroffene Personen können wieder selbstständig auf ihr Konto zugreifen.'],
+      },
+    }, 'de')).toMatchObject({ status: 'completed' });
   });
 
   test('builds a resume prompt with answers and a hard question-round limit', () => {
@@ -96,6 +122,26 @@ describe('refinement worker contracts', () => {
       expect(prompt).toContain('2-4 short sentences in plain everyday language');
       expect(prompt).toContain('same harness session will resume');
     }
+  });
+
+  test('pins output language to the task and keeps Kurz gesagt non-technical', () => {
+    const context = sampleContext({
+      taskTitle: 'Passwort zurücksetzen',
+      taskDescription: 'Auf der Anmeldung soll ein Link erscheinen, damit Nutzer ihr Passwort selbst ändern können.',
+      brief: 'Bitte das Feature auf Deutsch verfeinern.',
+    });
+    const prompt = worker.buildRefinementPrompt(context, {
+      agentsPath: null,
+      agentsContent: null,
+      agentsTruncated: false,
+      usedQuestionRounds: 0,
+    });
+
+    expect(worker.inferRefinementLanguage(context.taskTitle, context.taskDescription, context.brief)).toBe('de');
+    expect(prompt).toContain('Required output language: German (de)');
+    expect(prompt).toContain('Do not switch to English');
+    expect(prompt).toContain('Never mention the task key');
+    expect(prompt).toContain('non-technical customer or stakeholder');
   });
 
   test('accepts real generated image bytes but rejects symlinks and non-images', async () => {

@@ -12,6 +12,7 @@ import {
   EXTERNAL_REFINEMENT_MAX_ATTEMPTS,
   externalRefinementSessionId,
   parseJsonObject,
+  refinementValidationFeedback,
   remainingAssistantText,
 } from '../server/lib/external-agent';
 import { parseAgentWaitRequest } from '../server/lib/agent-wait';
@@ -135,12 +136,18 @@ describe('agent harness runtime contracts', () => {
       harness: 'opencode',
       prompt: 'Original prompt',
       outputSchema: { type: 'object', required: ['status'] },
-    }, true, '{"status":"completed","result":{"visuals":[]}}');
+    }, true, '{"status":"completed","result":{"visuals":[]}}', 'result.summary must be written in German');
     expect(repair).toContain('previous response did not match');
     expect(repair).toContain('Previous response to correct:');
     expect(repair).toContain('{"status":"completed","result":{"visuals":[]}}');
+    expect(repair).toContain('Validation feedback that must be fixed:');
+    expect(repair).toContain('result.summary must be written in German');
     expect(repair).toContain('Return exactly one JSON object and nothing else');
     expect(repair).not.toContain('Original prompt');
+  });
+
+  test('bounds validation feedback included in repair prompts', () => {
+    expect(refinementValidationFeedback(new Error('x'.repeat(3_000)))).toHaveLength(2_000);
   });
 
   test('resumes compacted Prime refinements but isolates malformed-output repairs', () => {

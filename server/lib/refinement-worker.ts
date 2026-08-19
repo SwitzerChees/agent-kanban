@@ -40,6 +40,7 @@ const DEFAULT_LEASE_MS = 90_000;
 const MIN_LEASE_MS = 5000;
 const DEFAULT_CONCURRENCY = 1;
 const MAX_CONCURRENCY = 8;
+type RefinementLanguage = 'de' | 'en' | null;
 
 const questionSchema = z.object({
   question: z.string().trim().min(1).max(1000),
@@ -56,7 +57,7 @@ const riskSchema = z.object({
 }).strict();
 
 const resultSchema = z.object({
-  summary: z.string().trim().max(10_000),
+  summary: z.string().trim().max(1200),
   integrationPlan: z.array(z.string().trim().min(1).max(5000)).max(30),
   applicationImpact: z.array(z.string().trim().min(1).max(5000)).max(30),
   risks: z.array(riskSchema).max(30),
@@ -120,7 +121,7 @@ export const REFINEMENT_OUTPUT_JSON_SCHEMA: Record<string, unknown> = {
       additionalProperties: false,
       required: ['summary', 'integrationPlan', 'applicationImpact', 'risks', 'acceptanceCriteria', 'openQuestions', 'notes'],
       properties: {
-        summary: { type: 'string' },
+        summary: { type: 'string', maxLength: 1200 },
         integrationPlan: { type: 'array', items: { type: 'string' }, maxItems: 30 },
         applicationImpact: { type: 'array', items: { type: 'string' }, maxItems: 30 },
         risks: {
@@ -330,6 +331,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
   const config = resolveServiceConfig(workflow);
   const agentsContext = await loadAgentsContext(syncedWorkspace.projectPath, syncedWorkspace.gitRoot);
   const usedQuestionRounds = new Set(context.questions.map((question) => question.round)).size;
+  const outputLanguage = inferRefinementLanguage(context.taskTitle, context.taskDescription, context.brief);
   const prompt = buildRefinementPrompt(context, {
     agentsPath: agentsContext.path,
     agentsContent: agentsContext.content,
@@ -391,7 +393,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
         workspacePath: context.projectFolderPath,
         prompt,
         outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
-        validateOutput: parseRefinementOutput,
+        validateOutput: value => parseRefinementOutput(value, outputLanguage),
         nativeSessionId: context.threadId,
         sessionRoot: appDataDir('refinement-sessions', context.projectId, context.taskId, context.id),
         signal,
@@ -405,7 +407,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
   // The opaque image result can be very large. It is never persisted or used
   // here; release it as soon as the runner has supplied materialized paths.
   for (const image of turn.images) image.result = '';
-  const output = refinementOutputSchema.parse(turn.output);
+  const output = parseRefinementOutput(turn.output, outputLanguage);
 
   if (output.status === 'needs_input') {
     if (usedQuestionRounds >= MAX_QUESTION_ROUNDS) {
@@ -443,9 +445,58 @@ export async function processClaimedRefinement(context: RefinementContext, signa
   });
 }
 
-export function parseRefinementOutput(value: unknown): RefinementOutput {
-  return refinementOutputSchema.parse(value);
+export function parseRefinementOutput(value: unknown, language: RefinementLanguage = null): RefinementOutput {
+  return refinementOutputSchema.superRefine((output, ctx) => {
+    if (summaryContainsTechnicalDetail(output.result.summary)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Kurz gesagt / summary must contain only plain product value and visible behavior; move all technical details to the technical sections',
+        path: ['result', 'summary'],
+      });
+    }
+    const nonTechnicalText = [output.result.summary, ...output.result.applicationImpact].join(' ');
+    if (language && refinementLanguageMismatch(nonTechnicalText, language)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `summary and applicationImpact must be written in ${language === 'de' ? 'German' : 'English'}, matching the task language`,
+        path: ['result', 'summary'],
+      });
+    }
+  }).parse(value);
 }
+
+export function inferRefinementLanguage(...parts: Array<string | null | undefined>): RefinementLanguage {
+  const text = parts.filter(Boolean).join(' ');
+  const german = languageWordScore(text, GERMAN_LANGUAGE_WORDS) + (/[äöüß]/i.test(text) ? 3 : 0);
+  const english = languageWordScore(text, ENGLISH_LANGUAGE_WORDS);
+  if (german >= 3 && german > english) return 'de';
+  if (english >= 3 && english > german) return 'en';
+  return null;
+}
+
+export function summaryContainsTechnicalDetail(summary: string) {
+  return /(?:\b(?:api|endpoint|route|component|repository|revision|architecture|database|schema|migration|token|session|hash|scrypt|sha-?256|drizzle|nuxt|i18n|implementation|schnittstelle|endpunkt|komponente|repository|revision|architektur|datenbank|schema|migration|token|session|hash|implementierung)\b|\/(?:api|app|server|shared|tests)\/|\b[\w-]+\.(?:ts|tsx|js|jsx|vue|mjs|json)\b)/i.test(summary);
+}
+
+function refinementLanguageMismatch(text: string, language: Exclude<RefinementLanguage, null>) {
+  const german = languageWordScore(text, GERMAN_LANGUAGE_WORDS) + (/[äöüß]/i.test(text) ? 3 : 0);
+  const english = languageWordScore(text, ENGLISH_LANGUAGE_WORDS);
+  return language === 'de' ? english > german + 2 : german > english + 2;
+}
+
+function languageWordScore(text: string, words: ReadonlySet<string>) {
+  return (text.toLocaleLowerCase().match(/[a-zäöüß]+/g) ?? [])
+    .reduce((score, word) => score + (words.has(word) ? 1 : 0), 0);
+}
+
+const GERMAN_LANGUAGE_WORDS = new Set([
+  'aber', 'als', 'auf', 'bei', 'das', 'der', 'die', 'dies', 'eine', 'einer', 'für', 'ist', 'kann',
+  'mit', 'nicht', 'oder', 'sich', 'sind', 'soll', 'und', 'von', 'werden', 'wird', 'zur', 'zum',
+]);
+const ENGLISH_LANGUAGE_WORDS = new Set([
+  'and', 'are', 'as', 'at', 'be', 'can', 'for', 'from', 'in', 'is', 'it', 'of', 'on', 'or', 'that',
+  'the', 'this', 'to', 'will', 'with', 'without', 'users', 'user',
+]);
 
 export function buildRefinementPrompt(context: RefinementContext, options: {
   agentsPath: string | null;
@@ -461,6 +512,12 @@ export function buildRefinementPrompt(context: RefinementContext, options: {
     : context.visualMode === 'force'
       ? 'Use the available $imagegen / built-in image generation capability to generate one or two useful design visuals if the task has any user-interface aspect. Never create decorative filler.'
       : 'Use the available $imagegen / built-in image generation capability for at most two design visuals only when a visual materially clarifies a new or changed interface. Otherwise generate none.';
+  const outputLanguage = inferRefinementLanguage(context.taskTitle, context.taskDescription, context.brief);
+  const languageGuidance = outputLanguage === 'de'
+    ? 'Required output language: German (de). Write every natural-language field in German, matching the task. Keep code identifiers and paths unchanged. Do not switch to English because repository files or project instructions are English.'
+    : outputLanguage === 'en'
+      ? 'Required output language: English (en). Write every natural-language field in English, matching the task.'
+      : 'Required output language: use the same language as the task title and description for every natural-language field.';
   const taskContext = [
     `Task: ${context.taskKey} — ${context.taskTitle}`,
     `Project: ${context.projectKey} — ${context.projectName}`,
@@ -501,11 +558,13 @@ This is a strictly read-only analysis. Inspect the repository and relevant files
 
 ${taskContext}${answersContext}${agents}
 
+${languageGuidance}
+
 Produce a proportional refinement:
 - For a small change, stay concise and avoid invented complexity.
 - For a substantial change, explain the concrete integration path, affected application behavior and data flows, migration or compatibility concerns, security/accessibility/performance risks, mitigations, and verifiable acceptance criteria.
 - Make the completed result progressively more detailed. The reader must understand the important point before reaching any technical material:
-  1. result.summary is the first section. Write only 2-4 short sentences in plain everyday language. State what will change, why it matters, and the most important caveat. Do not use file paths, API names, architecture terms, acronyms, or implementation steps there.
+  1. result.summary is the first section. Write only 2-4 short sentences in plain everyday language for a non-technical customer or stakeholder. State what people will be able to do and why it matters. Never mention the task key, repository state or revision, existing building blocks, files, components, routes, APIs, tokens, sessions, databases, schemas, migrations, algorithms, infrastructure, architecture, or implementation steps there. Move every such detail to the technical sections.
   2. result.applicationImpact is the second, still non-technical section. Use a short list describing what users, operators, or the product will experience differently. Focus on behavior and outcomes, not code.
   3. result.acceptanceCriteria should be understandable as observable outcomes wherever possible.
   4. Put implementation depth only in result.integrationPlan, risks, openQuestions, and notes. These fields form the technical section at the bottom and may contain paths, data flows, compatibility concerns, and detailed engineering guidance.
