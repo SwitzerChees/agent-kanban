@@ -21,12 +21,21 @@ import {
 
 type ExternalHarness = Exclude<AgentHarness, 'codex'>;
 export const EXTERNAL_REFINEMENT_MAX_ATTEMPTS = 3;
+export const PRIME_TASK_AUTONOMOUS_MAX_TOKENS = 2_000_000;
+export const PRIME_TASK_AUTONOMOUS_MAX_TURNS = 60;
+export const PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS = 12;
 
 const PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION = path.resolve(
   process.cwd(),
   'server',
   'prime-extensions',
   'refinement-tool-budget.ts',
+);
+const PRIME_TASK_READY_GATE = path.resolve(
+  process.cwd(),
+  'server',
+  'prime-gates',
+  'task-ready.mjs',
 );
 
 interface CompletionCheckResult {
@@ -395,10 +404,18 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
     ...(!options.autonomous ? ['--extension', PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION] : []),
     ...(options.sessionRoot ? ['--session-dir', path.join(options.sessionRoot, 'prime-sessions')] : ['--no-session']),
     ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
-    // Agent Kanban owns implementation continuations and completion gates.
-    // Prime's autonomous host would add a second, cumulative token budget
-    // which is not reset by auto-compaction and can abort otherwise healthy
-    // persistent sessions before our completion gate gets to evaluate them.
+    ...(options.autonomous
+      ? [
+          '--autonomous',
+          '--autonomous-gate', `node ${PRIME_TASK_READY_GATE}`,
+          '--autonomous-gate-retries', '12',
+          '--autonomous-gate-timeout-ms', '30000',
+          '--autonomous-max-continuations', String(PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS),
+          '--autonomous-max-turns', String(PRIME_TASK_AUTONOMOUS_MAX_TURNS),
+          '--autonomous-max-tokens', String(PRIME_TASK_AUTONOMOUS_MAX_TOKENS),
+          '--autonomous-timeout-ms', String(options.timeoutMs),
+        ]
+      : []),
     '--',
     options.prompt,
   ];

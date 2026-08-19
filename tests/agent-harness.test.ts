@@ -12,6 +12,9 @@ import {
   EXTERNAL_REFINEMENT_MAX_ATTEMPTS,
   externalRefinementSessionId,
   parseJsonObject,
+  PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS,
+  PRIME_TASK_AUTONOMOUS_MAX_TOKENS,
+  PRIME_TASK_AUTONOMOUS_MAX_TURNS,
   refinementValidationFeedback,
   remainingAssistantText,
 } from '../server/lib/external-agent';
@@ -74,7 +77,7 @@ describe('agent harness runtime contracts', () => {
     })).toEqual(expect.arrayContaining(['--session-dir', '/tmp/task-session/prime-sessions', '--resume', 'prime-task-session']));
   });
 
-  test('lets Agent Kanban own Prime task continuations without a second token budget', () => {
+  test('keeps Prime autonomous until a committed task branch is ready for the host PR gate', () => {
     const args = buildExternalArgs({
       harness: 'prime-agent',
       reasoningEffort: 'xhigh',
@@ -86,8 +89,16 @@ describe('agent harness runtime contracts', () => {
       turnNumber: 1,
       onEvent: () => {},
     });
-    expect(args).not.toContain('--autonomous');
-    expect(args.some((arg) => arg.startsWith('--autonomous-'))).toBe(false);
+    expect(args).toEqual(expect.arrayContaining([
+      '--autonomous',
+      '--autonomous-gate-retries', '12',
+      '--autonomous-max-continuations', String(PRIME_TASK_AUTONOMOUS_MAX_CONTINUATIONS),
+      '--autonomous-max-turns', String(PRIME_TASK_AUTONOMOUS_MAX_TURNS),
+      '--autonomous-max-tokens', String(PRIME_TASK_AUTONOMOUS_MAX_TOKENS),
+      '--autonomous-timeout-ms', '60000',
+    ]));
+    const gate = args[args.indexOf('--autonomous-gate') + 1];
+    expect(gate).toMatch(/^node .*prime-gates\/task-ready\.mjs$/);
   });
 
   test('forces auto-compaction on for isolated Prime task sessions', () => {
