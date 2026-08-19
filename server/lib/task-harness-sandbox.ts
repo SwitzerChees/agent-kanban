@@ -26,6 +26,7 @@ export interface TaskHarnessRunner {
 export async function prepareTaskHarnessSession(sessionRoot: string) {
   const codexHome = path.join(sessionRoot, 'codex-home');
   const primeAgentHome = path.join(sessionRoot, 'prime-agent');
+  const primeSupervisorRegistry = path.join(sessionRoot, 'prime-supervisor');
   await Promise.all([
     mkdir(sessionRoot, { recursive: true }),
     mkdir(path.join(sessionRoot, 'prime-sessions'), { recursive: true }),
@@ -34,6 +35,7 @@ export async function prepareTaskHarnessSession(sessionRoot: string) {
     mkdir(path.join(sessionRoot, 'xdg-cache'), { recursive: true }),
     mkdir(codexHome, { recursive: true }),
     mkdir(primeAgentHome, { recursive: true, mode: 0o700 }),
+    mkdir(primeSupervisorRegistry, { recursive: true, mode: 0o700 }),
   ]);
 
   const sourcePrimeAgentHome = path.join(os.homedir(), '.prime', 'agent');
@@ -107,6 +109,7 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
     FORCE_COLOR: '0',
     CODEX_HOME: path.join(options.sessionRoot, 'codex-home'),
     PRIME_AGENT_CODING_AGENT_DIR: path.join(options.sessionRoot, 'prime-agent'),
+    PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR: path.join(options.sessionRoot, 'prime-supervisor'),
     XDG_DATA_HOME: path.join(options.sessionRoot, 'xdg-data'),
     XDG_STATE_HOME: path.join(options.sessionRoot, 'xdg-state'),
     XDG_CACHE_HOME: path.join(options.sessionRoot, 'xdg-cache'),
@@ -156,6 +159,7 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
       '--setenv=FORCE_COLOR=0',
       `--setenv=CODEX_HOME=${env.CODEX_HOME}`,
       `--setenv=PRIME_AGENT_CODING_AGENT_DIR=${env.PRIME_AGENT_CODING_AGENT_DIR}`,
+      `--setenv=PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=${env.PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR}`,
       `--setenv=XDG_DATA_HOME=${env.XDG_DATA_HOME}`,
       `--setenv=XDG_STATE_HOME=${env.XDG_STATE_HOME}`,
       `--setenv=XDG_CACHE_HOME=${env.XDG_CACHE_HOME}`,

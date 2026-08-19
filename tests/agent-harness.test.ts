@@ -252,6 +252,8 @@ describe('agent harness runtime contracts', () => {
     expect(first.command).toBe('sudo');
     expect(first.unitName).toBe('agent-kanban-task-task1-run1-0-a');
     expect(first.browserSession).toBe(nextTurn.browserSession);
+    expect(first.env.PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR)
+      .toBe('/tmp/agent-kanban-sessions/run-123/prime-supervisor');
     expect(first.args).toEqual(expect.arrayContaining([
       '--property=ReadOnlyPaths=/',
       '--property=KillMode=control-group',
@@ -260,6 +262,7 @@ describe('agent harness runtime contracts', () => {
       '--property=TasksMax=1024',
       '--property=OOMPolicy=stop',
       '--property=NoNewPrivileges=yes',
+      '--setenv=PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=/tmp/agent-kanban-sessions/run-123/prime-supervisor',
       '--setenv=AGENT_BROWSER_SESSION=task-run-123',
       '--',
       '/usr/bin/example-agent',
