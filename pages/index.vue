@@ -376,6 +376,9 @@ const dictionary = {
     apiTokens: 'API tokens',
     apiTokensDescription: 'Create a personal token for an external agent harness.',
     apiTokenSecurityHint: 'Tokens inherit your current project access. Store them like a password.',
+    apiTokenInstallSkill: 'Install the skill',
+    apiTokenInstallHint: 'Run once per machine. Installs the agent-kanban-control skill into your agent harness.',
+    apiTokenCopyCommand: 'Copy command',
     apiTokenName: 'Token name',
     apiTokenNamePlaceholder: 'e.g. Local agent harness',
     apiTokenExpiry: 'Expires',
@@ -705,6 +708,9 @@ const dictionary = {
     apiTokens: 'API-Tokens',
     apiTokensDescription: 'Erstelle ein persönliches Token für einen externen Agent-Harness.',
     apiTokenSecurityHint: 'Tokens erben deine aktuellen Projektzugriffe. Bewahre sie wie ein Passwort auf.',
+    apiTokenInstallSkill: 'Skill installieren',
+    apiTokenInstallHint: 'Einmalig pro Maschine ausführen. Installiert den agent-kanban-control Skill in deinen Agent-Harness.',
+    apiTokenCopyCommand: 'Befehl kopieren',
     apiTokenName: 'Token-Name',
     apiTokenNamePlaceholder: 'z. B. Lokaler Agent-Harness',
     apiTokenExpiry: 'Gültigkeit',
@@ -1144,6 +1150,7 @@ const apiTokens = ref<ApiToken[]>([]);
 const createdApiToken = ref<CreatedApiToken | null>(null);
 const apiTokenError = ref<string | null>(null);
 const apiTokenCopied = ref(false);
+const installCommandCopied = ref(false);
 const userForm = reactive({ name: '', email: '', password: '', role: 'member' as User['role'] });
 const userFormError = ref<string | null>(null);
 const userFormElement = ref<HTMLFormElement | null>(null);
@@ -2848,11 +2855,20 @@ const logout = async () => {
   clearBoardFilters();
 };
 
+const agentKanbanSkillInstallCommand = "npx skills add SwitzerChees/agent-kanban --skill agent-kanban-control --agent '*' --global --copy --yes";
+
+const copyInstallCommand = async () => {
+  if (!import.meta.client) return;
+  await navigator.clipboard.writeText(agentKanbanSkillInstallCommand);
+  installCommandCopied.value = true;
+};
+
 const openApiTokenModal = async () => {
   apiTokenModalOpen.value = true;
   apiTokenError.value = null;
   createdApiToken.value = null;
   apiTokenCopied.value = false;
+  installCommandCopied.value = false;
   apiTokenForm.name = '';
   try {
     const response = await $fetch<{ tokens: ApiToken[] }>('/api/auth/tokens');
@@ -5454,6 +5470,29 @@ const humanError = (error: unknown) => {
             </div>
 
             <div class="grid gap-5 p-5 sm:p-6">
+              <div class="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950 sm:p-4">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <UIcon name="i-lucide-terminal" class="size-4 shrink-0 text-zinc-500 dark:text-zinc-400" />
+                    <p class="truncate text-sm font-semibold text-zinc-950 dark:text-zinc-50">{{ t.apiTokenInstallSkill }}</p>
+                  </div>
+                  <UButton
+                    class="shrink-0"
+                    color="neutral"
+                    size="sm"
+                    variant="soft"
+                    :icon="installCommandCopied ? 'i-lucide-check' : 'i-lucide-copy'"
+                    type="button"
+                    :aria-label="t.apiTokenCopyCommand"
+                    @click="copyInstallCommand"
+                  >
+                    {{ installCommandCopied ? t.apiTokenCopied : t.apiTokenCopyCommand }}
+                  </UButton>
+                </div>
+                <p class="mt-1.5 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ t.apiTokenInstallHint }}</p>
+                <code class="mt-2.5 block select-all break-all rounded-lg bg-zinc-50 px-3 py-2.5 text-xs leading-5 text-zinc-800 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:text-zinc-100 dark:ring-zinc-800">{{ agentKanbanSkillInstallCommand }}</code>
+              </div>
+
               <UAlert
                 v-if="apiTokenError"
                 color="error"
