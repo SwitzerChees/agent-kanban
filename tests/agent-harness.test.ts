@@ -9,9 +9,11 @@ import {
 import {
   buildExternalArgs,
   buildExternalRefinementPrompt,
+  DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS,
   EXTERNAL_REFINEMENT_MAX_ATTEMPTS,
   externalRefinementSessionId,
   parseJsonObject,
+  primeAutonomousMaxTokens,
   refinementValidationFeedback,
   remainingAssistantText,
 } from '../server/lib/external-agent';
@@ -54,6 +56,7 @@ describe('agent harness runtime contracts', () => {
         '--provider', QWEN_MODEL_PROVIDER,
         '--model', QWEN_MODEL_ID,
         '--thinking', 'xhigh',
+        '--autonomous-max-tokens', String(DEFAULT_PRIME_AUTONOMOUS_MAX_TOKENS),
       ]));
     expect(buildExternalArgs({
       ...common,
@@ -68,6 +71,14 @@ describe('agent harness runtime contracts', () => {
       nativeSessionId: 'prime-task-session',
       sessionRoot: '/tmp/task-session',
     })).toEqual(expect.arrayContaining(['--session-dir', '/tmp/task-session/prime-sessions', '--resume', 'prime-task-session']));
+  });
+
+  test('gives autonomous Prime tasks a configurable bounded token budget', () => {
+    expect(primeAutonomousMaxTokens({})).toBe(400_000);
+    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: '600000' })).toBe(600_000);
+    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: '12000' })).toBe(80_000);
+    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: '9000000' })).toBe(2_000_000);
+    expect(primeAutonomousMaxTokens({ KANBAN_PRIME_AUTONOMOUS_MAX_TOKENS: 'invalid' })).toBe(400_000);
   });
 
   test('resolves both host installations and accepts plain or fenced structured output', () => {
