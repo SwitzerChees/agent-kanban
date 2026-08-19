@@ -9,6 +9,7 @@ import {
 import {
   buildExternalArgs,
   buildExternalRefinementPrompt,
+  EXTERNAL_REFINEMENT_MAX_ATTEMPTS,
   externalRefinementSessionId,
   parseJsonObject,
   remainingAssistantText,
@@ -28,6 +29,10 @@ import {
 } from '../server/lib/project-chat-harness';
 
 describe('agent harness runtime contracts', () => {
+  test('keeps one repair pass available after a compaction resume', () => {
+    expect(EXTERNAL_REFINEMENT_MAX_ATTEMPTS).toBe(3);
+  });
+
   test('keeps model selection fixed while forwarding only the selected effort', () => {
     expect(CODEX_MODEL).toBe('gpt-5.6-sol');
     expect(QWEN_OPENCODE_MODEL).toBe('homelab-qwen-3-8-27b/Qwen/Qwen3.8-27B');

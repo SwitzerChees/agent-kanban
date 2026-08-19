@@ -20,6 +20,7 @@ import {
 } from './task-harness-sandbox';
 
 type ExternalHarness = Exclude<AgentHarness, 'codex'>;
+export const EXTERNAL_REFINEMENT_MAX_ATTEMPTS = 3;
 
 const PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION = path.resolve(
   process.cwd(),
@@ -149,7 +150,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
   let lastError: unknown = null;
   let previousResponse: string | null = null;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  for (let attempt = 1; attempt <= EXTERNAL_REFINEMENT_MAX_ATTEMPTS; attempt += 1) {
     const repair = attempt > 1;
     const result = await runExternalProcess({
       harness: options.harness,
