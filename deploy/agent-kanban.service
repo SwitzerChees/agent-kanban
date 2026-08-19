@@ -20,6 +20,20 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=30
 SyslogIdentifier=agent-kanban
+LimitNOFILE=65536
+# Hardening notes:
+# - ProtectSystem=strict and NoNewPrivileges=yes are deliberately NOT set:
+#   the service writes into arbitrary project folders under /home and must be
+#   able to run `sudo -n systemd-run` for sandboxed task harness units
+#   (a no-new-privileges process cannot execute setuid sudo).
+# - The per-task harness units apply the strict sandbox (ReadOnlyPaths=/,
+#   NoNewPrivileges=yes, PrivateTmp=yes) themselves.
+ProtectSystem=full
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

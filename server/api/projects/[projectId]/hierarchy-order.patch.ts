@@ -4,11 +4,11 @@ import { requireUser } from '../../../lib/security/auth';
 import { reorderHierarchy } from '../../../lib/kanban';
 
 const schema = z.object({
-  oberthemaIds: z.array(z.string().min(1)),
+  oberthemaIds: z.array(z.string().min(1)).max(200),
   unterthemen: z.array(z.object({
     oberthemaId: z.string().min(1),
-    ids: z.array(z.string().min(1)),
-  })),
+    ids: z.array(z.string().min(1)).max(200),
+  })).max(200),
 });
 
 export default defineEventHandler(async (event) => {

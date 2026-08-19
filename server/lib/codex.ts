@@ -107,7 +107,7 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
   );
   let threadId: string | null = options.nativeSessionId ?? null;
 
-  options.signal.addEventListener('abort', () => peer.stop('SIGTERM'), { once: true });
+  options.signal.addEventListener('abort', () => { void peer.stop('SIGTERM'); }, { once: true });
 
   try {
     await peer.start((message) => handleServerMessage(peer, message, options.onEvent));
@@ -253,7 +253,7 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
     }
     return { nativeSessionId: threadId, waitRequest: null };
   } finally {
-    peer.stop('SIGTERM');
+    await peer.stop('SIGTERM');
     await stopTaskHarnessUnit(runner?.unitName);
     options.runtime?.onUnit?.(null, null);
   }
@@ -295,18 +295,35 @@ class JsonRpcPeer {
       const message = chunk.toString('utf8').trim();
       if (message) runtimeLogger.debug('codex stderr', { message: message.slice(-1000) });
     });
+    // A spawn failure (ENOENT/EACCES) or a dead stdin (EPIPE after the
+    // app-server exits) emits 'error' without an 'exit' event. Without these
+    // handlers the unhandled error would crash the whole service process.
+    this.child.on('error', (error) => {
+      const spawnError = new Error(`spawn_failed: ${error.message}`);
+      this.failPending(spawnError);
+      runtimeLogger.error('codex spawn failed', { message: error.message });
+      for (const handler of this.exitHandlers) handler(spawnError);
+    });
+    this.child.stdin.on('error', (error) => {
+      this.failPending(new Error(`stdin_failed: ${error.message}`));
+      runtimeLogger.warn('codex stdin error', { message: error.message });
+    });
     this.child.on('exit', (code, signal) => {
       const error = new Error(`port_exit: code=${code} signal=${signal ?? ''}`);
-      this.exitError = error;
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(error);
-      }
-      this.pending.clear();
+      this.failPending(error);
       for (const handler of this.exitHandlers) handler(error);
     });
 
     return Promise.resolve();
+  }
+
+  private failPending(error: Error) {
+    this.exitError = error;
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
   }
 
   request(method: string, params: unknown): Promise<unknown> {
@@ -402,13 +419,23 @@ class JsonRpcPeer {
     return text;
   }
 
-  stop(signal: NodeJS.Signals) {
+  stop(signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
     const child = this.child;
-    if (!child) return;
-    if (!child.killed) {
-      child.kill(signal);
-    }
+    if (!child) return Promise.resolve();
     this.child = null;
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+
+    const exited = new Promise<void>((resolve) => {
+      child.once('exit', () => resolve());
+    });
+    child.kill(signal);
+    // Escalate to SIGKILL after the grace period so a wedged app-server can
+    // never hold the task slot past the turn timeout.
+    const timer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }, 3_000);
+    void exited.then(() => clearTimeout(timer));
+    return exited;
   }
 
   private requireChild(): ChildProcessWithoutNullStreams {

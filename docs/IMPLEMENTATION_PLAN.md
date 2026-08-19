@@ -1,5 +1,14 @@
 # Implementation Plan
 
+> **Status (superseded).** This plan describes the initial Symphony/Linear prototype. The current
+> system runs on Node (the production service executes the built Nitro output with Node because
+> `better-sqlite3` is not supported by Bun), stores all state in a local SQLite database, and
+> dispatches agent work through `server/lib/local-dispatcher.ts` with per-task persistent git
+> worktrees and sandboxed transient systemd units. The Linear integration, the in-memory
+> `SymphonyOrchestrator`, and the `POST /api/v1/refresh` no-op endpoint are gone; the remaining
+> `/api/v1/state` and `/api/v1/{issue_identifier}` endpoints are thin compatibility layers over
+> the local Kanban.
+
 This project implements the Symphony service from `docs/SPEC.md` as a Nuxt application running on
 Bun. Nuxt owns the operator dashboard and REST API. Nitro server code owns the long-running
 orchestrator.

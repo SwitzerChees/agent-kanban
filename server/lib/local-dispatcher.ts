@@ -45,6 +45,7 @@ class LocalTaskDispatcher {
   private runningPromises = new Set<Promise<void>>();
   private started = false;
   private stopping = false;
+  private stalledTasks = new Set<string>();
 
   start() {
     if (this.started) return;
@@ -95,6 +96,7 @@ class LocalTaskDispatcher {
 
   private async tick() {
     this.wakeDueExternalWaits();
+    this.checkStalledTasks();
     const queuedRows = db.select({ task: schema.tasks, column: schema.columns })
       .from(schema.tasks)
       .innerJoin(schema.columns, eq(schema.tasks.columnId, schema.columns.id))
@@ -106,8 +108,23 @@ class LocalTaskDispatcher {
       .orderBy(asc(schema.tasks.projectId), asc(schema.tasks.position), asc(schema.tasks.updatedAt))
       .all();
 
+    const globalLimit = maxGlobalTasks();
+    const globalRunning = db.select({ value: count() }).from(schema.tasks)
+      .where(eq(schema.tasks.agentStatus, 'running'))
+      .get()?.value ?? 0;
+    let globalSlots = Math.max(0, globalLimit - globalRunning);
+    if (globalRunning >= globalLimit) {
+      runtimeLogger.debug('global agent concurrency cap reached; deferring queued tasks', {
+        global_limit: globalLimit,
+        global_running: globalRunning,
+        queued: queuedRows.length,
+      });
+    }
+
     for (const row of queuedRows) {
+      if (globalSlots <= 0) break;
       if (!taskSlotAvailability(row.task.projectId, row.task.agentHarness).available) continue;
+      globalSlots -= 1;
       const running = this.runTask(row.task, row.column);
       this.runningPromises.add(running);
       void running.then(
@@ -181,6 +198,34 @@ class LocalTaskDispatcher {
     }
   }
 
+  private checkStalledTasks() {
+    const timeoutMs = taskStallTimeoutMs();
+    if (timeoutMs <= 0) return;
+    const nowMs = Date.now();
+    for (const [taskId, controller] of this.runningTasks) {
+      if (controller.signal.aborted) continue;
+      const lastSeenMs = lastTaskActivityTimestamp(taskId);
+      if (lastSeenMs === null || nowMs - lastSeenMs < timeoutMs) continue;
+      const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+      if (!task) {
+        this.stalledTasks.delete(taskId);
+        continue;
+      }
+      this.stalledTasks.add(taskId);
+      logTaskActivity(task.projectId, task.id, null, 'agent_stalled', {
+        idle_ms: nowMs - lastSeenMs,
+        timeout_ms: timeoutMs,
+      });
+      runtimeLogger.warn('local agent task stalled; aborting run', {
+        task_id: task.id,
+        task_key: task.key,
+        idle_ms: nowMs - lastSeenMs,
+        timeout_ms: timeoutMs,
+      });
+      controller.abort();
+    }
+  }
+
   private async cleanupInterruptedResources() {
     const interruptedRuns = db.select().from(schema.taskAgentRuns)
       .where(eq(schema.taskAgentRuns.status, 'waiting_external'))
@@ -222,29 +267,37 @@ class LocalTaskDispatcher {
     const project = db.select().from(schema.projects).where(eq(schema.projects.id, queued.projectId)).get();
     if (!project) {
       db.update(schema.tasks).set({ agentStatus: 'failed', updatedAt: new Date().toISOString() })
-        .where(eq(schema.tasks.id, queued.id))
+        .where(and(eq(schema.tasks.id, queued.id), eq(schema.tasks.agentStatus, 'queued')))
         .run();
       return;
     }
 
     const controller = new AbortController();
     this.runningTasks.set(queued.id, controller);
-    const agentRun = ensureTaskAgentRun(queued);
-    const sessionRoot = appDataDir('task-sessions', project.id, queued.id, agentRun.id);
-    const browserSession = taskHarnessBrowserSession(sessionRoot);
     const inProgressColumn = db.select().from(schema.columns)
       .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_progress')))
       .get();
     const reviewColumn = db.select().from(schema.columns)
       .where(and(eq(schema.columns.projectId, queued.projectId), eq(schema.columns.key, 'in_review')))
       .get();
-    db.update(schema.tasks).set({
+    const started = db.update(schema.tasks).set({
       agentStatus: 'running',
       columnId: inProgressColumn?.id ?? queued.columnId,
       updatedAt: new Date().toISOString(),
     })
-      .where(eq(schema.tasks.id, queued.id))
+      .where(and(eq(schema.tasks.id, queued.id), eq(schema.tasks.agentStatus, 'queued')))
       .run();
+    if (started.changes === 0) {
+      this.runningTasks.delete(queued.id);
+      runtimeLogger.warn('task left the queue before dispatch; skipping run', {
+        task_id: queued.id,
+        task_key: queued.key,
+      });
+      return;
+    }
+    const agentRun = ensureTaskAgentRun(queued);
+    const sessionRoot = appDataDir('task-sessions', project.id, queued.id, agentRun.id);
+    const browserSession = taskHarnessBrowserSession(sessionRoot);
     db.update(schema.taskAgentRuns).set({
       status: 'running',
       waitKind: null,
@@ -463,10 +516,20 @@ class LocalTaskDispatcher {
       if (result.waitRequest) {
         const now = new Date();
         const resumeAt = new Date(now.getTime() + result.waitRequest.resumeAfterSeconds * 1000).toISOString();
-        db.update(schema.tasks).set({
+        const parked = db.update(schema.tasks).set({
           agentStatus: 'waiting_external',
           updatedAt: now.toISOString(),
-        }).where(eq(schema.tasks.id, queued.id)).run();
+        }).where(and(eq(schema.tasks.id, queued.id), eq(schema.tasks.agentStatus, 'running'))).run();
+        if (parked.changes === 0) {
+          finishTaskAgentRun(agentRun.id, 'cancelled');
+          await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
+          runtimeLogger.warn('task changed before external wait; wait request dropped', {
+            task_id: queued.id,
+            task_key: queued.key,
+            run_id: agentRun.id,
+          });
+          return;
+        }
         db.update(schema.taskAgentRuns).set({
           status: 'waiting_external',
           nativeSessionId: result.nativeSessionId,
@@ -494,25 +557,35 @@ class LocalTaskDispatcher {
         });
         return;
       }
-      db.update(schema.tasks).set({
+      const completed = db.update(schema.tasks).set({
         agentStatus: 'done',
         columnId: reviewColumn?.id ?? queued.columnId,
         updatedAt: new Date().toISOString(),
-      }).where(eq(schema.tasks.id, queued.id)).run();
-      finishTaskAgentRun(agentRun.id, 'completed');
+      }).where(and(eq(schema.tasks.id, queued.id), eq(schema.tasks.agentStatus, 'running'))).run();
+      finishTaskAgentRun(agentRun.id, completed.changes === 0 ? 'cancelled' : 'completed');
       await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
       logTaskActivity(queued.projectId, queued.id, null, 'codex_completed', {
         nextColumn: reviewColumn?.key ?? null,
         harness: queued.agentHarness,
         summary: latestCompletionSummary || null,
+        applied: completed.changes === 1,
       });
-      notifyVoiceJobStatus(queued.id, 'done');
+      if (completed.changes === 1) {
+        notifyVoiceJobStatus(queued.id, 'done');
+      } else {
+        runtimeLogger.warn('task changed before completion; result not applied', {
+          task_id: queued.id,
+          task_key: queued.key,
+          run_id: agentRun.id,
+        });
+      }
       runtimeLogger.info('local agent task completed', {
         task_id: queued.id,
         task_key: queued.key,
         harness: queued.agentHarness,
       });
     } catch (error) {
+      const stalled = this.stalledTasks.delete(queued.id);
       if (controller.signal.aborted) {
         await closeTaskBrowserSession(browserSession);
         const currentTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, queued.id)).get();
@@ -524,6 +597,29 @@ class LocalTaskDispatcher {
           });
           return;
         }
+        if (stalled) {
+          const stalledFailure = db.update(schema.tasks).set({
+            agentStatus: 'failed',
+            columnId: reviewColumn?.id ?? queued.columnId,
+            updatedAt: new Date().toISOString(),
+          }).where(and(eq(schema.tasks.id, queued.id), eq(schema.tasks.agentStatus, 'running'))).run();
+          finishTaskAgentRun(agentRun.id, 'failed');
+          await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
+          logTaskActivity(queued.projectId, queued.id, null, 'codex_stalled_failed', {
+            error: 'agent stalled without activity',
+            applied: stalledFailure.changes === 1,
+          });
+          if (stalledFailure.changes === 1) {
+            notifyVoiceJobStatus(queued.id, 'failed');
+          }
+          runtimeLogger.warn('local agent task failed after stall', {
+            task_id: queued.id,
+            task_key: queued.key,
+            run_id: agentRun.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
         finishTaskAgentRun(agentRun.id, 'cancelled');
         await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
         logTaskActivity(queued.projectId, queued.id, null, 'codex_cancelled', {});
@@ -531,12 +627,12 @@ class LocalTaskDispatcher {
         runtimeLogger.info('local codex task cancelled', { task_id: queued.id, task_key: queued.key });
         return;
       }
-      db.update(schema.tasks).set({
+      const failed = db.update(schema.tasks).set({
         agentStatus: 'failed',
         columnId: reviewColumn?.id ?? queued.columnId,
         updatedAt: new Date().toISOString(),
       })
-        .where(eq(schema.tasks.id, queued.id))
+        .where(and(eq(schema.tasks.id, queued.id), eq(schema.tasks.agentStatus, 'running')))
         .run();
       finishTaskAgentRun(agentRun.id, 'failed');
       await closeTaskBrowserSession(browserSession);
@@ -544,8 +640,17 @@ class LocalTaskDispatcher {
       logTaskActivity(queued.projectId, queued.id, null, 'codex_failed', {
         error: error instanceof Error ? error.message : String(error),
         nextColumn: reviewColumn?.key ?? null,
+        applied: failed.changes === 1,
       });
-      notifyVoiceJobStatus(queued.id, 'failed');
+      if (failed.changes === 1) {
+        notifyVoiceJobStatus(queued.id, 'failed');
+      } else {
+        runtimeLogger.warn('task changed before failure was recorded; status left untouched', {
+          task_id: queued.id,
+          task_key: queued.key,
+          run_id: agentRun.id,
+        });
+      }
       runtimeLogger.warn('local codex task failed', {
         task_id: queued.id,
         task_key: queued.key,
@@ -621,6 +726,40 @@ async function cleanupTaskSession(sessionRoot: string, taskId: string, runId: st
 export function configuredAgentRetries() {
   const requested = Number.parseInt(process.env.KANBAN_AGENT_RETRY_COUNT ?? '1', 10);
   return Number.isFinite(requested) ? Math.min(2, Math.max(0, requested)) : 1;
+}
+
+export function maxGlobalTasks() {
+  const requested = Number.parseInt(process.env.KANBAN_MAX_GLOBAL_TASKS ?? '4', 10);
+  return Number.isFinite(requested) ? Math.min(32, Math.max(1, requested)) : 4;
+}
+
+export function taskStallTimeoutMs() {
+  const requested = Number.parseInt(process.env.KANBAN_TASK_STALL_TIMEOUT_MS ?? String(45 * 60 * 1000), 10);
+  return Number.isFinite(requested) ? Math.max(0, requested) : 45 * 60 * 1000;
+}
+
+/**
+ * Newest timestamp (in ms) seen for a task across its row, its active agent
+ * run, and its activity log. Returns null when no timestamp is available so
+ * the caller can fail open instead of aborting a healthy run.
+ */
+function lastTaskActivityTimestamp(taskId: string): number | null {
+  const task = db.select({ updatedAt: schema.tasks.updatedAt })
+    .from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+  const run = db.select({ updatedAt: schema.taskAgentRuns.updatedAt })
+    .from(schema.taskAgentRuns)
+    .where(and(
+      eq(schema.taskAgentRuns.taskId, taskId),
+      inArray(schema.taskAgentRuns.status, ['running', 'waiting_external']),
+    ))
+    .get();
+  const newestActivity = db.select({ value: max(schema.activity.createdAt) })
+    .from(schema.activity).where(eq(schema.activity.taskId, taskId)).get()?.value;
+  const candidates = [task?.updatedAt, run?.updatedAt, newestActivity]
+    .filter((value): value is string => typeof value === 'string');
+  if (!candidates.length) return null;
+  const newest = Math.max(...candidates.map((value) => Date.parse(value)));
+  return Number.isFinite(newest) ? newest : null;
 }
 
 export function agentRuntimeSafetyInstructions() {

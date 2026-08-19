@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -151,7 +151,10 @@ export const oberthemen = sqliteTable('oberthemen', {
   position: integer('position').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  // Matches the raw bootstrap DDL: UNIQUE(project_id, name).
+  uniqueIndex('idx_oberthemen_project_name').on(table.projectId, table.name),
+]);
 
 export const unterthemen = sqliteTable('unterthemen', {
   id: text('id').primaryKey(),
@@ -161,7 +164,10 @@ export const unterthemen = sqliteTable('unterthemen', {
   position: integer('position').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
-});
+}, (table) => [
+  // Matches the raw bootstrap DDL: UNIQUE(oberthema_id, name).
+  uniqueIndex('idx_unterthemen_oberthema_name').on(table.oberthemaId, table.name),
+]);
 
 export const swimlanes = sqliteTable('swimlanes', {
   id: text('id').primaryKey(),

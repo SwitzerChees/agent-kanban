@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { runtimeLogger } from './logger';
 import type { AgentHarness } from './agent-harness';
 
 export interface TaskHarnessSandboxOptions {
@@ -260,19 +261,39 @@ function runProcess(command: string, args: string[], timeoutMs: number) {
   return new Promise<void>((resolve) => {
     let settled = false;
     const child = spawn(command, args, { stdio: 'ignore' });
-    const finish = () => {
+    const finish = (failure: { code: number | null; signal: NodeJS.Signals | null; timedOut: boolean }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (failure.timedOut || failure.code !== 0) {
+        warnHelperFailure(command, failure);
+      }
       resolve();
     };
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish();
+      finish({ code: child.exitCode, signal: child.signalCode, timedOut: true });
     }, timeoutMs);
     timer.unref();
-    child.once('error', finish);
-    child.once('exit', finish);
+    child.once('error', () => finish({ code: null, signal: null, timedOut: false }));
+    child.once('exit', (code, signal) => finish({ code, signal, timedOut: false }));
+  });
+}
+
+const helperWarnCooldown = new Map<string, number>();
+const HELPER_WARN_COOLDOWN_MS = 60_000;
+
+function warnHelperFailure(command: string, failure: { code: number | null; signal: NodeJS.Signals | null; timedOut: boolean }) {
+  const key = `${command}:${failure.timedOut ? 'timeout' : `code=${failure.code}`}`;
+  const last = helperWarnCooldown.get(key) ?? 0;
+  const now = Date.now();
+  if (now - last < HELPER_WARN_COOLDOWN_MS) return;
+  helperWarnCooldown.set(key, now);
+  runtimeLogger.warn('task harness helper process failed', {
+    command,
+    code: failure.code,
+    signal: failure.signal,
+    timed_out: failure.timedOut,
   });
 }
 

@@ -109,19 +109,6 @@ export interface ValidationResult {
   issues: ValidationIssue[];
 }
 
-export interface WorkspaceInfo {
-  path: string;
-  workspaceKey: string;
-  createdNow: boolean;
-}
-
-export type RunTerminalReason =
-  | 'succeeded'
-  | 'failed'
-  | 'timed_out'
-  | 'stalled'
-  | 'canceled_by_reconciliation';
-
 export interface CodexUsage {
   input_tokens: number;
   output_tokens: number;

@@ -13,6 +13,8 @@ const annotationSchema = z.array(z.object({
   renderedImage: renderedAnnotationImageSchema,
 })).max(20);
 
+export const MAX_UPLOAD_FILES = 20;
+
 export function parseTaskUploadParts(parts: MultiPartData[] | undefined) {
   const fields = new Map<string, string>();
   const files: UploadedTaskFile[] = [];
@@ -28,6 +30,10 @@ export function parseTaskUploadParts(parts: MultiPartData[] | undefined) {
       continue;
     }
     fields.set(part.name, Buffer.from(part.data).toString('utf8'));
+  }
+
+  if (files.length > MAX_UPLOAD_FILES) {
+    throw createError({ statusCode: 400, statusMessage: 'too_many_files' });
   }
 
   const rawAnnotations = fields.get('annotations');

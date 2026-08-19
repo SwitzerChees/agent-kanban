@@ -476,6 +476,10 @@ export function ensureDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_tasks_agent_dispatch
       ON tasks(agent_status, project_id, agent_harness);
+
+    CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
+    CREATE INDEX IF NOT EXISTS idx_columns_project ON columns(project_id);
+    CREATE INDEX IF NOT EXISTS idx_swimlanes_project ON swimlanes(project_id);
   `);
   sqlite.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_request
@@ -791,8 +795,8 @@ function seedAdmin() {
   if (existing > 0) return;
 
   const now = new Date().toISOString();
-  const email = process.env.KANBAN_ADMIN_EMAIL ?? 'admin@example.com';
-  const password = process.env.KANBAN_ADMIN_PASSWORD ?? 'adminadmin';
+  const email = process.env.KANBAN_ADMIN_EMAIL || 'admin@example.com';
+  const password = process.env.KANBAN_ADMIN_PASSWORD || 'adminadmin';
   db.insert(schema.users).values({
     id: randomUUID(),
     email,
@@ -803,7 +807,15 @@ function seedAdmin() {
     createdAt: now,
     updatedAt: now,
   }).run();
-  runtimeLogger.info('seeded admin user', { email, default_password: process.env.KANBAN_ADMIN_PASSWORD ? '[env]' : 'adminadmin' });
+  if (process.env.KANBAN_ADMIN_PASSWORD) {
+    runtimeLogger.info('seeded admin user', { email, password_source: 'env' });
+  } else {
+    // A built-in default credential is a real risk on a reachable service,
+    // so this is deliberately loud.
+    runtimeLogger.warn('seeded admin user with the DEFAULT password; change it immediately (set KANBAN_ADMIN_PASSWORD on first boot)', {
+      email,
+    });
+  }
 }
 
 ensureDatabase();

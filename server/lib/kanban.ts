@@ -536,8 +536,18 @@ export function authorizeTaskAccess(taskId: string, user: User) {
   return { task, project: getProject(task.projectId, user) };
 }
 
+const MAX_SWIMLANES_PER_PROJECT = 50;
+const MAX_OBERTHEMEN_PER_PROJECT = 50;
+const MAX_UNTERTHEMEN_PER_OBERTHEMA = 100;
+
 export async function createSwimlane(projectId: string, input: { nameEn: string; nameDe?: string }, user: User) {
   getProject(projectId, user);
+  const laneCount = db.select({ value: count() }).from(schema.swimlanes)
+    .where(eq(schema.swimlanes.projectId, projectId))
+    .get()?.value ?? 0;
+  if (laneCount >= MAX_SWIMLANES_PER_PROJECT) {
+    throw createError({ statusCode: 409, statusMessage: 'too_many_swimlanes' });
+  }
   const currentMax = db.select({ value: max(schema.swimlanes.position) }).from(schema.swimlanes)
     .where(eq(schema.swimlanes.projectId, projectId))
     .get()?.value ?? 0;
@@ -556,6 +566,12 @@ export async function createSwimlane(projectId: string, input: { nameEn: string;
 
 export function createOberthema(projectId: string, input: TopicInput, user: User) {
   getProject(projectId, user);
+  const topicCount = db.select({ value: count() }).from(schema.oberthemen)
+    .where(eq(schema.oberthemen.projectId, projectId))
+    .get()?.value ?? 0;
+  if (topicCount >= MAX_OBERTHEMEN_PER_PROJECT) {
+    throw createError({ statusCode: 409, statusMessage: 'too_many_oberthemen' });
+  }
   const name = input.name.trim();
   ensureOberthemaNameAvailable(projectId, name);
   const now = new Date().toISOString();
@@ -605,6 +621,12 @@ export function deleteOberthema(oberthemaId: string, user: User) {
 
 export function createUnterthema(oberthemaId: string, input: SubtopicInput, user: User) {
   const topic = requireOberthema(oberthemaId, user);
+  const subtopicCount = db.select({ value: count() }).from(schema.unterthemen)
+    .where(eq(schema.unterthemen.oberthemaId, oberthemaId))
+    .get()?.value ?? 0;
+  if (subtopicCount >= MAX_UNTERTHEMEN_PER_OBERTHEMA) {
+    throw createError({ statusCode: 409, statusMessage: 'too_many_unterthemen' });
+  }
   const name = input.name.trim();
   ensureUnterthemaNameAvailable(oberthemaId, name);
   const now = new Date().toISOString();

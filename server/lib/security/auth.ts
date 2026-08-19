@@ -52,6 +52,10 @@ export function createSession(event: H3Event, userId: string): PublicUser {
   setCookie(event, COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
+    // Only mark the cookie Secure in production, where the service is
+    // expected to be served over HTTPS; local development stays on plain
+    // http and would break otherwise.
+    secure: process.env.NODE_ENV === 'production',
     path: '/',
     expires,
   });
