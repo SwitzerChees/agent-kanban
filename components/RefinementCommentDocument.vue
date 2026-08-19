@@ -42,6 +42,7 @@ const emit = defineEmits<{
   update: [payload: { commentId: string; body: string }];
   delete: [commentId: string];
   revise: [];
+  interactionChange: [active: boolean];
 }>();
 
 const isGerman = computed(() => props.locale.toLowerCase().startsWith('de'));
@@ -80,6 +81,7 @@ const text = computed(() => isGerman.value ? {
 const root = ref<HTMLElement | null>(null);
 const editorComponent = ref<{ editor?: Editor | null } | null>(null);
 const editor = ref<Editor | null>(null);
+const overlayRoot = ref<HTMLElement | null>(null);
 const selectionAction = ref<{ left: number; top: number } | null>(null);
 const selectedAnchor = ref<{ quote: string; prefix: string; suffix: string; startOffset: number; endOffset: number } | null>(null);
 const activeCommentId = ref<string | null>(null);
@@ -136,6 +138,7 @@ const popoverStyle = computed(() => popoverPosition.value ? {
   left: `${popoverPosition.value.left}px`,
   top: `${popoverPosition.value.top}px`,
 } : undefined);
+const interactionActive = computed(() => Boolean(selectionAction.value || popoverPosition.value));
 
 watchEffect(() => {
   const nextEditor = editorComponent.value?.editor ?? null;
@@ -149,6 +152,8 @@ watch(() => props.comments, () => {
   if (activeCommentId.value && !activeComment.value) closePopover();
 }, { deep: true });
 
+watch(interactionActive, active => emit('interactionChange', active), { immediate: true });
+
 function refreshDecorations() {
   if (!editor.value || editor.value.isDestroyed) return;
   editor.value.view.dispatch(editor.value.state.tr.setMeta(pluginKey, props.comments));
@@ -159,19 +164,36 @@ function handleSelection() {
     selectionAction.value = null;
     return;
   }
-  const { from, to, empty } = editor.value.state.selection;
   const selection = window.getSelection();
-  if (empty || !selection?.rangeCount || !root.value.contains(selection.anchorNode)) {
+  if (!selection?.rangeCount || selection.isCollapsed) {
     selectionAction.value = null;
     return;
   }
+  const range = selection.getRangeAt(0);
+  if (!root.value.contains(range.startContainer) || !root.value.contains(range.endContainer)) {
+    selectionAction.value = null;
+    return;
+  }
+
+  let from: number;
+  let to: number;
+  try {
+    from = editor.value.view.posAtDOM(range.startContainer, range.startOffset, -1);
+    to = editor.value.view.posAtDOM(range.endContainer, range.endOffset, 1);
+  } catch {
+    selectionAction.value = null;
+    return;
+  }
+  if (to <= from) {
+    selectionAction.value = null;
+    return;
+  }
+
   const quote = editor.value.state.doc.textBetween(from, to, ' ').trim();
   if (!quote) {
     selectionAction.value = null;
     return;
   }
-  const range = selection.getRangeAt(0);
-  const rect = range.getBoundingClientRect();
   selectedAnchor.value = {
     quote,
     prefix: editor.value.state.doc.textBetween(Math.max(0, from - 120), from, ' ').slice(-120),
@@ -179,14 +201,20 @@ function handleSelection() {
     startOffset: from,
     endOffset: to,
   };
-  selectionAction.value = clampToViewport(rect.left + (rect.width / 2) - 58, rect.top - 44, 116, 40);
+  positionSelectionAction(range);
+}
+
+function positionSelectionAction(range: Range) {
+  const rects = range.getClientRects();
+  const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
+  selectionAction.value = clampToBoundary(rect.right - 116, rect.top - 44, 116, 40, true);
 }
 
 function startComment() {
   if (!selectedAnchor.value || !selectionAction.value) return;
   activeCommentId.value = null;
   draft.value = '';
-  popoverPosition.value = clampToViewport(selectionAction.value.left, selectionAction.value.top + 46, 352, 300);
+  popoverPosition.value = clampToBoundary(selectionAction.value.left, selectionAction.value.top + 46, 352, 300);
   selectionAction.value = null;
 }
 
@@ -216,7 +244,7 @@ function openComment(comment: RefinementDocumentComment, rect?: DOMRect) {
   selectedAnchor.value = null;
   draft.value = comment.body;
   const anchorRect = rect ?? rangeRect(comment);
-  popoverPosition.value = clampToViewport(
+  popoverPosition.value = clampToBoundary(
     anchorRect?.right ? anchorRect.right + 12 : window.innerWidth / 2 - 176,
     anchorRect?.top ?? 96,
     352,
@@ -257,28 +285,76 @@ function closePopover() {
   draft.value = '';
 }
 
-function clampToViewport(left: number, top: number, width: number, height: number) {
+function clampToBoundary(left: number, top: number, width: number, height: number, preferScrollContainer = false) {
   const padding = 12;
+  const boundary = interactionBoundary(preferScrollContainer);
   return {
-    left: Math.max(padding, Math.min(left, window.innerWidth - width - padding)),
-    top: Math.max(padding, Math.min(top, window.innerHeight - height - padding)),
+    left: Math.max(boundary.left + padding, Math.min(left, boundary.right - width - padding)),
+    top: Math.max(boundary.top + padding, Math.min(top, boundary.bottom - height - padding)),
   };
 }
 
-function handleViewportChange() {
+function interactionBoundary(preferScrollContainer: boolean) {
+  const dialog = root.value?.closest<HTMLElement>('[role="dialog"]') ?? null;
+  if (preferScrollContainer) {
+    let candidate = root.value?.parentElement ?? null;
+    while (candidate && candidate !== dialog) {
+      const { overflowY } = window.getComputedStyle(candidate);
+      if (['auto', 'scroll'].includes(overflowY)) return candidate.getBoundingClientRect();
+      candidate = candidate.parentElement;
+    }
+  }
+  return dialog?.getBoundingClientRect() ?? {
+    left: 0,
+    top: 0,
+    right: window.innerWidth,
+    bottom: window.innerHeight,
+  };
+}
+
+function handleViewportChange(event: Event) {
+  if (event.type === 'scroll' && event.target instanceof Node && overlayRoot.value?.contains(event.target)) return;
+  if (event.type === 'scroll' && selectionAction.value && root.value) {
+    const selection = window.getSelection();
+    if (selection?.rangeCount && !selection.isCollapsed) {
+      const range = selection.getRangeAt(0);
+      if (root.value.contains(range.startContainer) && root.value.contains(range.endContainer)) {
+        positionSelectionAction(range);
+        return;
+      }
+    }
+  }
   selectionAction.value = null;
   if (popoverPosition.value) closePopover();
+}
+
+function handleSelectionChange() {
+  if (!selectionAction.value || popoverPosition.value || !root.value) return;
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed) {
+    selectionAction.value = null;
+    selectedAnchor.value = null;
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  if (!root.value.contains(range.startContainer) || !root.value.contains(range.endContainer)) {
+    selectionAction.value = null;
+    selectedAnchor.value = null;
+  }
 }
 
 if (import.meta.client) {
   window.addEventListener('resize', handleViewportChange);
   window.addEventListener('scroll', handleViewportChange, true);
+  document.addEventListener('selectionchange', handleSelectionChange);
 }
 
 onBeforeUnmount(() => {
+  emit('interactionChange', false);
   if (!import.meta.client) return;
   window.removeEventListener('resize', handleViewportChange);
   window.removeEventListener('scroll', handleViewportChange, true);
+  document.removeEventListener('selectionchange', handleSelectionChange);
 });
 </script>
 
@@ -332,6 +408,7 @@ onBeforeUnmount(() => {
       ref="root"
       class="ak-refinement-comment-document relative"
       @mouseup="handleSelection"
+      @pointerup="handleSelection"
       @keyup="handleSelection"
       @keydown="handleDocumentKeydown"
       @click="handleDocumentClick"
@@ -353,26 +430,31 @@ onBeforeUnmount(() => {
       {{ text.reviseHint }}
     </p>
 
-    <Teleport to="body">
+    <div ref="overlayRoot">
       <UButton
         v-if="selectionAction"
         type="button"
+        data-testid="refinement-selection-comment"
         class="fixed z-[70] shadow-md"
         :style="{ left: `${selectionAction.left}px`, top: `${selectionAction.top}px` }"
         size="sm"
         icon="i-lucide-message-square-plus"
-        @mousedown.prevent
-        @click="startComment"
+        @pointerdown.prevent.stop="startComment"
+        @mousedown.prevent.stop
+        @click.prevent.stop
       >
         {{ text.comment }}
       </UButton>
 
       <div
         v-if="popoverPosition"
+        data-testid="refinement-comment-popover"
         class="fixed z-[75] w-[min(22rem,calc(100vw-1.5rem))] rounded-xl bg-white p-4 shadow-lg ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-700"
         :style="popoverStyle"
         role="dialog"
         :aria-label="text.comment"
+        @pointerdown.stop
+        @click.stop
       >
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
@@ -435,7 +517,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-    </Teleport>
+    </div>
   </section>
 </template>
 

@@ -1049,6 +1049,7 @@ const projectModalOpen = ref(false);
 const userModalOpen = ref(false);
 const apiTokenModalOpen = ref(false);
 const taskModalOpen = ref(false);
+const refinementCommentInteractionActive = ref(false);
 const discardTaskModalOpen = ref(false);
 const refinementOverwriteModalOpen = ref(false);
 const oberthemaModalOpen = ref(false);
@@ -1286,6 +1287,7 @@ function closeTaskModalImmediately() {
   stopRefinementPolling();
   taskRefinements.value = [];
   selectedRefinementId.value = null;
+  refinementCommentInteractionActive.value = false;
   clearTaskFiles();
 }
 
@@ -2721,6 +2723,7 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   taskRefinements.value = [];
   selectedRefinementId.value = null;
   refinementDraftDirty.value = false;
+  refinementCommentInteractionActive.value = false;
   taskMessage.value = '';
   resetCommentComposer();
   followUpMessage.value = '';
@@ -2750,6 +2753,7 @@ const openTaskDetail = async (task: Task) => {
   stopRefinementPolling();
   errorMessage.value = null;
   refinementDraftDirty.value = false;
+  refinementCommentInteractionActive.value = false;
   selectedTaskId.value = task.id;
   taskCreateRequestId.value = '';
   taskRefinements.value = [];
@@ -6820,6 +6824,7 @@ const humanError = (error: unknown) => {
       <UModal
         v-if="taskModalOpen"
         v-model:open="taskModalModel"
+        :dismissible="!refinementCommentInteractionActive"
         :content="taskModalContentProps"
         :title="selectedTaskId ? (taskForm.title || t.editTask) : t.createTask"
         :description="taskModalDescription"
@@ -7123,6 +7128,7 @@ const humanError = (error: unknown) => {
                               @update="run?.id && updateRefinementComment(run.id, $event)"
                               @delete="run?.id && deleteRefinementComment(run.id, $event)"
                               @revise="run?.id && reviseTaskRefinement(run.id)"
+                              @interaction-change="refinementCommentInteractionActive = $event"
                             />
                           </template>
                         </TaskRefinementPanel>
