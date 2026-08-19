@@ -4012,7 +4012,7 @@ const hierarchyRowsFor = (oberthemaId: string) => [
 ];
 
 const topicBoardRowSpan = (oberthemaId: string) =>
-  1 + (collapsedOberthemaIds.value.includes(obertHemaId) ? 0 : hierarchyRowsFor(obertHemaId).length);
+  1 + (collapsedOberthemaIds.value.includes(oberthemaId) ? 0 : hierarchyRowsFor(oberthemaId).length);
 const topicBoardRowStarts = computed(() => {
   const starts: number[] = [];
   if (!board.value) return starts;
