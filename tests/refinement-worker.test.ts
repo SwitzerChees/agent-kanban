@@ -144,6 +144,18 @@ describe('refinement worker contracts', () => {
     expect(prompt).toContain('non-technical customer or stakeholder');
   });
 
+  test('keeps the current German request authoritative over an older English refinement', () => {
+    const title = '[Prime] Passwort-Reset an der Login-Seite';
+    const oldAppliedDescription = '## Kurz gesagt\n\nUsers can reset their password. The implementation uses routes, tokens, sessions, and database migrations.';
+
+    expect(worker.inferRefinementLanguage(
+      title,
+      oldAppliedDescription,
+      'Bitte verfeinere dieses Feature auf Deutsch.',
+    )).toBe('de');
+    expect(worker.inferRefinementLanguage(title, oldAppliedDescription, null)).toBe('de');
+  });
+
   test('accepts real generated image bytes but rejects symlinks and non-images', async () => {
     const pngPath = path.join(testRoot, 'concept.png');
     const linkPath = path.join(testRoot, 'concept-link.png');

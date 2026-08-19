@@ -465,12 +465,32 @@ export function parseRefinementOutput(value: unknown, language: RefinementLangua
   }).parse(value);
 }
 
-export function inferRefinementLanguage(...parts: Array<string | null | undefined>): RefinementLanguage {
-  const text = parts.filter(Boolean).join(' ');
+export function inferRefinementLanguage(
+  taskTitle: string | null | undefined,
+  taskDescription: string | null | undefined,
+  brief: string | null | undefined,
+): RefinementLanguage {
+  const explicitBriefLanguage = explicitlyRequestedLanguage(brief || '');
+  if (explicitBriefLanguage) return explicitBriefLanguage;
+
+  // The title is the most stable signal of the task's original language. An older
+  // applied refinement may already have replaced the description in another language.
+  return detectedLanguage(taskTitle || '', 1)
+    ?? detectedLanguage(brief || '', 3)
+    ?? detectedLanguage(taskDescription || '', 3);
+}
+
+function explicitlyRequestedLanguage(text: string): RefinementLanguage {
+  if (/(?:\b(?:auf\s+)?deutsch\b|\bgerman\b)/i.test(text)) return 'de';
+  if (/(?:\b(?:auf\s+)?englisch\b|\benglish\b)/i.test(text)) return 'en';
+  return null;
+}
+
+function detectedLanguage(text: string, minimumScore: number): RefinementLanguage {
   const german = languageWordScore(text, GERMAN_LANGUAGE_WORDS) + (/[äöüß]/i.test(text) ? 3 : 0);
   const english = languageWordScore(text, ENGLISH_LANGUAGE_WORDS);
-  if (german >= 3 && german > english) return 'de';
-  if (english >= 3 && english > german) return 'en';
+  if (german >= minimumScore && german > english) return 'de';
+  if (english >= minimumScore && english > german) return 'en';
   return null;
 }
 
@@ -491,7 +511,8 @@ function languageWordScore(text: string, words: ReadonlySet<string>) {
 
 const GERMAN_LANGUAGE_WORDS = new Set([
   'aber', 'als', 'auf', 'bei', 'das', 'der', 'die', 'dies', 'eine', 'einer', 'für', 'ist', 'kann',
-  'mit', 'nicht', 'oder', 'sich', 'sind', 'soll', 'und', 'von', 'werden', 'wird', 'zur', 'zum',
+  'mit', 'nicht', 'oder', 'passwort', 'seite', 'sich', 'sind', 'soll', 'und', 'von', 'werden', 'wird',
+  'zur', 'zum', 'zurücksetzen',
 ]);
 const ENGLISH_LANGUAGE_WORDS = new Set([
   'and', 'are', 'as', 'at', 'be', 'can', 'for', 'from', 'in', 'is', 'it', 'of', 'on', 'or', 'that',
