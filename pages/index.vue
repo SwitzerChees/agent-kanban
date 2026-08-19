@@ -6310,7 +6310,7 @@ const humanError = (error: unknown) => {
                     <div
                       :id="row.subtopic ? `subtopic-${row.subtopic.id}` : undefined"
                       :data-subtopic-id="row.subtopic?.id"
-                      class="z-10 flex min-h-18 items-center gap-1 border-b border-r border-zinc-200 bg-white px-2 py-2 transition md:sticky md:left-0 dark:border-zinc-800 dark:bg-zinc-950"
+                      class="z-10 flex min-h-18 items-start border-b border-r border-zinc-200 bg-white px-2 py-2 transition md:sticky md:left-0 dark:border-zinc-800 dark:bg-zinc-950"
                       :class="[
                         row.subtopic && selectedUnterthemaId === row.subtopic.id ? 'ring-2 ring-inset ring-teal-500/40' : '',
                         row.subtopic && hierarchyDragOverId === `unterthema:${row.subtopic.id}` ? 'ak-hierarchy-drop-target' : '',
@@ -6320,47 +6320,49 @@ const humanError = (error: unknown) => {
                       @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
                     >
-                      <button
-                        v-if="row.subtopic"
-                        type="button"
-                        draggable="true"
-                        :data-keyboard-reorder="`unterthema:${row.subtopic.id}`"
-                        data-keytip-action="focus"
-                        class="ak-hierarchy-drag-handle grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
-                        :aria-label="`${t.moveUnterthema}: ${row.subtopic.name}`"
-                        aria-keyshortcuts="ArrowUp ArrowDown"
-                        :title="t.hierarchyReorderHint"
-                        @click.stop.prevent
-                        @keydown.up.stop.prevent="moveUnterthemaByKeyboard(row.subtopic.id, -1)"
-                        @keydown.down.stop.prevent="moveUnterthemaByKeyboard(row.subtopic.id, 1)"
-                        @dragstart.stop="startUnterthemaDrag($event, row.subtopic.id)"
-                        @dragend.stop="clearHierarchyDragState"
-                      >
-                        <UIcon name="i-lucide-grip-vertical" class="size-4" />
-                      </button>
-                      <button
-                        v-if="row.subtopic"
-                        type="button"
-                        class="grid size-7 shrink-0 place-items-center rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-900"
-                        :aria-label="row.collapsed ? t.expandSubtopic : t.collapseSubtopic"
-                        :aria-expanded="!row.collapsed"
-                        @click="toggleUnterthemaExpanded(row.subtopic.id)"
-                      >
-                        <UIcon :name="row.collapsed ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3.5 text-zinc-400" />
-                      </button>
-                      <span v-else class="grid size-7 shrink-0 place-items-center">
-                        <UIcon name="i-lucide-corner-down-right" class="size-3.5 text-zinc-400" />
-                      </span>
-                      <button
-                        type="button"
-                        class="min-w-0 flex-1 text-left"
-                        @click="row.subtopic ? selectUnterthema(row.subtopic.id) : selectOberthema(topic.id)"
-                      >
-                        <span class="block truncate text-sm font-medium">{{ row.label }}</span>
-                        <span class="mt-0.5 block text-[10px] text-zinc-400">{{ taskCountForPlacement(topic.id, row.unterthemaId) }} {{ t.tasks }}</span>
-                      </button>
-                      <UButton v-if="row.subtopic" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editUnterthema" @click.stop="openUnterthemaModal(topic.id, row.subtopic)" />
-                      <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newTask" @click.stop="openTaskModal(backlogColumn?.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })" />
+                      <div class="ak-row-label sticky top-14 flex min-h-14 w-full items-center gap-1 self-start">
+                        <button
+                          v-if="row.subtopic"
+                          type="button"
+                          draggable="true"
+                          :data-keyboard-reorder="`unterthema:${row.subtopic.id}`"
+                          data-keytip-action="focus"
+                          class="ak-hierarchy-drag-handle grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-900 dark:hover:text-zinc-200"
+                          :aria-label="`${t.moveUnterthema}: ${row.subtopic.name}`"
+                          aria-keyshortcuts="ArrowUp ArrowDown"
+                          :title="t.hierarchyReorderHint"
+                          @click.stop.prevent
+                          @keydown.up.stop.prevent="moveUnterthemaByKeyboard(row.subtopic.id, -1)"
+                          @keydown.down.stop.prevent="moveUnterthemaByKeyboard(row.subtopic.id, 1)"
+                          @dragstart.stop="startUnterthemaDrag($event, row.subtopic.id)"
+                          @dragend.stop="clearHierarchyDragState"
+                        >
+                          <UIcon name="i-lucide-grip-vertical" class="size-4" />
+                        </button>
+                        <button
+                          v-if="row.subtopic"
+                          type="button"
+                          class="grid size-7 shrink-0 place-items-center rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                          :aria-label="row.collapsed ? t.expandSubtopic : t.collapseSubtopic"
+                          :aria-expanded="!row.collapsed"
+                          @click="toggleUnterthemaExpanded(row.subtopic.id)"
+                        >
+                          <UIcon :name="row.collapsed ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-3.5 text-zinc-400" />
+                        </button>
+                        <span v-else class="grid size-7 shrink-0 place-items-center">
+                          <UIcon name="i-lucide-corner-down-right" class="size-3.5 text-zinc-400" />
+                        </span>
+                        <button
+                          type="button"
+                          class="min-w-0 flex-1 text-left"
+                          @click="row.subtopic ? selectUnterthema(row.subtopic.id) : selectOberthema(topic.id)"
+                        >
+                          <span class="block truncate text-sm font-medium">{{ row.label }}</span>
+                          <span class="mt-0.5 block text-[10px] text-zinc-400">{{ taskCountForPlacement(topic.id, row.unterthemaId) }} {{ t.tasks }}</span>
+                        </button>
+                        <UButton v-if="row.subtopic" size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editUnterthema" @click.stop="openUnterthemaModal(topic.id, row.subtopic)" />
+                        <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newTask" @click.stop="openTaskModal(backlogColumn?.id, { oberthemaId: topic.id, unterthemaId: row.unterthemaId })" />
+                      </div>
                     </div>
 
                     <div
