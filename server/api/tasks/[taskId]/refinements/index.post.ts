@@ -6,6 +6,7 @@ import { requireUser } from '../../../../lib/security/auth';
 const schema = z.object({
   brief: z.string().max(4000).optional().nullable(),
   visualMode: z.enum(['auto', 'off', 'force']).optional(),
+  parentRefinementId: z.string().uuid().optional().nullable(),
 });
 
 export default defineEventHandler(async (event) => {

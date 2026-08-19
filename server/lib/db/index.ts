@@ -246,6 +246,7 @@ export function ensureDatabase() {
       version INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'queued',
       requested_by TEXT NOT NULL REFERENCES users(id),
+      parent_refinement_id TEXT,
       brief TEXT,
       visual_mode TEXT NOT NULL DEFAULT 'auto',
       source_description TEXT,
@@ -274,6 +275,22 @@ export function ensureDatabase() {
       applied_by TEXT REFERENCES users(id),
       updated_at TEXT NOT NULL,
       UNIQUE(task_id, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS task_refinement_comments (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      refinement_id TEXT NOT NULL REFERENCES task_refinements(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL REFERENCES users(id),
+      quote TEXT NOT NULL,
+      prefix TEXT NOT NULL DEFAULT '',
+      suffix TEXT NOT NULL DEFAULT '',
+      start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      incorporated_by_refinement_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS attachments (
@@ -480,6 +497,7 @@ export function ensureDatabase() {
   addRefinementColumn('version', 'INTEGER NOT NULL DEFAULT 1');
   addRefinementColumn('status', "TEXT NOT NULL DEFAULT 'queued'");
   addRefinementColumn('requested_by', 'TEXT REFERENCES users(id)');
+  addRefinementColumn('parent_refinement_id', 'TEXT');
   addRefinementColumn('brief', 'TEXT');
   addRefinementColumn('visual_mode', "TEXT NOT NULL DEFAULT 'auto'");
   addRefinementColumn('source_description', 'TEXT');
@@ -614,6 +632,10 @@ export function ensureDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_refinements_active
       ON task_refinements(task_id)
       WHERE status IN ('queued', 'running', 'awaiting_input');
+    CREATE INDEX IF NOT EXISTS idx_task_refinement_comments_refinement
+      ON task_refinement_comments(refinement_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_refinement_comments_pending
+      ON task_refinement_comments(refinement_id, incorporated_by_refinement_id);
   `);
 
   // Older versions replaced tasks.description when a refinement was applied.

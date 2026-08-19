@@ -4,7 +4,7 @@ import Fuse from 'fuse.js';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
-type TaskTab = 'activity' | 'task' | 'refinement' | 'comments';
+type TaskTab = 'activity' | 'task' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
 type ReasoningEffort = 'low' | 'medium' | 'xhigh';
@@ -183,6 +183,23 @@ interface TaskRefinementVisualApi {
   createdAt?: string | null;
 }
 
+interface TaskRefinementCommentApi {
+  id: string;
+  taskId: string;
+  refinementId: string;
+  authorId: string;
+  authorName?: string | null;
+  quote: string;
+  prefix: string;
+  suffix: string;
+  startOffset: number;
+  endOffset: number;
+  body: string;
+  incorporatedByRefinementId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface TaskRefinementApi {
   id: string;
   taskId: string;
@@ -190,6 +207,7 @@ interface TaskRefinementApi {
   status: 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed' | 'cancelled';
   requestedBy: string;
   requestedByName?: string | null;
+  parentRefinementId?: string | null;
   brief?: string | null;
   visualMode: 'auto' | 'off' | 'force';
   sourceDescription?: string | null;
@@ -203,6 +221,7 @@ interface TaskRefinementApi {
   error?: string | null;
   questions: TaskRefinementQuestionApi[];
   visuals: TaskRefinementVisualApi[];
+  comments: TaskRefinementCommentApi[];
   createdAt: string;
   startedAt?: string | null;
   awaitingInputAt?: string | null;
@@ -455,7 +474,7 @@ const dictionary = {
     refinedDescription: 'Refinement',
     descriptionVersions: 'Description versions',
     originalDescriptionHint: 'Your human-written description stays preserved here, even after applying a refinement.',
-    refinedDescriptionHint: 'The applied refinement is stored separately and can be selected for execution.',
+    refinedDescriptionHint: 'Refinement runs and results stay here beside the original. The active version is marked.',
     activeDescription: 'Used for execution',
     useDescription: 'Use this version',
     assignedUsers: 'Assigned users',
@@ -784,7 +803,7 @@ const dictionary = {
     refinedDescription: 'Refinement',
     descriptionVersions: 'Beschreibungsvarianten',
     originalDescriptionHint: 'Deine von Hand geschriebene Beschreibung bleibt hier erhalten – auch nach einem Refinement.',
-    refinedDescriptionHint: 'Das übernommene Refinement wird separat gespeichert und kann für die Ausführung ausgewählt werden.',
+    refinedDescriptionHint: 'Refinement-Läufe und Ergebnisse bleiben hier neben dem Original. Die aktive Fassung ist markiert.',
     activeDescription: 'Wird für die Ausführung verwendet',
     useDescription: 'Diese Fassung verwenden',
     assignedUsers: 'Zugewiesene Benutzer',
@@ -1319,6 +1338,11 @@ const taskRefinementLabels = computed(() => ({
     : `One or two sentences are enough. ${selectedHarnessLabel.value} considers the code, project structure, and existing attachments.`,
   runningTitle: t.value.refinementAgentRunning.replace('{harness}', selectedHarnessLabel.value),
   questionsTitle: t.value.refinementAgentQuestions.replace('{harness}', selectedHarnessLabel.value),
+  resultDescription: locale.value === 'de'
+    ? 'Das Ergebnis bleibt neben dem Original erhalten. Markiere Textstellen, um gezielte Anpassungen anzufordern.'
+    : 'The result stays beside the original. Select passages to request precise changes.',
+  apply: locale.value === 'de' ? 'Als aktiven Auftrag verwenden' : 'Use as active task brief',
+  applied: locale.value === 'de' ? 'Aktiver Auftrag' : 'Active task brief',
   visualsDescription: locale.value === 'de'
     ? `${selectedHarnessLabel.value} hat Visualisierungen erzeugt, weil sie die vorgeschlagene Umsetzung verständlicher machen.`
     : `${selectedHarnessLabel.value} created visuals because they make the proposed implementation easier to understand.`,
@@ -1709,6 +1733,8 @@ const selectedTaskRefinement = computed(() => taskRefinements.value.find((run) =
 const activeTaskRefinement = computed(() => taskRefinements.value.find((run) => ['queued', 'running'].includes(run.status)) ?? null);
 const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
   id: run.id,
+  version: run.version,
+  parentRefinementId: run.parentRefinementId,
   status: run.status,
   createdAt: run.createdAt,
   updatedAt: run.updatedAt,
@@ -1741,16 +1767,19 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
   })),
   errorMessage: run.error,
   appliedAt: run.appliedAt,
+  comments: run.comments,
 })));
 const selectedRefinementPanelRun = computed(() => refinementPanelRuns.value.find((run) => run.id === selectedTaskRefinement.value?.id) ?? null);
 const selectedTaskHasRefinement = computed(() => Boolean(selectedTaskDetail.value?.task.refinedDescription?.trim()));
+const selectedTaskHasRefinementWorkspace = computed(() => taskDescriptionView.value === 'refined' || taskRefinements.value.length > 0);
+const latestCompletedTaskRefinement = computed(() => taskRefinements.value.find((run) => run.status === 'completed') ?? null);
 const selectedTaskDescriptionSource = computed<TaskDescriptionSource>(() => selectedTaskDetail.value?.task.descriptionSource ?? 'original');
 const selectedTaskVisibleDescription = computed(() => taskDescriptionView.value === 'refined'
   ? selectedTaskDetail.value?.task.refinedDescription ?? ''
   : taskForm.description);
 const selectedTaskDescriptionViewIsActive = computed(() => taskDescriptionView.value === selectedTaskDescriptionSource.value);
 const selectedTaskDescriptionLabel = computed(() => {
-  if (!selectedTaskHasRefinement.value) return t.value.description;
+  if (!selectedTaskHasRefinementWorkspace.value) return t.value.description;
   return taskDescriptionView.value === 'refined' ? t.value.refinedDescription : t.value.originalDescription;
 });
 const selectedTaskDescriptionHint = computed(() => taskDescriptionView.value === 'refined'
@@ -1761,7 +1790,7 @@ const selectedTaskActiveDescription = computed(() => selectedTaskDescriptionSour
   : taskForm.description);
 const selectedRefinementDescriptionChanged = computed(() => {
   const run = selectedTaskRefinement.value;
-  if (!run || run.status !== 'completed' || run.appliedAt) return false;
+  if (!run || run.status !== 'completed' || run.appliedAt || run.parentRefinementId) return false;
   return normalizeEditorMarkdown(selectedTaskActiveDescription.value) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
 });
 
@@ -1772,7 +1801,6 @@ function cancelRefinementOverwrite() {
 }
 const taskTabs = computed(() => [
   { key: 'task' as const, label: t.value.taskTab, icon: 'i-lucide-file-text' },
-  { key: 'refinement' as const, label: t.value.refinementTab, icon: 'i-lucide-wand-sparkles' },
   ...(selectedTaskId.value && (editingTask.value?.agentEnabled || hasAgentActivity.value)
     ? [{ key: 'activity' as const, label: t.value.activityTab, icon: 'i-lucide-activity' }]
     : []),
@@ -1792,8 +1820,7 @@ const handleTaskTabKeydown = async (event: KeyboardEvent, currentKey: TaskTab) =
       : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
   const nextTab = tabs[nextIndex];
   if (!nextTab) return;
-  if (nextTab.key === 'refinement') openTaskRefinementTab();
-  else activeTaskTab.value = nextTab.key;
+  activeTaskTab.value = nextTab.key;
   if (activeTaskTab.value !== nextTab.key) return;
   await nextTick();
   document.getElementById(`task-tab-${nextTab.key}`)?.focus();
@@ -2418,7 +2445,8 @@ function scheduleRefinementPolling() {
 
 function openTaskRefinementTab() {
   errorMessage.value = null;
-  activeTaskTab.value = 'refinement';
+  activeTaskTab.value = 'task';
+  taskDescriptionView.value = 'refined';
 }
 
 async function focusTaskTitleForRefinement() {
@@ -2428,7 +2456,7 @@ async function focusTaskTitleForRefinement() {
   document.getElementById('task-title')?.focus();
 }
 
-async function startTaskRefinement(payload: { brief: string; visualMode: 'auto' }) {
+async function startTaskRefinement(payload: { brief: string; visualMode: 'auto'; parentRefinementId?: string }) {
   if (refinementBusy.value || taskSubmitting.value) return;
   if (!taskForm.title.trim()) {
     await focusTaskTitleForRefinement();
@@ -2445,6 +2473,7 @@ async function startTaskRefinement(payload: { brief: string; visualMode: 'auto' 
     });
     taskRefinements.value = [response.refinement, ...taskRefinements.value.filter((run) => run.id !== response.refinement.id)];
     selectedRefinementId.value = response.refinement.id;
+    taskDescriptionView.value = 'refined';
     refinementDraftDirty.value = false;
     scheduleRefinementPolling();
   } catch (error) {
@@ -2465,6 +2494,61 @@ async function startTaskRefinement(payload: { brief: string; visualMode: 'auto' 
   } finally {
     refinementBusy.value = false;
   }
+}
+
+async function createRefinementComment(runId: string, payload: Omit<TaskRefinementCommentApi, 'id' | 'taskId' | 'refinementId' | 'authorId' | 'authorName' | 'incorporatedByRefinementId' | 'createdAt' | 'updatedAt'>) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/tasks/${taskId}/refinements/${runId}/comments`, { method: 'POST', body: payload });
+    await loadTaskRefinements(taskId, { silent: true });
+    selectedRefinementId.value = runId;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    refinementBusy.value = false;
+  }
+}
+
+async function updateRefinementComment(runId: string, payload: { commentId: string; body: string }) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/tasks/${taskId}/refinements/${runId}/comments/${payload.commentId}`, {
+      method: 'PATCH',
+      body: { body: payload.body },
+    });
+    await loadTaskRefinements(taskId, { silent: true });
+    selectedRefinementId.value = runId;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    refinementBusy.value = false;
+  }
+}
+
+async function deleteRefinementComment(runId: string, commentId: string) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/tasks/${taskId}/refinements/${runId}/comments/${commentId}`, { method: 'DELETE' });
+    await loadTaskRefinements(taskId, { silent: true });
+    selectedRefinementId.value = runId;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    refinementBusy.value = false;
+  }
+}
+
+async function reviseTaskRefinement(runId: string) {
+  await startTaskRefinement({ brief: '', visualMode: 'auto', parentRefinementId: runId });
 }
 
 async function submitRefinementAnswers(payload: { runId: string; answers: Record<string, string> }) {
@@ -2513,7 +2597,7 @@ async function cancelTaskRefinement(runId: string) {
 
 function refinementDescriptionChangedFor(runId: string) {
   const run = taskRefinements.value.find((item) => item.id === runId);
-  if (!run) return false;
+  if (!run || run.parentRefinementId) return false;
   return normalizeEditorMarkdown(selectedTaskActiveDescription.value) !== normalizeEditorMarkdown(run.sourceDescription ?? '');
 }
 
@@ -2574,7 +2658,11 @@ async function confirmApplyTaskRefinement() {
 
 async function retryTaskRefinement(runId: string) {
   const run = taskRefinements.value.find((item) => item.id === runId);
-  await startTaskRefinement({ brief: run?.brief?.trim() || taskForm.title, visualMode: 'auto' });
+  await startTaskRefinement({
+    brief: run?.brief?.trim() || taskForm.title,
+    visualMode: 'auto',
+    parentRefinementId: run?.parentRefinementId || undefined,
+  });
 }
 
 function selectTaskRefinement(runId: string) {
@@ -2677,14 +2765,13 @@ const openTaskDetail = async (task: Task) => {
   ]);
   selectedTaskDetail.value = detail;
   const latestRefinement = taskRefinements.value[0];
-  activeTaskTab.value = latestRefinement
-    && !latestRefinement.appliedAt
-    && ['queued', 'running', 'awaiting_input', 'completed'].includes(latestRefinement.status)
-    ? 'refinement'
-    : hasAgentActivity.value
-      ? 'activity'
-      : 'task';
+  activeTaskTab.value = hasAgentActivity.value ? 'activity' : 'task';
   syncTaskFormFromDetail(selectedTaskDetail.value.task, true);
+  if (latestRefinement
+    && !latestRefinement.appliedAt
+    && ['queued', 'running', 'awaiting_input', 'completed'].includes(latestRefinement.status)) {
+    taskDescriptionView.value = 'refined';
+  }
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
   scheduleRefinementPolling();
@@ -3051,7 +3138,7 @@ const saveTaskAction = async () => {
       await persistExistingTaskDetails(taskId);
       if (keepOpenForRefinement) {
         await refreshPersistedTaskState(taskId);
-        activeTaskTab.value = 'refinement';
+        openTaskRefinementTab();
         return;
       }
       closeTaskModalImmediately();
@@ -3061,7 +3148,7 @@ const saveTaskAction = async () => {
       if (keepOpenForRefinement) {
         selectedTaskId.value = createdTask.id;
         await refreshPersistedTaskState(createdTask.id);
-        activeTaskTab.value = 'refinement';
+        openTaskRefinementTab();
         return;
       }
       closeTaskModalImmediately();
@@ -5246,6 +5333,12 @@ const humanError = (error: unknown) => {
     source_changed: { en: 'The task changed while the refinement was being applied. Please try again.', de: 'Die Aufgabe wurde während der Übernahme geändert. Bitte versuche es erneut.' },
     refinement_already_applied: { en: 'This refinement has already been applied.', de: 'Dieses Refinement wurde bereits übernommen.' },
     refinement_answers_incomplete: { en: 'Please answer every required challenge question.', de: 'Bitte beantworte alle erforderlichen Challenge-Fragen.' },
+    refinement_not_latest: { en: 'Only the latest completed refinement can receive feedback.', de: 'Feedback ist nur in der neuesten abgeschlossenen Refinement-Fassung möglich.' },
+    refinement_feedback_missing: { en: 'Add at least one comment before revising the refinement.', de: 'Füge mindestens einen Kommentar hinzu, bevor du das Refinement überarbeiten lässt.' },
+    refinement_comment_invalid: { en: 'Select a passage and describe the requested change.', de: 'Markiere eine Textstelle und beschreibe die gewünschte Anpassung.' },
+    refinement_comment_locked: { en: 'This feedback is already being incorporated and can no longer be changed.', de: 'Dieses Feedback wird bereits eingearbeitet und kann nicht mehr geändert werden.' },
+    refinement_comment_not_found: { en: 'The refinement comment no longer exists.', de: 'Der Refinement-Kommentar ist nicht mehr vorhanden.' },
+    refinement_comment_forbidden: { en: 'Only the comment author can change this feedback.', de: 'Nur der Autor kann diesen Kommentar verändern.' },
     refinement_timeout: { en: 'The selected AI harness took too long to finish this refinement. You can try again.', de: 'Der gewählte KI-Harness hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.' },
     refinement_invalid_output: { en: 'The selected AI harness returned an incomplete refinement. You can try again without changing the task.', de: 'Der gewählte KI-Harness hat ein unvollständiges Refinement geliefert. Du kannst es erneut versuchen, ohne dass die Aufgabe verändert wurde.' },
     refinement_security_policy: { en: 'The refinement stopped because a project access rule was not satisfied.', de: 'Das Refinement wurde gestoppt, weil eine Regel für den Projektzugriff nicht erfüllt war.' },
@@ -6745,7 +6838,7 @@ const humanError = (error: unknown) => {
 
         <template #body>
           <div class="min-w-0">
-            <div v-if="errorMessage && activeTaskTab !== 'refinement'" class="px-4 pt-4 sm:px-6">
+            <div v-if="errorMessage" class="px-4 pt-4 sm:px-6">
               <UAlert color="error" variant="soft" icon="i-lucide-alert-circle" :description="errorMessage" />
             </div>
 
@@ -6768,7 +6861,7 @@ const humanError = (error: unknown) => {
                   :aria-controls="'task-panel-' + tab.key"
                   :tabindex="activeTaskTab === tab.key ? 0 : -1"
                   :disabled="refinementBusy || taskSubmitting"
-                  @click="tab.key === 'refinement' ? openTaskRefinementTab() : (activeTaskTab = tab.key)"
+                  @click="activeTaskTab = tab.key"
                   @keydown="handleTaskTabKeydown($event, tab.key)"
                 >
                   <UIcon :name="tab.icon" class="size-4" />
@@ -6842,7 +6935,7 @@ const humanError = (error: unknown) => {
                       <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                         <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionLabel }}</p>
                         <div
-                          v-if="selectedTaskHasRefinement"
+                          v-if="selectedTaskHasRefinementWorkspace"
                           class="inline-flex rounded-lg bg-zinc-100 p-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-800"
                           role="tablist"
                           :aria-label="t.descriptionVersions"
@@ -6866,7 +6959,7 @@ const humanError = (error: unknown) => {
                           </button>
                         </div>
                       </div>
-                      <div v-if="selectedTaskHasRefinement" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div v-if="selectedTaskHasRefinementWorkspace" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <p class="max-w-2xl leading-5 text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionHint }}</p>
                         <UBadge v-if="selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
                           {{ t.activeDescription }}
@@ -6875,7 +6968,7 @@ const humanError = (error: unknown) => {
                       <div
                         v-if="selectedTaskVisibleDescription"
                         :id="`task-description-panel-${taskDescriptionView}`"
-                        :aria-labelledby="selectedTaskHasRefinement ? `task-description-tab-${taskDescriptionView}` : undefined"
+                        :aria-labelledby="selectedTaskHasRefinementWorkspace ? `task-description-tab-${taskDescriptionView}` : undefined"
                         role="tabpanel"
                       >
                         <UEditor
@@ -6906,9 +6999,9 @@ const humanError = (error: unknown) => {
                       />
                     </UFormField>
 
-                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasRefinement ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
+                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasRefinementWorkspace ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
                       <div
-                        v-if="selectedTaskHasRefinement"
+                        v-if="selectedTaskHasRefinementWorkspace"
                         class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
                       >
                         <div
@@ -6934,11 +7027,11 @@ const humanError = (error: unknown) => {
                             {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
                           </button>
                         </div>
-                        <UBadge v-if="selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
+                        <UBadge v-if="selectedTaskHasRefinement && selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
                           {{ t.activeDescription }}
                         </UBadge>
                         <UButton
-                          v-else
+                          v-else-if="selectedTaskHasRefinement"
                           type="button"
                           color="neutral"
                           variant="soft"
@@ -6955,7 +7048,7 @@ const humanError = (error: unknown) => {
                         v-if="taskDescriptionView === 'original'"
                         id="task-description-panel-original"
                         role="tabpanel"
-                        :aria-labelledby="selectedTaskHasRefinement ? 'task-description-tab-original' : undefined"
+                        :aria-labelledby="selectedTaskHasRefinementWorkspace ? 'task-description-tab-original' : undefined"
                         class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950"
                       >
                         <UEditor
@@ -6995,18 +7088,44 @@ const humanError = (error: unknown) => {
                         id="task-description-panel-refined"
                         role="tabpanel"
                         aria-labelledby="task-description-tab-refined"
-                        class="rounded-xl bg-zinc-50 px-4 py-3 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:ring-zinc-800"
+                        class="rounded-xl bg-zinc-50 px-4 py-4 ring-1 ring-zinc-200 sm:px-5 dark:bg-zinc-900/60 dark:ring-zinc-800"
                       >
-                        <UEditor
-                          v-if="selectedTaskVisibleDescription"
-                          :model-value="selectedTaskVisibleDescription"
-                          content-type="markdown"
-                          :editable="false"
-                          :image="false"
-                          :mention="false"
-                          class="ak-markdown-readonly text-sm leading-6 text-zinc-700 dark:text-zinc-300"
-                          :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-700 dark:text-zinc-300' }"
-                        />
+                        <TaskRefinementPanel
+                          embedded
+                          :runs="refinementPanelRuns"
+                          :current-run="selectedRefinementPanelRun"
+                          :labels="taskRefinementLabels"
+                          :busy="refinementBusy || taskSubmitting"
+                          :create-on-start="!selectedTaskId"
+                          :task-ready="Boolean(taskForm.title.trim())"
+                          :description-changed="selectedRefinementDescriptionChanged"
+                          :locale="locale === 'de' ? 'de-CH' : 'en-US'"
+                          @start="startTaskRefinement"
+                          @submit-answers="submitRefinementAnswers"
+                          @apply="requestApplyTaskRefinement"
+                          @cancel="cancelTaskRefinement"
+                          @retry="retryTaskRefinement"
+                          @select-run="selectTaskRefinement"
+                          @dirty-change="refinementDraftDirty = $event"
+                          @request-task-details="focusTaskTitleForRefinement"
+                        >
+                          <template #result="{ markdown, run }">
+                            <RefinementCommentDocument
+                              v-if="markdown"
+                              :markdown="markdown"
+                              :comments="run?.comments || []"
+                              :can-comment="run?.id === latestCompletedTaskRefinement?.id && !activeTaskRefinement"
+                              :busy="refinementBusy || taskSubmitting"
+                              :locale="locale === 'de' ? 'de-CH' : 'en-US'"
+                              :current-user-id="user?.id"
+                              :current-user-is-admin="user?.role === 'admin'"
+                              @create="run?.id && createRefinementComment(run.id, $event)"
+                              @update="run?.id && updateRefinementComment(run.id, $event)"
+                              @delete="run?.id && deleteRefinementComment(run.id, $event)"
+                              @revise="run?.id && reviseTaskRefinement(run.id)"
+                            />
+                          </template>
+                        </TaskRefinementPanel>
                       </div>
                     </UFormField>
                   </div>
@@ -7029,7 +7148,7 @@ const humanError = (error: unknown) => {
                   />
                 </template>
 
-                <div class="mt-6 flex flex-col gap-3 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 sm:flex-row sm:items-center sm:justify-between dark:bg-teal-950/20 dark:ring-teal-900/60">
+                <div v-if="taskDescriptionView === 'original' && !taskRefinements.length" class="mt-6 flex flex-col gap-3 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 sm:flex-row sm:items-center sm:justify-between dark:bg-teal-950/20 dark:ring-teal-900/60">
                   <div class="flex min-w-0 items-start gap-3">
                     <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-teal-100 dark:bg-zinc-950 dark:text-teal-300 dark:ring-teal-900/70">
                       <UIcon name="i-lucide-wand-sparkles" class="size-4" />
@@ -7508,47 +7627,6 @@ const humanError = (error: unknown) => {
                   </p>
                 </aside>
               </div>
-            </section>
-
-            <section
-              v-show="activeTaskTab === 'refinement'"
-              id="task-panel-refinement"
-              role="tabpanel"
-              aria-labelledby="task-tab-refinement"
-              class="min-w-0"
-            >
-              <TaskRefinementPanel
-                :runs="refinementPanelRuns"
-                :current-run="selectedRefinementPanelRun"
-                :labels="taskRefinementLabels"
-                :busy="refinementBusy || taskSubmitting"
-                :create-on-start="!selectedTaskId"
-                :task-ready="Boolean(taskForm.title.trim())"
-                :description-changed="selectedRefinementDescriptionChanged"
-                :action-error="errorMessage"
-                :locale="locale === 'de' ? 'de-CH' : 'en-US'"
-                @start="startTaskRefinement"
-                @submit-answers="submitRefinementAnswers"
-                @apply="requestApplyTaskRefinement"
-                @cancel="cancelTaskRefinement"
-                @retry="retryTaskRefinement"
-                @select-run="selectTaskRefinement"
-                @dirty-change="refinementDraftDirty = $event"
-                @request-task-details="focusTaskTitleForRefinement"
-              >
-                <template #result="{ markdown }">
-                  <UEditor
-                    v-if="markdown"
-                    :model-value="markdown"
-                    content-type="markdown"
-                    :editable="false"
-                    :image="false"
-                    :mention="false"
-                    class="ak-markdown-readonly text-sm leading-7 text-zinc-700 dark:text-zinc-300"
-                    :ui="{ content: 'px-0 py-0', base: 'px-0 sm:px-0 text-sm text-zinc-700 dark:text-zinc-300' }"
-                  />
-                </template>
-              </TaskRefinementPanel>
             </section>
 
             <section

@@ -221,6 +221,7 @@ export const taskRefinements = sqliteTable('task_refinements', {
   version: integer('version').notNull(),
   status: text('status', { enum: ['queued', 'running', 'awaiting_input', 'completed', 'failed', 'cancelled'] }).notNull().default('queued'),
   requestedBy: text('requested_by').notNull().references(() => users.id),
+  parentRefinementId: text('parent_refinement_id'),
   brief: text('brief'),
   visualMode: text('visual_mode', { enum: ['auto', 'off', 'force'] }).notNull().default('auto'),
   sourceDescription: text('source_description'),
@@ -247,6 +248,22 @@ export const taskRefinements = sqliteTable('task_refinements', {
   cancelledAt: text('cancelled_at'),
   appliedAt: text('applied_at'),
   appliedBy: text('applied_by').references(() => users.id),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const taskRefinementComments = sqliteTable('task_refinement_comments', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  refinementId: text('refinement_id').notNull().references(() => taskRefinements.id, { onDelete: 'cascade' }),
+  authorId: text('author_id').notNull().references(() => users.id),
+  quote: text('quote').notNull(),
+  prefix: text('prefix').notNull().default(''),
+  suffix: text('suffix').notNull().default(''),
+  startOffset: integer('start_offset').notNull(),
+  endOffset: integer('end_offset').notNull(),
+  body: text('body').notNull(),
+  incorporatedByRefinementId: text('incorporated_by_refinement_id'),
+  createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -323,6 +340,7 @@ export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskAgentRun = typeof taskAgentRuns.$inferSelect;
 export type TaskRefinement = typeof taskRefinements.$inferSelect;
+export type TaskRefinementComment = typeof taskRefinementComments.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type TaskTag = typeof taskTags.$inferSelect;
 export type AttachmentAnnotation = typeof attachmentAnnotations.$inferSelect;

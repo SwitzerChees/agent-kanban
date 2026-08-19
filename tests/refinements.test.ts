@@ -273,6 +273,80 @@ describe('task refinements', () => {
     });
   });
 
+  test('collects anchored feedback and creates a revision from the latest completed refinement', async () => {
+    const project = await kanban.createProject({
+      name: 'Feedback Refinement Project',
+      key: 'FEEDBACKREF',
+      folderPath: path.join(testRoot, 'workspace-feedback-refinement'),
+    }, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Refine a checkout flow',
+      description: 'Customers should finish checkout quickly.',
+    }, admin);
+
+    const first = refinements.createTaskRefinement(task!.id, {}, admin);
+    const firstClaim = refinements.claimNextQueuedRefinement();
+    refinements.completeRefinement(first.id, {
+      complexity: 'simple',
+      resultMarkdown: '## Checkout\n\nCustomers confirm the order immediately.',
+    }, firstClaim!.leaseToken);
+
+    const comment = refinements.createRefinementComment(task!.id, first.id, {
+      quote: 'confirm the order immediately',
+      prefix: 'Customers ',
+      suffix: '.',
+      startOffset: 15,
+      endOffset: 44,
+      body: 'Add a final price review before confirmation.',
+    }, admin);
+    expect(comment).toMatchObject({
+      refinementId: first.id,
+      authorId: admin.id,
+      incorporatedByRefinementId: null,
+    });
+
+    const edited = refinements.updateRefinementComment(
+      task!.id,
+      first.id,
+      comment.id,
+      'Show the final price and delivery date before confirmation.',
+      admin,
+    );
+    expect(edited.body).toContain('delivery date');
+
+    const revision = refinements.createTaskRefinement(task!.id, {
+      parentRefinementId: first.id,
+      visualMode: 'off',
+    }, admin);
+    expect(revision).toMatchObject({
+      version: 2,
+      parentRefinementId: first.id,
+      sourceDescription: '## Checkout\n\nCustomers confirm the order immediately.',
+    });
+    expect(refinements.getTaskRefinement(task!.id, first.id, admin).comments[0])
+      .toMatchObject({ incorporatedByRefinementId: revision.id });
+    expect(() => refinements.updateRefinementComment(task!.id, first.id, comment.id, 'Too late', admin))
+      .toThrowError(expect.objectContaining({ statusMessage: 'refinement_comment_locked' }));
+
+    const revisionClaim = refinements.claimNextQueuedRefinement();
+    expect(revisionClaim).toMatchObject({
+      id: revision.id,
+      feedbackComments: [{ id: comment.id, body: expect.stringContaining('delivery date') }],
+    });
+    const prompt = workerModule.buildRefinementPrompt(revisionClaim!, {
+      agentsPath: null,
+      agentsContent: null,
+      agentsTruncated: false,
+      usedQuestionRounds: 0,
+    });
+    expect(prompt).toContain('Show the final price and delivery date before confirmation.');
+    expect(prompt).toContain('Customers confirm the order immediately.');
+    refinements.completeRefinement(revision.id, {
+      complexity: 'simple',
+      resultMarkdown: '## Checkout\n\nCustomers review price and delivery date before confirming.',
+    }, revisionClaim!.leaseToken);
+  });
+
   test('lets users stop a question round or discard a completed result without changing the task', async () => {
     const project = await kanban.createProject({
       name: 'Cancellable Refinement Project',

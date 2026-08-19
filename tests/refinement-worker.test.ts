@@ -202,6 +202,7 @@ function sampleContext(overrides: Partial<RefinementContext> = {}): RefinementCo
     round: 1,
     questions: [],
     answeredQuestions: [],
+    feedbackComments: [],
     attachments: [],
     ...overrides,
   };

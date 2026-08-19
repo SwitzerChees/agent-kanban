@@ -35,6 +35,23 @@ export interface RefinementVisual {
   createdAt?: string | null;
 }
 
+export interface RefinementFeedbackComment {
+  id: string;
+  taskId: string;
+  refinementId: string;
+  authorId: string;
+  authorName: string | null;
+  quote: string;
+  prefix: string;
+  suffix: string;
+  startOffset: number;
+  endOffset: number;
+  body: string;
+  incorporatedByRefinementId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RefinementResult {
   summary: string;
   integrationPlan?: string[];
@@ -61,6 +78,7 @@ export interface PublicTaskRefinement extends Omit<TaskRefinement,
 > {
   questions: RefinementQuestion[];
   visuals: RefinementVisual[];
+  comments: RefinementFeedbackComment[];
   result: RefinementResult | null;
   requestedByName: string | null;
 }
@@ -89,6 +107,7 @@ export interface RefinementContext {
   round: number;
   questions: RefinementQuestion[];
   answeredQuestions: RefinementQuestion[];
+  feedbackComments: RefinementFeedbackComment[];
   attachments: Array<{
     id: string;
     fileName: string;
@@ -109,6 +128,7 @@ const normalizeDescription = (value: string | null | undefined) => (value ?? '')
 export function createTaskRefinement(taskId: string, input: {
   brief?: string | null;
   visualMode?: RefinementVisualMode;
+  parentRefinementId?: string | null;
 }, user: User): PublicTaskRefinement {
   const { task, project } = authorizeTask(taskId, user);
   const active = activeRefinementForTask(taskId);
@@ -122,8 +142,23 @@ export function createTaskRefinement(taskId: string, input: {
 
   const now = new Date().toISOString();
   const refinementId = randomUUID();
-  const brief = input.brief?.trim() || null;
+  const parent = input.parentRefinementId
+    ? requireTaskRefinement(taskId, input.parentRefinementId)
+    : null;
+  if (parent) assertLatestCompletedRefinement(taskId, parent);
+  const feedbackComments = parent
+    ? db.select().from(schema.taskRefinementComments).where(and(
+        eq(schema.taskRefinementComments.refinementId, parent.id),
+        isNull(schema.taskRefinementComments.incorporatedByRefinementId),
+      )).orderBy(asc(schema.taskRefinementComments.createdAt)).all()
+    : [];
+  if (parent && !feedbackComments.length) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_feedback_missing' });
+  }
+  const brief = input.brief?.trim()
+    || (parent ? 'Arbeite alle markierten Kommentare gezielt in die bestehende Refinement-Fassung ein.' : null);
   const sourceCodeRevision = readCodeRevision(project.folderPath);
+  const sourceDescription = parent?.resultMarkdown?.trim() || activeTaskDescription(task);
 
   try {
     db.transaction((tx) => {
@@ -138,9 +173,10 @@ export function createTaskRefinement(taskId: string, input: {
         version,
         status: 'queued',
         requestedBy: user.id,
+        parentRefinementId: parent?.id ?? null,
         brief,
         visualMode: input.visualMode ?? 'auto',
-        sourceDescription: activeTaskDescription(task),
+        sourceDescription,
         sourceTaskUpdatedAt: task.updatedAt,
         sourceCodeRevision,
         resultCodeRevision: null,
@@ -167,11 +203,20 @@ export function createTaskRefinement(taskId: string, input: {
         updatedAt: now,
       }).run();
 
+      if (feedbackComments.length) {
+        tx.update(schema.taskRefinementComments).set({
+          incorporatedByRefinementId: refinementId,
+          updatedAt: now,
+        }).where(inArray(schema.taskRefinementComments.id, feedbackComments.map((comment) => comment.id))).run();
+      }
+
       insertActivity(tx, task.projectId, task.id, user.id, 'refinement_queued', {
         refinementId,
         version,
         visualMode: input.visualMode ?? 'auto',
         sourceCodeRevision,
+        parentRefinementId: parent?.id ?? null,
+        feedbackCommentIds: feedbackComments.map((comment) => comment.id),
       }, now);
     });
   } catch (error) {
@@ -205,6 +250,83 @@ export function getTaskRefinement(taskId: string, refinementId: string, user: Us
     throw createError({ statusCode: 404, statusMessage: 'refinement_not_found' });
   }
   return toPublicRefinement(refinement);
+}
+
+export function createRefinementComment(taskId: string, refinementId: string, input: {
+  quote: string;
+  prefix?: string | null;
+  suffix?: string | null;
+  startOffset: number;
+  endOffset: number;
+  body: string;
+}, user: User): RefinementFeedbackComment {
+  const { task } = authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  assertCommentableRefinement(taskId, refinement);
+  const quote = input.quote.trim();
+  const body = input.body.trim();
+  if (!quote || !body || input.startOffset < 0 || input.endOffset <= input.startOffset) {
+    throw createError({ statusCode: 400, statusMessage: 'refinement_comment_invalid' });
+  }
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  db.transaction((tx) => {
+    tx.insert(schema.taskRefinementComments).values({
+      id,
+      taskId,
+      refinementId,
+      authorId: user.id,
+      quote,
+      prefix: input.prefix?.trim() || '',
+      suffix: input.suffix?.trim() || '',
+      startOffset: input.startOffset,
+      endOffset: input.endOffset,
+      body,
+      incorporatedByRefinementId: null,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+    insertActivity(tx, task.projectId, task.id, user.id, 'refinement_comment_created', {
+      refinementId,
+      commentId: id,
+    }, now);
+  });
+  return requirePublicRefinementComment(taskId, refinementId, id);
+}
+
+export function updateRefinementComment(taskId: string, refinementId: string, commentId: string, bodyValue: string, user: User) {
+  authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  assertCommentableRefinement(taskId, refinement);
+  const comment = requireRefinementComment(taskId, refinementId, commentId);
+  if (comment.authorId !== user.id && user.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'refinement_comment_forbidden' });
+  }
+  if (comment.incorporatedByRefinementId) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_comment_locked' });
+  }
+  const body = bodyValue.trim();
+  if (!body) throw createError({ statusCode: 400, statusMessage: 'refinement_comment_invalid' });
+  db.update(schema.taskRefinementComments).set({
+    body,
+    updatedAt: new Date().toISOString(),
+  }).where(eq(schema.taskRefinementComments.id, commentId)).run();
+  return requirePublicRefinementComment(taskId, refinementId, commentId);
+}
+
+export function deleteRefinementComment(taskId: string, refinementId: string, commentId: string, user: User) {
+  authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  assertCommentableRefinement(taskId, refinement);
+  const comment = requireRefinementComment(taskId, refinementId, commentId);
+  if (comment.authorId !== user.id && user.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'refinement_comment_forbidden' });
+  }
+  if (comment.incorporatedByRefinementId) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_comment_locked' });
+  }
+  db.delete(schema.taskRefinementComments).where(eq(schema.taskRefinementComments.id, commentId)).run();
+  return { deleted: true };
 }
 
 export function answerRefinementQuestions(taskId: string, refinementId: string, answers: Record<string, RefinementAnswer>, user: User) {
@@ -285,7 +407,8 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
   const currentDescription = activeTaskDescription(task);
-  const descriptionChanged = normalizeDescription(currentDescription) !== normalizeDescription(refinement.sourceDescription);
+  const descriptionChanged = !refinement.parentRefinementId
+    && normalizeDescription(currentDescription) !== normalizeDescription(refinement.sourceDescription);
   if (descriptionChanged && !input.allowDescriptionOverwrite) {
     throw createError({
       statusCode: 409,
@@ -371,6 +494,10 @@ export function cancelTaskRefinement(taskId: string, refinementId: string, user:
     if (updated.changes !== 1) {
       throw createError({ statusCode: 409, statusMessage: 'refinement_state_changed' });
     }
+    tx.update(schema.taskRefinementComments).set({
+      incorporatedByRefinementId: null,
+      updatedAt: now,
+    }).where(eq(schema.taskRefinementComments.incorporatedByRefinementId, refinementId)).run();
     insertActivity(tx, task.projectId, task.id, user.id, 'refinement_cancelled', {
       refinementId,
       version: refinement.version,
@@ -462,6 +589,7 @@ export function getRefinementForWorker(refinementId: string): RefinementContext 
     round: refinement.round,
     questions,
     answeredQuestions: questions.filter((question) => question.answeredAt != null),
+    feedbackComments: listFeedbackCommentsForRun(refinement.id),
     attachments: attachments.map((attachment) => ({
       id: attachment.id,
       fileName: attachment.fileName,
@@ -653,6 +781,10 @@ export function failRefinement(refinementId: string, error: unknown, leaseToken?
           inArray(schema.taskRefinements.status, ['queued', 'awaiting_input']),
         )).run();
     if (updated.changes !== 1) return;
+    tx.update(schema.taskRefinementComments).set({
+      incorporatedByRefinementId: null,
+      updatedAt: now,
+    }).where(eq(schema.taskRefinementComments.incorporatedByRefinementId, refinementId)).run();
     const task = requireTask(refinement.taskId);
     insertActivity(tx, task.projectId, task.id, null, 'refinement_failed', {
       refinementId,
@@ -813,9 +945,70 @@ function toPublicRefinement(refinement: TaskRefinement): PublicTaskRefinement {
     ...fields,
     questions: parseQuestions(questionsJson),
     visuals: parseJsonArray<RefinementVisual>(visualsJson),
+    comments: listRefinementComments(refinement.id),
     result: parseJsonObject<RefinementResult>(resultJson),
     requestedByName: requester?.name ?? null,
   };
+}
+
+function listRefinementComments(refinementId: string): RefinementFeedbackComment[] {
+  return db.select().from(schema.taskRefinementComments)
+    .where(eq(schema.taskRefinementComments.refinementId, refinementId))
+    .orderBy(asc(schema.taskRefinementComments.createdAt))
+    .all()
+    .map(toPublicRefinementComment);
+}
+
+function listFeedbackCommentsForRun(refinementId: string): RefinementFeedbackComment[] {
+  return db.select().from(schema.taskRefinementComments)
+    .where(eq(schema.taskRefinementComments.incorporatedByRefinementId, refinementId))
+    .orderBy(asc(schema.taskRefinementComments.createdAt))
+    .all()
+    .map(toPublicRefinementComment);
+}
+
+function toPublicRefinementComment(comment: typeof schema.taskRefinementComments.$inferSelect): RefinementFeedbackComment {
+  const author = db.select({ name: schema.users.name }).from(schema.users)
+    .where(eq(schema.users.id, comment.authorId)).get();
+  return { ...comment, authorName: author?.name ?? null };
+}
+
+function requireRefinementComment(taskId: string, refinementId: string, commentId: string) {
+  const comment = db.select().from(schema.taskRefinementComments)
+    .where(and(
+      eq(schema.taskRefinementComments.id, commentId),
+      eq(schema.taskRefinementComments.taskId, taskId),
+      eq(schema.taskRefinementComments.refinementId, refinementId),
+    )).get();
+  if (!comment) throw createError({ statusCode: 404, statusMessage: 'refinement_comment_not_found' });
+  return comment;
+}
+
+function requirePublicRefinementComment(taskId: string, refinementId: string, commentId: string) {
+  return toPublicRefinementComment(requireRefinementComment(taskId, refinementId, commentId));
+}
+
+function latestCompletedRefinement(taskId: string) {
+  return db.select().from(schema.taskRefinements).where(and(
+    eq(schema.taskRefinements.taskId, taskId),
+    eq(schema.taskRefinements.status, 'completed'),
+  )).orderBy(desc(schema.taskRefinements.version)).get();
+}
+
+function assertLatestCompletedRefinement(taskId: string, refinement: TaskRefinement) {
+  if (refinement.status !== 'completed' || !refinement.resultMarkdown?.trim()) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_not_completed' });
+  }
+  if (latestCompletedRefinement(taskId)?.id !== refinement.id) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_not_latest' });
+  }
+}
+
+function assertCommentableRefinement(taskId: string, refinement: TaskRefinement) {
+  assertLatestCompletedRefinement(taskId, refinement);
+  if (activeRefinementForTask(taskId)) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_comment_locked' });
+  }
 }
 
 function parseQuestions(value: string): RefinementQuestion[] {

@@ -28,6 +28,8 @@ export interface TaskRefinementVisual {
 
 export interface TaskRefinementRun {
   id: string;
+  version?: number | null;
+  parentRefinementId?: string | null;
   status: TaskRefinementStatus | (string & {});
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -40,6 +42,20 @@ export interface TaskRefinementRun {
   visuals?: TaskRefinementVisual[];
   errorMessage?: string | null;
   appliedAt?: string | null;
+  comments?: Array<{
+    id: string;
+    authorId: string;
+    authorName?: string | null;
+    quote: string;
+    prefix: string;
+    suffix: string;
+    startOffset: number;
+    endOffset: number;
+    body: string;
+    incorporatedByRefinementId?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
 }
 
 export interface TaskRefinementLabels {
@@ -230,6 +246,7 @@ const props = withDefaults(defineProps<{
   initialBrief?: string;
   labels?: Partial<TaskRefinementLabels>;
   locale?: string;
+  embedded?: boolean;
 }>(), {
   runs: () => [],
   latest: null,
@@ -247,6 +264,7 @@ const props = withDefaults(defineProps<{
   initialBrief: '',
   labels: () => ({}),
   locale: 'de-CH',
+  embedded: false,
 });
 
 const emit = defineEmits<{
@@ -423,7 +441,8 @@ const formatDate = (value?: string | null) => {
 
 const historyLabel = (run: TaskRefinementRun, index: number) => {
   const date = formatDate(run.createdAt || run.updatedAt);
-  return `${index === 0 ? `${t.value.latest} · ` : ''}${date} · ${statusLabel(run.status)}`;
+  const version = run.version ? `V${run.version} · ` : '';
+  return `${version}${index === 0 ? `${t.value.latest} · ` : ''}${date} · ${statusLabel(run.status)}`;
 };
 
 const statusLabel = (status: TaskRefinementRun['status']) => {
@@ -438,7 +457,7 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
 
 <template>
   <section class="min-w-0" :aria-labelledby="`task-refinement-title-${activeRun?.id || 'new'}`">
-    <header class="flex min-w-0 flex-col gap-4 border-b border-zinc-200 px-4 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6 dark:border-zinc-800">
+    <header v-if="!props.embedded" class="flex min-w-0 flex-col gap-4 border-b border-zinc-200 px-4 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6 dark:border-zinc-800">
       <div class="flex min-w-0 items-start gap-3">
         <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-teal-50 text-teal-700 ring-1 ring-teal-100 dark:bg-teal-950/50 dark:text-teal-300 dark:ring-teal-900/70">
           <UIcon name="i-lucide-wand-sparkles" class="size-5" />
@@ -479,7 +498,24 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
       </label>
     </header>
 
-    <div class="min-w-0 p-4 sm:p-6">
+    <div v-else-if="sortedRuns.length > 1" class="mb-5 flex justify-end">
+      <label class="min-w-0 w-full sm:w-72">
+        <span class="sr-only">{{ t.history }}</span>
+        <span class="relative block">
+          <UIcon name="i-lucide-history" class="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-zinc-500" />
+          <select
+            class="h-9 w-full appearance-none truncate rounded-lg border border-zinc-300 bg-white py-1.5 pl-9 pr-8 text-sm text-zinc-800 transition hover:border-zinc-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+            :value="activeRun?.id"
+            @change="selectRun"
+          >
+            <option v-for="(run, index) in sortedRuns" :key="run.id" :value="run.id">{{ historyLabel(run, index) }}</option>
+          </select>
+          <UIcon name="i-lucide-chevron-down" class="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+        </span>
+      </label>
+    </div>
+
+    <div class="min-w-0" :class="props.embedded ? '' : 'p-4 sm:p-6'">
       <UAlert
         v-if="props.actionError"
         class="mx-auto mb-5 max-w-4xl"
@@ -679,7 +715,7 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
                 {{ activeRun?.appliedAt ? t.applied : t.apply }}
               </UButton>
               <UButton
-                v-if="!activeRun?.appliedAt"
+                v-if="!props.embedded && !activeRun?.appliedAt"
                 type="button"
                 color="neutral"
                 variant="ghost"
@@ -691,6 +727,7 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
                 {{ t.discardResult }}
               </UButton>
               <UButton
+                v-if="!props.embedded"
                 type="button"
                 color="neutral"
                 variant="ghost"
