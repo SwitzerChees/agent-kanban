@@ -6320,7 +6320,7 @@ const humanError = (error: unknown) => {
                       @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
                     >
-                      <div class="ak-row-label sticky top-14 flex min-h-14 w-full items-center gap-1 self-start">
+                      <div class="ak-row-label sticky top-18 flex min-h-14 w-full items-center gap-1 self-start">
                         <button
                           v-if="row.subtopic"
                           type="button"
