@@ -4011,6 +4011,19 @@ const hierarchyRowsFor = (oberthemaId: string) => [
   })),
 ];
 
+const topicBoardRowSpan = (oberthemaId: string) =>
+  1 + (collapsedOberthemaIds.value.includes(obertHemaId) ? 0 : hierarchyRowsFor(obertHemaId).length);
+const topicBoardRowStarts = computed(() => {
+  const starts: number[] = [];
+  if (!board.value) return starts;
+  let row = 2; // Row 1 is the sticky header row.
+  for (const topic of board.value.oberthemen) {
+    starts.push(row);
+    row += topicBoardRowSpan(topic.id);
+  }
+  return starts;
+});
+
 const columnIcon = (column: BoardColumn) => ({
   backlog: 'i-lucide-inbox',
   todo: 'i-lucide-list-todo',
@@ -6244,59 +6257,64 @@ const humanError = (error: unknown) => {
                 </div>
               </div>
 
-              <template v-for="topic in board.oberthemen" :key="topic.id">
+              <template v-for="(topic, topicIdx) in board.oberthemen" :key="topic.id">
                 <div
-                  :id="`topic-${topic.id}`"
                   :data-topic-id="topic.id"
                   :data-topic-order="board.oberthemen.findIndex((item) => item.id === topic.id)"
-                  class="ak-topic-band z-10 flex min-h-14 items-center gap-1 border-b border-r border-zinc-200 bg-zinc-100 px-2 py-1.5 transition md:sticky md:left-0 dark:border-zinc-800 dark:bg-zinc-900"
-                  :style="{ '--topic-accent': topicAccent(topic) }"
-                  :class="[
-                    selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
-                    hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
-                    draggedOberthemaId === topic.id ? 'opacity-45' : '',
-                  ]"
-                  @dragover.prevent="markHierarchyDropTarget($event, `oberthema:${topic.id}`)"
-                  @dragenter.prevent="markHierarchyDropTarget($event, `oberthema:${topic.id}`)"
-                  @drop.prevent.stop="dropOnOberthema($event, topic.id)"
+                  :style="{ '--topic-accent': topicAccent(topic), gridRow: `${topicBoardRowStarts[topicIdx]} / span ${topicBoardRowSpan(topic.id)}` }"
+                  class="ak-topic-band pointer-events-none z-[15] flex min-h-14 items-start border-r border-zinc-200 transition md:sticky md:left-0 dark:border-zinc-800"
+                  :class="draggedOberthemaId === topic.id ? 'opacity-45' : ''"
                 >
-                  <button
-                    type="button"
-                    draggable="true"
-                    :data-keyboard-reorder="`oberthema:${topic.id}`"
-                    data-keytip-action="focus"
-                    class="ak-hierarchy-drag-handle grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-zinc-400 hover:bg-white hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                    :aria-label="`${t.moveOberthema}: ${topic.name}`"
-                    aria-keyshortcuts="ArrowUp ArrowDown"
-                    :title="t.hierarchyReorderHint"
-                    @click.stop.prevent
-                    @keydown.up.stop.prevent="moveOberthemaByKeyboard(topic.id, -1)"
-                    @keydown.down.stop.prevent="moveOberthemaByKeyboard(topic.id, 1)"
-                    @dragstart.stop="startOberthemaDrag($event, topic.id)"
-                    @dragend.stop="clearHierarchyDragState"
+                  <div
+                    :id="`topic-${topic.id}`"
+                    class="ak-band-label pointer-events-auto sticky top-18 flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+                    :class="[
+                      selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
+                      hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
+                    ]"
+                    @dragover.prevent="markHierarchyDropTarget($event, `oberthema:${topic.id}`)"
+                    @dragenter.prevent="markHierarchyDropTarget($event, `oberthema:${topic.id}`)"
+                    @drop.prevent.stop="dropOnOberthema($event, topic.id)"
                   >
-                    <UIcon name="i-lucide-grip-vertical" class="size-4" />
-                  </button>
-                  <button
-                    type="button"
-                    class="grid size-7 shrink-0 place-items-center rounded-lg hover:bg-white dark:hover:bg-zinc-800"
-                    :aria-label="collapsedOberthemaIds.includes(topic.id) ? t.expandTopic : t.collapseTopic"
-                    :aria-expanded="!collapsedOberthemaIds.includes(topic.id)"
-                    @click="toggleOberthemaExpanded(topic.id)"
-                  >
-                    <UIcon :name="collapsedOberthemaIds.includes(topic.id) ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-4" />
-                  </button>
-                  <span class="size-2.5 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
-                  <button type="button" class="min-w-0 flex-1 text-left" @click="selectOberthema(topic.id)">
-                    <span class="block truncate text-sm font-semibold">{{ topic.name }}</span>
-                    <span class="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ taskCountForOberthema(topic.id) }} {{ t.tasks }}</span>
-                  </button>
-                  <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editOberthema" @click.stop="openOberthemaModal(topic)" />
-                  <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newUnterthema" @click.stop="openUnterthemaModal(topic.id)" />
+                    <button
+                      type="button"
+                      draggable="true"
+                      :data-keyboard-reorder="`oberthema:${topic.id}`"
+                      data-keytip-action="focus"
+                      class="ak-hierarchy-drag-handle grid size-6 shrink-0 cursor-grab place-items-center rounded-md text-zinc-400 hover:bg-white hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                      :aria-label="`${t.moveOberthema}: ${topic.name}`"
+                      aria-keyshortcuts="ArrowUp ArrowDown"
+                      :title="t.hierarchyReorderHint"
+                      @click.stop.prevent
+                      @keydown.up.stop.prevent="moveOberthemaByKeyboard(topic.id, -1)"
+                      @keydown.down.stop.prevent="moveOberthemaByKeyboard(topic.id, 1)"
+                      @dragstart.stop="startOberthemaDrag($event, topic.id)"
+                      @dragend.stop="clearHierarchyDragState"
+                    >
+                      <UIcon name="i-lucide-grip-vertical" class="size-4" />
+                    </button>
+                    <button
+                      type="button"
+                      class="grid size-7 shrink-0 place-items-center rounded-lg hover:bg-white dark:hover:bg-zinc-800"
+                      :aria-label="collapsedOberthemaIds.includes(topic.id) ? t.expandTopic : t.collapseTopic"
+                      :aria-expanded="!collapsedOberthemaIds.includes(topic.id)"
+                      @click="toggleOberthemaExpanded(topic.id)"
+                    >
+                      <UIcon :name="collapsedOberthemaIds.includes(topic.id) ? 'i-lucide-chevron-right' : 'i-lucide-chevron-down'" class="size-4" />
+                    </button>
+                    <span class="size-2.5 shrink-0 rounded-full" :style="{ backgroundColor: topicAccent(topic) }" />
+                    <button type="button" class="min-w-0 flex-1 text-left" @click="selectOberthema(topic.id)">
+                      <span class="block truncate text-sm font-semibold">{{ topic.name }}</span>
+                      <span class="mt-0.5 block truncate text-[11px] text-zinc-500 dark:text-zinc-400">{{ taskCountForOberthema(topic.id) }} {{ t.tasks }}</span>
+                    </button>
+                    <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-pencil" :aria-label="t.editOberthema" @click.stop="openOberthemaModal(topic)" />
+                    <UButton size="xs" color="neutral" variant="ghost" icon="i-lucide-plus" :aria-label="t.newUnterthema" @click.stop="openUnterthemaModal(topic.id)" />
+                  </div>
                 </div>
                 <div
-                  v-for="column in board.columns"
+                  v-for="(column, colIdx) in board.columns"
                   :key="`${topic.id}-summary-${column.id}`"
+                  :style="{ gridRow: topicBoardRowStarts[topicIdx], gridColumn: colIdx + 2 }"
                   class="ak-topic-summary-cell flex min-h-14 items-center justify-end border-b border-r border-zinc-200 bg-zinc-100 px-3 last:border-r-0 dark:border-zinc-800 dark:bg-zinc-900"
                 >
                   <span class="sr-only">{{ columnName(column) }}</span>
@@ -6306,21 +6324,23 @@ const humanError = (error: unknown) => {
                 </div>
 
                 <template v-if="!collapsedOberthemaIds.includes(topic.id)">
-                  <template v-for="row in hierarchyRowsFor(topic.id)" :key="row.key">
+                  <template v-for="(row, rowIdx) in hierarchyRowsFor(topic.id)" :key="row.key">
                     <div
                       :id="row.subtopic ? `subtopic-${row.subtopic.id}` : undefined"
                       :data-subtopic-id="row.subtopic?.id"
+                      :style="{ gridRow: topicBoardRowStarts[topicIdx] + 1 + rowIdx, gridColumn: 1 }"
                       class="z-10 flex min-h-18 items-start border-b border-r border-zinc-200 bg-white px-2 py-2 transition md:sticky md:left-0 dark:border-zinc-800 dark:bg-zinc-950"
                       :class="[
                         row.subtopic && selectedUnterthemaId === row.subtopic.id ? 'ring-2 ring-inset ring-teal-500/40' : '',
                         row.subtopic && hierarchyDragOverId === `unterthema:${row.subtopic.id}` ? 'ak-hierarchy-drop-target' : '',
                         row.subtopic && draggedUnterthemaId === row.subtopic.id ? 'opacity-45' : '',
+                        draggedOberthemaId === topic.id ? 'opacity-45' : '',
                       ]"
                       @dragover.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
                     >
-                      <div class="ak-row-label sticky top-18 flex min-h-14 w-full items-center gap-1 self-start">
+                      <div class="ak-row-label sticky top-36 flex min-h-14 w-full items-center gap-1 self-start">
                         <button
                           v-if="row.subtopic"
                           type="button"
@@ -6366,8 +6386,9 @@ const humanError = (error: unknown) => {
                     </div>
 
                     <div
-                      v-for="column in board.columns"
+                      v-for="(column, colIdx) in board.columns"
                       :key="`${row.key}-${column.id}`"
+                      :style="{ gridRow: topicBoardRowStarts[topicIdx] + 1 + rowIdx, gridColumn: colIdx + 2 }"
                       :data-drop-column-id="column.id"
                       :data-drop-column-key="column.key"
                       :data-drop-oberthema-id="topic.id"
