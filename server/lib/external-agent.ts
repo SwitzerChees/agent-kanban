@@ -159,17 +159,27 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       autonomous: false,
+      allowEmptyResponse: true,
+      disableTools: repair,
       turnNumber: attempt,
       onEvent: options.onEvent ?? (() => {}),
-      // Prime's daemon can keep a completed, auto-compacted session registered
-      // for several seconds while its worker shuts down. A structured-output
-      // repair does not need repository history, so start it in a fresh session
-      // and include the invalid response in the repair prompt instead of racing
-      // the daemon's session cleanup.
-      nativeSessionId: externalRefinementSessionId(options.harness, repair, nativeSessionId),
+      // Malformed output is repaired in a fresh Prime session with the invalid
+      // response embedded in its prompt. An empty response after compaction is
+      // different: resume that session after its daemon worker has shut down so
+      // Prime can answer from the compacted repository context.
+      nativeSessionId: externalRefinementSessionId(options.harness, repair, previousResponse, nativeSessionId),
       sessionRoot: options.sessionRoot,
     });
     nativeSessionId = result.sessionId ?? nativeSessionId;
+    if (!result.text.trim()) {
+      lastError = new Error(`${options.harness}_empty_response`);
+      previousResponse = null;
+      if (repair) break;
+      if (options.harness === 'prime-agent' && nativeSessionId) {
+        await abortableDelay(6_500, options.signal);
+      }
+      continue;
+    }
     try {
       const parsed = parseJsonObject(result.text);
       const output = options.validateOutput ? options.validateOutput(parsed) : parsed;
@@ -189,9 +199,10 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
 export function externalRefinementSessionId(
   harness: ExternalHarness,
   repair: boolean,
+  previousResponse: string | null,
   nativeSessionId: string | null,
 ) {
-  return repair && harness === 'prime-agent' ? null : nativeSessionId;
+  return repair && previousResponse !== null && harness === 'prime-agent' ? null : nativeSessionId;
 }
 
 export function buildExternalRefinementPrompt(
@@ -201,7 +212,9 @@ export function buildExternalRefinementPrompt(
 ) {
   return [
     repair
-      ? 'Your previous response did not match the required structure. Correct it now without doing more repository inspection.'
+      ? previousResponse === null
+        ? 'Your previous turn completed automatic compaction before producing a final response. Continue from the compacted context now. Do not inspect the repository further or call tools; return the required final structured result immediately.'
+        : 'Your previous response did not match the required structure. Correct it now without doing more repository inspection.'
       : options.prompt,
     ...(repair && previousResponse
       ? ['', 'Previous response to correct:', previousResponse]
@@ -228,6 +241,8 @@ export interface RunExternalProcessOptions {
   signal: AbortSignal;
   timeoutMs: number;
   autonomous: boolean;
+  allowEmptyResponse?: boolean;
+  disableTools?: boolean;
   turnNumber: number;
   onEvent: (event: CodexRuntimeEvent) => void;
   nativeSessionId?: string | null;
@@ -323,7 +338,10 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
       const detail = stderrTail.trim().slice(-2_000);
       throw new Error(`${options.harness}_exit_${exit.code ?? exit.signal ?? 'unknown'}${detail ? `: ${detail}` : ''}`);
     }
-    if (!text.trim()) throw new Error(`${options.harness}_empty_response`);
+    if (!text.trim()) {
+      if (options.allowEmptyResponse) return { text: '', sessionId };
+      throw new Error(`${options.harness}_empty_response`);
+    }
 
     options.onEvent({
       event: 'item/completed',
@@ -360,6 +378,7 @@ export function buildExternalArgs(options: RunExternalProcessOptions) {
     '--provider', QWEN_MODEL_PROVIDER,
     '--model', QWEN_MODEL_ID,
     '--thinking', options.reasoningEffort,
+    ...(options.disableTools ? ['--no-tools'] : []),
     ...(!options.autonomous ? ['--extension', PRIME_REFINEMENT_TOOL_BUDGET_EXTENSION] : []),
     ...(options.sessionRoot ? ['--session-dir', path.join(options.sessionRoot, 'prime-sessions')] : ['--no-session']),
     ...(options.nativeSessionId ? ['--resume', options.nativeSessionId] : []),
@@ -489,6 +508,21 @@ function continuationPrompt(issue: Issue, turnNumber: number, maxTurns: number) 
 
 function assertNotAborted(signal: AbortSignal) {
   if (signal.aborted) throw new Error('turn_cancelled');
+}
+
+function abortableDelay(ms: number, signal: AbortSignal) {
+  assertNotAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('turn_cancelled'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

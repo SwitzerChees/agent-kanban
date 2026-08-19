@@ -123,6 +123,8 @@ describe('agent harness runtime contracts', () => {
       '--resume', 'refinement-session-1',
     ]));
     expect(primeArgs).not.toContain('--no-session');
+    expect(buildExternalArgs({ ...common, harness: 'prime-agent', disableTools: true }))
+      .toContain('--no-tools');
 
     const repair = buildExternalRefinementPrompt({
       harness: 'opencode',
@@ -136,10 +138,21 @@ describe('agent harness runtime contracts', () => {
     expect(repair).not.toContain('Original prompt');
   });
 
-  test('starts only Prime structured-output repair in a fresh session', () => {
-    expect(externalRefinementSessionId('prime-agent', true, 'prime-session')).toBeNull();
-    expect(externalRefinementSessionId('prime-agent', false, 'prime-session')).toBe('prime-session');
-    expect(externalRefinementSessionId('opencode', true, 'opencode-session')).toBe('opencode-session');
+  test('resumes compacted Prime refinements but isolates malformed-output repairs', () => {
+    expect(externalRefinementSessionId('prime-agent', true, '{"invalid":true}', 'prime-session')).toBeNull();
+    expect(externalRefinementSessionId('prime-agent', true, null, 'prime-session')).toBe('prime-session');
+    expect(externalRefinementSessionId('prime-agent', false, null, 'prime-session')).toBe('prime-session');
+    expect(externalRefinementSessionId('opencode', true, '{"invalid":true}', 'opencode-session'))
+      .toBe('opencode-session');
+
+    const continuation = buildExternalRefinementPrompt({
+      harness: 'prime-agent',
+      prompt: 'Original prompt',
+      outputSchema: { type: 'object', required: ['status'] },
+    }, true, null);
+    expect(continuation).toContain('completed automatic compaction');
+    expect(continuation).toContain('Do not inspect the repository further or call tools');
+    expect(continuation).not.toContain('Original prompt');
   });
 
   test('does not duplicate streamed Prime output when message_end restores leading whitespace', () => {
