@@ -113,7 +113,7 @@ button:focus-visible,
   background: rgb(82 82 91);
 }
 
-.ak-topic-band::before {
+.ak-band-label::before {
   position: absolute;
   inset-block: 0.75rem;
   left: 0;

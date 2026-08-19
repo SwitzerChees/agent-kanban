@@ -6261,7 +6261,7 @@ const humanError = (error: unknown) => {
                 <div
                   :data-topic-id="topic.id"
                   :data-topic-order="board.oberthemen.findIndex((item) => item.id === topic.id)"
-                  :style="{ '--topic-accent': topicAccent(topic), gridRow: `${topicBoardRowStarts[topicIdx]} / span ${topicBoardRowSpan(topic.id)}` }"
+                  :style="{ '--topic-accent': topicAccent(topic), gridRow: `${topicBoardRowStarts[topicIdx]} / span ${topicBoardRowSpan(topic.id)}`, gridColumn: 1 }"
                   class="ak-topic-band pointer-events-none z-[15] flex min-h-14 items-start border-r border-zinc-200 transition md:sticky md:left-0 dark:border-zinc-800"
                   :class="draggedOberthemaId === topic.id ? 'opacity-45' : ''"
                 >
