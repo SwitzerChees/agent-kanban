@@ -6229,13 +6229,13 @@ const humanError = (error: unknown) => {
 
           <div v-if="board.oberthemen.length" class="ak-board-viewport min-h-0 flex-1 overflow-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div
-              class="grid"
+              class="ak-board-grid grid"
               :style="{
                 gridTemplateColumns: `248px repeat(${board.columns.length}, minmax(214px, 1fr))`,
                 minWidth: `${248 + board.columns.length * 214}px`,
               }"
             >
-              <div class="sticky top-0 z-30 flex min-h-14 items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur md:left-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
+              <div class="ak-board-header-cell sticky top-0 z-30 flex items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur md:left-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
                 <UIcon name="i-lucide-git-branch" class="size-4 text-teal-600 dark:text-teal-300" />
                 <p class="text-sm font-semibold">{{ t.hierarchy }}</p>
               </div>
@@ -6244,7 +6244,7 @@ const humanError = (error: unknown) => {
                 :key="`header-${column.id}`"
                 :data-column-id="column.id"
                 :data-column-key="column.key"
-                class="sticky top-0 z-20 min-h-14 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
+                class="ak-board-header-cell sticky top-0 z-20 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
               >
                 <div class="flex items-center justify-between gap-3">
                   <div class="min-w-0">
@@ -6268,7 +6268,7 @@ const humanError = (error: unknown) => {
                 >
                   <div
                     :id="`topic-${topic.id}`"
-                    class="ak-band-label pointer-events-auto sticky top-18 flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+                    class="ak-band-label pointer-events-auto sticky flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
                     :class="[
                       selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
                       hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
@@ -6341,7 +6341,7 @@ const humanError = (error: unknown) => {
                       @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
                     >
-                      <div class="ak-row-label sticky top-36 flex min-h-14 w-full items-center gap-1 self-start">
+                      <div class="ak-row-label sticky flex min-h-14 w-full items-center gap-1 self-start">
                         <button
                           v-if="row.subtopic"
                           type="button"
