@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
+import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
@@ -1185,6 +1186,8 @@ const taskForm = reactive({
   tags: [] as string[],
 });
 const taskFiles = ref<PendingTaskFile[]>([]);
+const taskFileCompressionJobs = new Map<string, Promise<File>>();
+const taskFileSupersededUrls = new Map<string, string[]>();
 const taskModalBaseline = ref('');
 const taskDetailsBaseline = ref('');
 const refinementDraftDirty = ref(false);
@@ -3723,15 +3726,35 @@ const addTaskFiles = (files: File[]) => {
   const purpose: PendingTaskFile['purpose'] = selectedTaskId.value && activeTaskTab.value === 'activity'
     ? canRequestFollowUp.value ? 'follow-up' : 'guidance'
     : 'task';
-  const items: PendingTaskFile[] = files.map((file) => ({
-    id: fileId(),
-    file,
-    url: URL.createObjectURL(file),
-    purpose,
-    annotation: { version: 1, strokes: [] },
-    annotatedUrl: null,
-    renderedFile: null,
-  }));
+  const items: PendingTaskFile[] = files.map((file) => {
+    const id = fileId();
+    const item: PendingTaskFile = {
+      id,
+      file,
+      url: URL.createObjectURL(file),
+      purpose,
+      annotation: { version: 1, strokes: [] },
+      annotatedUrl: null,
+      renderedFile: null,
+    };
+    const compressionJob = compressImageForUpload(file).then((compressedFile) => {
+      const current = taskFiles.value.find((entry) => entry.id === id);
+      if (!current || compressedFile === file) return current?.file ?? file;
+      const optimizedName = compressedImageFileName(current.file.name);
+      const optimizedFile = compressedFile.name === optimizedName
+        ? compressedFile
+        : new File([compressedFile], optimizedName, {
+            type: compressedFile.type,
+            lastModified: current.file.lastModified,
+          });
+      taskFileSupersededUrls.set(id, [...(taskFileSupersededUrls.get(id) ?? []), current.url]);
+      const updated = { ...current, file: optimizedFile, url: URL.createObjectURL(optimizedFile) };
+      taskFiles.value = taskFiles.value.map((entry) => entry.id === id ? updated : entry);
+      return optimizedFile;
+    });
+    taskFileCompressionJobs.set(id, compressionJob);
+    return item;
+  });
   taskFiles.value = [...taskFiles.value, ...items];
 };
 
@@ -3740,7 +3763,12 @@ function clearTaskFiles() {
     URL.revokeObjectURL(item.url);
     if (item.annotatedUrl) URL.revokeObjectURL(item.annotatedUrl);
   }
+  for (const urls of taskFileSupersededUrls.values()) {
+    for (const url of urls) URL.revokeObjectURL(url);
+  }
   taskFiles.value = [];
+  taskFileCompressionJobs.clear();
+  taskFileSupersededUrls.clear();
   selectedAnnotationPendingFile.value = null;
 }
 
@@ -3749,6 +3777,9 @@ const removePendingTaskFiles = (items: Array<Pick<PendingTaskFile, 'id'>>) => {
   if (!ids.size) return;
   for (const pendingFile of taskFiles.value) {
     if (!ids.has(pendingFile.id)) continue;
+    taskFileCompressionJobs.delete(pendingFile.id);
+    for (const url of taskFileSupersededUrls.get(pendingFile.id) ?? []) URL.revokeObjectURL(url);
+    taskFileSupersededUrls.delete(pendingFile.id);
     URL.revokeObjectURL(pendingFile.url);
     if (pendingFile.annotatedUrl) URL.revokeObjectURL(pendingFile.annotatedUrl);
   }
@@ -3782,7 +3813,15 @@ const appendTaskFiles = async (form: FormData, files: PendingTaskFile[]) => {
   }> = [];
 
   for (const [index, item] of files.entries()) {
-    form.append('files', item.file);
+    const compressedFile = await (taskFileCompressionJobs.get(item.id) ?? Promise.resolve(item.file));
+    const currentName = taskFiles.value.find((entry) => entry.id === item.id)?.file.name ?? item.file.name;
+    const uploadFile = compressedFile.name === currentName
+      ? compressedFile
+      : new File([compressedFile], currentName, {
+          type: compressedFile.type,
+          lastModified: item.file.lastModified,
+        });
+    form.append('files', uploadFile);
     if (!item.renderedFile) continue;
     annotations.push({
       index,

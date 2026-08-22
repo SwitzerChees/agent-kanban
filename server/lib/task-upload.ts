@@ -6,6 +6,7 @@ import {
   decodeRenderedAnnotationImage,
   renderedAnnotationImageSchema,
 } from './attachment-annotation';
+import { maxTaskUploadBytes } from './upload-limits';
 
 const annotationSchema = z.array(z.object({
   index: z.number().int().nonnegative(),
@@ -15,7 +16,7 @@ const annotationSchema = z.array(z.object({
 
 export const MAX_UPLOAD_FILES = 20;
 
-export function parseTaskUploadParts(parts: MultiPartData[] | undefined) {
+export function parseTaskUploadParts(parts: MultiPartData[] | undefined, maxFileBytes = maxTaskUploadBytes()) {
   const fields = new Map<string, string>();
   const files: UploadedTaskFile[] = [];
 
@@ -34,6 +35,9 @@ export function parseTaskUploadParts(parts: MultiPartData[] | undefined) {
 
   if (files.length > MAX_UPLOAD_FILES) {
     throw createError({ statusCode: 400, statusMessage: 'too_many_files' });
+  }
+  if (files.reduce((total, file) => total + file.data.byteLength, 0) > maxFileBytes) {
+    throw createError({ statusCode: 413, statusMessage: 'upload_too_large' });
   }
 
   const rawAnnotations = fields.get('annotations');

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireUser } from '../../../lib/security/auth';
 import { createTask } from '../../../lib/kanban';
 import { parseTaskUploadParts } from '../../../lib/task-upload';
+import { assertTaskUploadContentLength } from '../../../lib/upload-limits';
 
 const jsonTaskSchema = z.object({
   title: z.string().min(1),
@@ -26,6 +27,7 @@ export default defineEventHandler(async (event) => {
   const contentType = getHeader(event, 'content-type') ?? '';
 
   if (contentType.includes('multipart/form-data')) {
+    assertTaskUploadContentLength(Number(getHeader(event, 'content-length') ?? 0));
     const parts = await readMultipartFormData(event);
     const { fields, files } = parseTaskUploadParts(parts);
     const taskInput = jsonTaskSchema.parse({
