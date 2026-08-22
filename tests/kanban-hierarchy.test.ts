@@ -520,6 +520,15 @@ describe('project topic hierarchy', () => {
     const adminIndex = kanban.getCommandPaletteIndex(admin);
     expect(adminIndex.tasks.map((task) => task.id)).toEqual(expect.arrayContaining([visibleTask!.id, hiddenTask!.id]));
     expect(adminIndex.topics.some((topic) => topic.projectId === secondProject.id)).toBe(true);
+
+    const scopedAdminIndex = kanban.getCommandPaletteIndex(admin, firstProject.id);
+    expect(scopedAdminIndex.tasks.map((task) => task.id)).toContain(visibleTask!.id);
+    expect(scopedAdminIndex.tasks.map((task) => task.id)).not.toContain(hiddenTask!.id);
+    expect(scopedAdminIndex.tasks.every((task) => task.projectId === firstProject.id)).toBe(true);
+    expect(scopedAdminIndex.topics.every((topic) => topic.projectId === firstProject.id)).toBe(true);
+
+    const inaccessibleScope = kanban.getCommandPaletteIndex(member, secondProject.id);
+    expect(inaccessibleScope).toEqual({ tasks: [], topics: [] });
   });
 });
 

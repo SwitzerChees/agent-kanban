@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
+import { commandPaletteTaskBuckets } from '~/utils/command-palette';
 import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 
 type Locale = 'en' | 'de';
@@ -420,6 +421,8 @@ const dictionary = {
     commandGroupActions: 'Quick actions',
     commandGroupRecentTasks: 'Recently updated tasks',
     commandGroupTasks: 'Tasks',
+    commandGroupCompletedTasks: 'Completed tasks',
+    commandCompleted: 'Done',
     commandGroupProjects: 'Projects',
     commandGroupTopics: 'Topics',
     commandGroupFilters: 'Filters',
@@ -752,6 +755,8 @@ const dictionary = {
     commandGroupActions: 'Schnellaktionen',
     commandGroupRecentTasks: 'Zuletzt aktualisierte Aufgaben',
     commandGroupTasks: 'Aufgaben',
+    commandGroupCompletedTasks: 'Erledigte Aufgaben',
+    commandCompleted: 'Erledigt',
     commandGroupProjects: 'Projekte',
     commandGroupTopics: 'Themen',
     commandGroupFilters: 'Filter',
@@ -4865,7 +4870,9 @@ const loadCommandPaletteIndex = async () => {
   commandPaletteLoading.value = true;
   commandPaletteError.value = false;
   try {
-    const response = await $fetch<CommandPaletteIndex>('/api/command-palette');
+    const response = await $fetch<CommandPaletteIndex>('/api/command-palette', {
+      query: selectedProjectId.value ? { projectId: selectedProjectId.value } : undefined,
+    });
     if (requestId === commandPaletteRequestId) commandPaletteIndex.value = response;
   } catch {
     if (requestId === commandPaletteRequestId) commandPaletteError.value = true;
@@ -4994,9 +5001,11 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
   id: `task:${task.id}`,
   prefix: task.key,
   label: task.title,
-  suffix: task.projectKey,
+  suffix: task.columnDone ? t.value.commandCompleted : task.projectKey,
   description: commandTaskDescription(task),
-  icon: task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round',
+  icon: task.columnDone
+    ? 'i-lucide-circle-check-big'
+    : task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round',
   keywords: [
     task.key,
     task.projectKey,
@@ -5006,6 +5015,7 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
     commandTaskColumnLabel(task),
     task.assigneeName,
     task.assigneeEmail,
+    task.columnDone ? `${t.value.commandCompleted} ${t.value.completedTasks}` : null,
     task.agentEnabled ? `${t.value.aiTask} AI agent Codex` : t.value.humanTask,
     ...task.tags,
   ].filter(Boolean).join(' '),
@@ -5099,14 +5109,23 @@ const commandPaletteGroups = computed<CommandPaletteGroup<AppCommandPaletteItem>
     });
   }
 
-  const indexedTasks = query
-    ? commandPaletteIndex.value.tasks
-    : commandPaletteIndex.value.tasks.slice(0, 6);
-  if (indexedTasks.length) {
+  const { active: indexedActiveTasks, completed: indexedCompletedTasks } = commandPaletteTaskBuckets(
+    commandPaletteIndex.value.tasks,
+    Boolean(query),
+  );
+  if (indexedActiveTasks.length) {
     groups.push({
       id: 'tasks',
       label: query ? t.value.commandGroupTasks : t.value.commandGroupRecentTasks,
-      items: indexedTasks.map(commandTaskItem),
+      items: indexedActiveTasks.map(commandTaskItem),
+      highlightedIcon: 'i-lucide-corner-down-left',
+    });
+  }
+  if (indexedCompletedTasks.length) {
+    groups.push({
+      id: 'completed-tasks',
+      label: t.value.commandGroupCompletedTasks,
+      items: indexedCompletedTasks.map(commandTaskItem),
       highlightedIcon: 'i-lucide-corner-down-left',
     });
   }
