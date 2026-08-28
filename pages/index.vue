@@ -6,6 +6,7 @@ type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
 type TaskTab = 'activity' | 'task' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
+type TaskDescriptionView = TaskDescriptionSource | 'visual';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
 type ReasoningEffort = 'low' | 'medium' | 'xhigh';
 
@@ -1103,7 +1104,11 @@ const commentMentionActiveIndex = ref(0);
 const commentComposerEl = ref<HTMLElement | null>(null);
 const followUpMessage = ref('');
 const activeTaskTab = ref<TaskTab>('activity');
-const taskDescriptionView = ref<TaskDescriptionSource>('original');
+const taskDescriptionView = ref<TaskDescriptionView>('original');
+const visualRefinementOpen = ref(false);
+const visualRefinementSessionCreated = ref(false);
+const visualRefinementResume = ref(false);
+const visualImplementationTaskIds = ref<string[]>([]);
 const tagDropdownOpen = ref(false);
 const boardFilterPopoverOpen = ref(false);
 const boardSearchQuery = ref('');
@@ -1148,7 +1153,6 @@ let annotationResizeObserver: ResizeObserver | null = null;
 let annotationResizeFrame: number | null = null;
 const DONE_RETENTION_MS = 30 * 60 * 1000;
 const UNASSIGNED_ID = '__unassigned__';
-const descriptionSources: TaskDescriptionSource[] = ['original', 'refined'];
 
 const loginForm = reactive({ email: '', password: '' });
 const apiTokenForm = reactive({ name: '', expiry: '90' as '30' | '90' | '365' | 'never' });
@@ -1294,6 +1298,9 @@ function closeTaskModalImmediately() {
   deleteAttachmentModalOpen.value = false;
   selectedAttachmentForDeletion.value = null;
   tagDropdownOpen.value = false;
+  visualRefinementOpen.value = false;
+  visualRefinementSessionCreated.value = false;
+  visualRefinementResume.value = false;
   taskModalOpen.value = false;
   taskCreateRequestId.value = '';
   closeTaskEventStream();
@@ -1786,20 +1793,35 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
 })));
 const selectedRefinementPanelRun = computed(() => refinementPanelRuns.value.find((run) => run.id === selectedTaskRefinement.value?.id) ?? null);
 const selectedTaskHasRefinement = computed(() => Boolean(selectedTaskDetail.value?.task.refinedDescription?.trim()));
-const selectedTaskHasRefinementWorkspace = computed(() => taskDescriptionView.value === 'refined' || taskRefinements.value.length > 0);
+const selectedTaskHasRefinementWorkspace = computed(() => taskDescriptionView.value === 'refined' || taskRefinements.value.length > 0 || selectedTaskHasRefinement.value);
+const selectedTaskHasVisualImplementation = computed(() => Boolean(selectedTaskId.value && visualImplementationTaskIds.value.includes(selectedTaskId.value)));
+const selectedTaskHasDescriptionWorkspace = computed(() => selectedTaskHasRefinementWorkspace.value || selectedTaskHasVisualImplementation.value);
+const descriptionSources = computed<TaskDescriptionView[]>(() => [
+  'original',
+  ...(selectedTaskHasRefinementWorkspace.value ? ['refined' as const] : []),
+  ...(selectedTaskHasVisualImplementation.value ? ['visual' as const] : []),
+]);
 const latestCompletedTaskRefinement = computed(() => taskRefinements.value.find((run) => run.status === 'completed') ?? null);
 const selectedTaskDescriptionSource = computed<TaskDescriptionSource>(() => selectedTaskDetail.value?.task.descriptionSource ?? 'original');
-const selectedTaskVisibleDescription = computed(() => taskDescriptionView.value === 'refined'
-  ? selectedTaskDetail.value?.task.refinedDescription ?? ''
-  : taskForm.description);
-const selectedTaskDescriptionViewIsActive = computed(() => taskDescriptionView.value === selectedTaskDescriptionSource.value);
+const selectedTaskVisibleDescription = computed(() => taskDescriptionView.value === 'visual'
+  ? ''
+  : taskDescriptionView.value === 'refined'
+    ? selectedTaskDetail.value?.task.refinedDescription ?? ''
+    : taskForm.description);
+const selectedTaskDescriptionViewIsActive = computed(() => taskDescriptionView.value !== 'visual' && taskDescriptionView.value === selectedTaskDescriptionSource.value);
 const selectedTaskDescriptionLabel = computed(() => {
-  if (!selectedTaskHasRefinementWorkspace.value) return t.value.description;
+  if (!selectedTaskHasDescriptionWorkspace.value) return t.value.description;
+  if (taskDescriptionView.value === 'visual') return locale.value === 'de' ? 'Visuelle Umsetzung' : 'Visual implementation';
   return taskDescriptionView.value === 'refined' ? t.value.refinedDescription : t.value.originalDescription;
 });
-const selectedTaskDescriptionHint = computed(() => taskDescriptionView.value === 'refined'
-  ? t.value.refinedDescriptionHint
-  : t.value.originalDescriptionHint);
+const selectedTaskDescriptionHint = computed(() => {
+  if (taskDescriptionView.value === 'visual') {
+    return locale.value === 'de'
+      ? 'Freigegebene UI-Richtung, Screens und Umsetzungshinweise.'
+      : 'Approved UI direction, screens, and implementation notes.';
+  }
+  return taskDescriptionView.value === 'refined' ? t.value.refinedDescriptionHint : t.value.originalDescriptionHint;
+});
 const selectedTaskActiveDescription = computed(() => selectedTaskDescriptionSource.value === 'refined'
   ? selectedTaskDetail.value?.task.refinedDescription ?? ''
   : taskForm.description);
@@ -1816,7 +1838,7 @@ function cancelRefinementOverwrite() {
 }
 const taskTabs = computed(() => [
   { key: 'task' as const, label: t.value.taskTab, icon: 'i-lucide-file-text' },
-  ...(selectedTaskId.value
+  ...(selectedTaskId.value && visualRefinementOpen.value
     ? [{ key: 'visual' as const, label: t.value.visualRefinementTab, icon: 'i-lucide-panels-top-left' }]
     : []),
   ...(selectedTaskId.value && (editingTask.value?.agentEnabled || hasAgentActivity.value)
@@ -1847,8 +1869,44 @@ const latestAgentUpdate = computed(() => latestAgentTimelineUpdate(selectedTaskD
 const waitingAgentRun = computed(() => selectedTaskDetail.value?.agentRun?.status === 'waiting_external'
   ? selectedTaskDetail.value.agentRun
   : null);
-const taskAttachments = computed(() => editingTask.value?.attachments ?? []);
-const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? []).filter(isImageAttachment));
+const prototypeVisualAttachments: Attachment[] = [
+  {
+    id: 'prototype-visual-task-entry',
+    fileName: 'visueller-entwurf-einstieg-v2.png',
+    extension: '.png',
+    mimeType: 'image/png',
+    size: 176240,
+    url: '/prototypes/visual-refinement-start.png',
+    annotatedUrl: null,
+    annotation: null,
+  },
+  {
+    id: 'prototype-visual-review',
+    fileName: 'visueller-entwurf-review-v2.png',
+    extension: '.png',
+    mimeType: 'image/png',
+    size: 158420,
+    url: '/prototypes/visual-refinement-current.png',
+    annotatedUrl: null,
+    annotation: null,
+  },
+  {
+    id: 'prototype-visual-mobile',
+    fileName: 'visueller-entwurf-mobile-v2.png',
+    extension: '.png',
+    mimeType: 'image/png',
+    size: 93480,
+    url: '/prototypes/visual-refinement-mobile.png',
+    annotatedUrl: null,
+    annotation: null,
+  },
+];
+const isPrototypeVisualAttachment = (attachment: Attachment) => attachment.id.startsWith('prototype-visual-');
+const taskAttachments = computed(() => [
+  ...(editingTask.value?.attachments ?? []),
+  ...(selectedTaskHasVisualImplementation.value ? prototypeVisualAttachments : []),
+]);
+const taskImageAttachments = computed(() => taskAttachments.value.filter(isImageAttachment));
 const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
 const selectedAnnotationImageUrl = computed(() => selectedAnnotationAttachment.value?.url ?? selectedAnnotationPendingFile.value?.url ?? '');
 const columnItems = computed(() => board.value?.columns.map((column) => ({
@@ -2469,6 +2527,28 @@ function openTaskRefinementTab() {
 
 function openTaskVisualRefinementTab() {
   errorMessage.value = null;
+  visualRefinementResume.value = false;
+  visualRefinementSessionCreated.value = true;
+  visualRefinementOpen.value = true;
+  activeTaskTab.value = 'visual';
+}
+
+function applyTaskVisualRefinement() {
+  const taskId = selectedTaskId.value;
+  if (!taskId) return;
+  if (!visualImplementationTaskIds.value.includes(taskId)) {
+    visualImplementationTaskIds.value = [...visualImplementationTaskIds.value, taskId];
+  }
+  visualRefinementOpen.value = false;
+  visualRefinementResume.value = false;
+  activeTaskTab.value = 'task';
+  taskDescriptionView.value = 'visual';
+}
+
+function resumeTaskVisualRefinement() {
+  visualRefinementResume.value = true;
+  visualRefinementSessionCreated.value = true;
+  visualRefinementOpen.value = true;
   activeTaskTab.value = 'visual';
 }
 
@@ -2713,8 +2793,9 @@ function syncTaskFormFromDetail(detailTask: Task, resetDescriptionView = false) 
   }
 }
 
-async function activateTaskDescription(source: TaskDescriptionSource) {
+async function activateTaskDescription(source: TaskDescriptionView) {
   const taskId = selectedTaskId.value;
+  if (source === 'visual') return;
   if (!taskId || taskSubmitting.value || hasAgentActivity.value || source === selectedTaskDescriptionSource.value) return;
   if (source === 'refined' && !selectedTaskHasRefinement.value) return;
   taskSubmitting.value = true;
@@ -2751,6 +2832,9 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   tagDropdownOpen.value = false;
   activeTaskTab.value = 'task';
   taskDescriptionView.value = 'original';
+  visualRefinementOpen.value = false;
+  visualRefinementSessionCreated.value = false;
+  visualRefinementResume.value = false;
   Object.assign(taskForm, {
     title: '',
     description: '',
@@ -2784,6 +2868,9 @@ const openTaskDetail = async (task: Task) => {
   resetCommentComposer();
   followUpMessage.value = '';
   tagDropdownOpen.value = false;
+  visualRefinementOpen.value = false;
+  visualRefinementSessionCreated.value = false;
+  visualRefinementResume.value = false;
   const [detail] = await Promise.all([
     $fetch<TaskDetail>(`/api/tasks/${task.id}`),
     loadTaskRefinements(task.id),
@@ -3404,6 +3491,11 @@ const downloadTaskAttachment = async (attachment: Attachment) => {
   } finally {
     downloadingAttachmentId.value = null;
   }
+};
+
+const openVisualPrototypeAttachment = (attachment: Attachment) => {
+  if (!import.meta.client) return;
+  window.open(attachment.url, '_blank', 'noopener,noreferrer');
 };
 
 const downloadTaskExport = async () => {
@@ -7017,7 +7109,7 @@ const humanError = (error: unknown) => {
                       <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                         <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionLabel }}</p>
                         <div
-                          v-if="selectedTaskHasRefinementWorkspace"
+                          v-if="selectedTaskHasDescriptionWorkspace"
                           class="inline-flex rounded-lg bg-zinc-100 p-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-800"
                           role="tablist"
                           :aria-label="t.descriptionVersions"
@@ -7036,21 +7128,26 @@ const humanError = (error: unknown) => {
                               : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'"
                             @click="taskDescriptionView = source"
                           >
-                            <UIcon v-if="selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-3.5 text-teal-600 dark:text-teal-400" />
-                            {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
+                            <UIcon v-if="source !== 'visual' && selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-3.5 text-teal-600 dark:text-teal-400" />
+                            {{ source === 'original' ? t.originalDescription : source === 'refined' ? t.refinedDescription : (locale === 'de' ? 'Visuelle Umsetzung' : 'Visual implementation') }}
                           </button>
                         </div>
                       </div>
-                      <div v-if="selectedTaskHasRefinementWorkspace" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div v-if="selectedTaskHasDescriptionWorkspace" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <p class="max-w-2xl leading-5 text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionHint }}</p>
                         <UBadge v-if="selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
                           {{ t.activeDescription }}
                         </UBadge>
                       </div>
+                      <TaskVisualImplementationPanel
+                        v-if="taskDescriptionView === 'visual'"
+                        :locale="locale"
+                        @resume="resumeTaskVisualRefinement"
+                      />
                       <div
-                        v-if="selectedTaskVisibleDescription"
+                        v-else-if="selectedTaskVisibleDescription"
                         :id="`task-description-panel-${taskDescriptionView}`"
-                        :aria-labelledby="selectedTaskHasRefinementWorkspace ? `task-description-tab-${taskDescriptionView}` : undefined"
+                        :aria-labelledby="selectedTaskHasDescriptionWorkspace ? `task-description-tab-${taskDescriptionView}` : undefined"
                         role="tabpanel"
                       >
                         <UEditor
@@ -7081,9 +7178,9 @@ const humanError = (error: unknown) => {
                       />
                     </UFormField>
 
-                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasRefinementWorkspace ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
+                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasDescriptionWorkspace ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
                       <div
-                        v-if="selectedTaskHasRefinementWorkspace"
+                        v-if="selectedTaskHasDescriptionWorkspace"
                         class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
                       >
                         <div
@@ -7105,15 +7202,15 @@ const humanError = (error: unknown) => {
                               : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'"
                             @click="taskDescriptionView = source"
                           >
-                            <UIcon v-if="selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-4 text-teal-600 dark:text-teal-400" />
-                            {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
+                            <UIcon v-if="source !== 'visual' && selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-4 text-teal-600 dark:text-teal-400" />
+                            {{ source === 'original' ? t.originalDescription : source === 'refined' ? t.refinedDescription : (locale === 'de' ? 'Visuelle Umsetzung' : 'Visual implementation') }}
                           </button>
                         </div>
                         <UBadge v-if="selectedTaskHasRefinement && selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
                           {{ t.activeDescription }}
                         </UBadge>
                         <UButton
-                          v-else-if="selectedTaskHasRefinement"
+                          v-else-if="selectedTaskHasRefinement && taskDescriptionView !== 'visual'"
                           type="button"
                           color="neutral"
                           variant="soft"
@@ -7130,7 +7227,7 @@ const humanError = (error: unknown) => {
                         v-if="taskDescriptionView === 'original'"
                         id="task-description-panel-original"
                         role="tabpanel"
-                        :aria-labelledby="selectedTaskHasRefinementWorkspace ? 'task-description-tab-original' : undefined"
+                        :aria-labelledby="selectedTaskHasDescriptionWorkspace ? 'task-description-tab-original' : undefined"
                         class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950"
                       >
                         <UEditor
@@ -7166,7 +7263,7 @@ const humanError = (error: unknown) => {
                       </div>
 
                       <div
-                        v-else
+                        v-else-if="taskDescriptionView === 'refined'"
                         id="task-description-panel-refined"
                         role="tabpanel"
                         aria-labelledby="task-description-tab-refined"
@@ -7210,6 +7307,12 @@ const humanError = (error: unknown) => {
                           </template>
                         </TaskRefinementPanel>
                       </div>
+
+                      <TaskVisualImplementationPanel
+                        v-else
+                        :locale="locale"
+                        @resume="resumeTaskVisualRefinement"
+                      />
                     </UFormField>
                   </div>
 
@@ -7231,14 +7334,13 @@ const humanError = (error: unknown) => {
                   />
                 </template>
 
-                <div v-if="taskDescriptionView === 'original' && !taskRefinements.length" class="mt-6 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 dark:bg-teal-950/20 dark:ring-teal-900/60">
+                <div v-if="taskDescriptionView === 'original' && !taskRefinements.length && !selectedTaskHasVisualImplementation" class="mt-6 rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:ring-zinc-800">
                   <div class="flex min-w-0 items-start gap-3">
                     <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-teal-100 dark:bg-zinc-950 dark:text-teal-300 dark:ring-teal-900/70">
                       <UIcon name="i-lucide-wand-sparkles" class="size-4" />
                     </span>
                     <div class="min-w-0">
-                      <p class="text-sm font-semibold text-teal-950 dark:text-teal-100">{{ locale === 'de' ? 'Wie soll die Idee ausgearbeitet werden?' : 'How should this idea be worked through?' }}</p>
-                      <p class="mt-0.5 text-xs leading-5 text-teal-950/75 dark:text-teal-100/75">{{ locale === 'de' ? 'Wähle einen belastbaren Textauftrag oder einen visuellen Vorschlag aus der echten Anwendung.' : 'Choose an implementation-ready brief or a visual proposal rendered from the real application.' }}</p>
+                      <p class="text-sm font-semibold text-zinc-950 dark:text-zinc-100">{{ locale === 'de' ? 'Idee ausarbeiten' : 'Develop this idea' }}</p>
                     </div>
                   </div>
                   <div class="mt-4 grid gap-2 sm:grid-cols-2">
@@ -7246,7 +7348,6 @@ const humanError = (error: unknown) => {
                       <UIcon name="i-lucide-file-pen-line" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
                       <span class="min-w-0">
                         <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ refineTaskLabel }}</span>
-                        <span class="mt-0.5 block text-xs leading-4 text-zinc-500 dark:text-zinc-400">{{ t.refinementCtaHint }}</span>
                       </span>
                       <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
                     </button>
@@ -7254,7 +7355,6 @@ const humanError = (error: unknown) => {
                       <UIcon name="i-lucide-panels-top-left" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
                       <span class="min-w-0">
                         <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.visualRefinementCta }}</span>
-                        <span class="mt-0.5 block text-xs leading-4 text-zinc-500 dark:text-zinc-400">{{ t.visualRefinementCtaHint }}</span>
                       </span>
                       <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
                     </button>
@@ -7282,8 +7382,8 @@ const humanError = (error: unknown) => {
                         v-if="isImageAttachment(attachment)"
                         type="button"
                         class="grid size-11 shrink-0 place-items-center overflow-hidden rounded-lg bg-zinc-100 ring-1 ring-zinc-200 transition hover:ring-teal-400 dark:bg-zinc-900 dark:ring-zinc-700"
-                        :aria-label="t.editImage + ': ' + attachment.fileName"
-                        @click="openAnnotationEditor(attachment)"
+                        :aria-label="(isPrototypeVisualAttachment(attachment) ? t.openAttachment : t.editImage) + ': ' + attachment.fileName"
+                        @click="isPrototypeVisualAttachment(attachment) ? openVisualPrototypeAttachment(attachment) : openAnnotationEditor(attachment)"
                       >
                         <img :src="attachment.annotatedUrl || attachment.url" alt="" class="size-full object-cover">
                       </button>
@@ -7306,7 +7406,7 @@ const humanError = (error: unknown) => {
                             class="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-sm font-semibold text-zinc-800 outline-none hover:border-zinc-300 hover:bg-white focus:border-teal-500 focus:bg-white focus:ring-2 focus:ring-teal-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:text-zinc-100 dark:hover:border-zinc-700 dark:hover:bg-zinc-900 dark:focus:bg-zinc-900"
                             :maxlength="Math.max(1, 255 - attachment.extension.length)"
                             required
-                            :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external' || attachmentSubmitting"
+                            :disabled="isPrototypeVisualAttachment(attachment) || editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external' || attachmentSubmitting"
                             :aria-label="t.renameAttachment + ': ' + attachment.fileName"
                             :title="t.renameAttachmentHint"
                             @change="saveAttachmentRename(attachment, $event.target as HTMLInputElement)"
@@ -7325,7 +7425,7 @@ const humanError = (error: unknown) => {
 
                       <div class="flex shrink-0 items-center gap-0.5">
                         <UButton
-                          v-if="isImageAttachment(attachment)"
+                          v-if="isImageAttachment(attachment) && !isPrototypeVisualAttachment(attachment)"
                           type="button"
                           color="neutral"
                           variant="ghost"
@@ -7347,6 +7447,7 @@ const humanError = (error: unknown) => {
                           @click="downloadTaskAttachment(attachment)"
                         />
                         <UButton
+                          v-if="!isPrototypeVisualAttachment(attachment)"
                           type="button"
                           color="error"
                           variant="ghost"
@@ -7515,15 +7616,18 @@ const humanError = (error: unknown) => {
             </form>
 
             <section
-              v-if="activeTaskTab === 'visual'"
+              v-if="visualRefinementSessionCreated"
               id="task-panel-visual"
               role="tabpanel"
               aria-labelledby="task-tab-visual"
               class="min-w-0"
+              :class="activeTaskTab === 'visual' ? '' : 'hidden'"
             >
               <TaskVisualRefinementPanel
                 :locale="locale"
                 :initial-brief="taskForm.description"
+                :initial-state="visualRefinementResume ? 'review' : 'start'"
+                @apply="applyTaskVisualRefinement"
               />
             </section>
 

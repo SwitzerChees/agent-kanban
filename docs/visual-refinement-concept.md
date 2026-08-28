@@ -14,9 +14,12 @@ Der Modus ersetzt das bestehende Text-Refinement nicht. Beide Einstiege liegen a
 1. **Start:** Brief, Zielansichten und Viewports festlegen. Offene Task-Änderungen werden wie beim bestehenden Refinement zuerst gespeichert.
 2. **Render:** Ein Agent arbeitet im persistenten Task-Worktree, startet die App auf einem isolierten Port und rendert die vereinbarten Zustände.
 3. **Review:** Screens als Artefakte ansehen, zwischen Desktop/Mobile/Zuständen wechseln, zoomen und mit dem Ausgangsstand vergleichen.
-4. **Feedback:** Einen Pin direkt auf einen Screen setzen, Kommentar schreiben, auflösen oder wieder öffnen. Feedback ist an Artefakt und Version gebunden.
+4. **Feedback:** Einen Änderungswunsch für die aktuelle Ansicht oder global für alle Ansichten schreiben. Optional lässt sich ein Pin direkt auf dem Screen setzen. Feedback ist an Scope, Artefakt und Version gebunden.
 5. **Iteration:** Alle offenen Kommentare werden als strukturierte Folgeanweisung an denselben Worktree übergeben. Eine neue Version referenziert ihre Vorgängerversion.
-6. **Übernahme:** Ausgewählte Screens, offene Umsetzungshinweise und abgeleitete Akzeptanzkriterien werden als aktive visuelle Spezifikation in den Task übernommen. Originalbeschreibung und frühere Versionen bleiben erhalten.
+6. **Übernahme:** Ausgewählte Screens werden zu normalen Task-Anhängen. Umsetzungshinweise und Akzeptanzkriterien erscheinen in der neuen Beschreibungsansicht **Visuelle Umsetzung**. Der temporäre Arbeits-Tab verschwindet.
+7. **Wiederaufnahme:** Ist die freigegebene Richtung noch nicht gut genug, öffnet **Entwurf wieder aufnehmen** den Arbeits-Tab erneut mit der letzten Version und ihrem Feedback.
+
+Der Haupt-Tab **Visueller Entwurf** ist damit kein dauerhaft leerer Bereich. Er erscheint erst nach der Auswahl **UI entwerfen**, bleibt während Review und Iteration sichtbar und verschwindet wieder nach der Übernahme.
 
 ## Aktionen in der Oberfläche
 
@@ -31,7 +34,8 @@ Der Modus ersetzt das bestehende Text-Refinement nicht. Beide Einstiege liegen a
 
 - Screen auswählen, Original öffnen und zoomen
 - Mit dem Ausgangsstand vergleichen (Split View)
-- Pin setzen und Feedback hinzufügen
+- Feedback für die aktuelle oder alle Ansichten hinzufügen
+- Optional einen Pin setzen, um den Bezug innerhalb eines Screens zu präzisieren
 - Kommentar erledigen oder wieder öffnen
 - Einzelnen Screen für die spätere Übernahme ein-/ausschliessen
 - Neue Iteration aus allen offenen Kommentaren starten
@@ -41,8 +45,9 @@ Der Modus ersetzt das bestehende Text-Refinement nicht. Beide Einstiege liegen a
 
 - In Task übernehmen
 - Freigegebene Version und Screens explizit auswählen
-- Task-Beschreibung als visuelle Spezifikation ergänzen, nicht still überschreiben
-- Artefakte als Task-Dateien referenzieren
+- Neue Beschreibungsansicht **Visuelle Umsetzung** ergänzen, Original und Text-Refinement nicht still überschreiben
+- Screenshot-Artefakte als normale Task-Dateien anhängen
+- Wiederaufnahme aus **Visuelle Umsetzung** ermöglichen
 - Worktree-Commit und App-Revision zur späteren Umsetzung festhalten
 
 ## Technische Integration
