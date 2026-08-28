@@ -4,7 +4,7 @@ import Fuse from 'fuse.js';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
-type TaskTab = 'activity' | 'task' | 'comments';
+type TaskTab = 'activity' | 'task' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
 type ReasoningEffort = 'low' | 'medium' | 'xhigh';
@@ -541,9 +541,12 @@ const dictionary = {
     todoAutomationShort: 'AI tasks start automatically',
     activityTab: 'Progress',
     taskTab: 'Task brief',
+    visualRefinementTab: 'Visual proposal',
     refinementTab: 'Refinement',
     refineTask: 'Refine with Codex',
     refinementCtaHint: 'Turn the current idea into an implementation-ready brief. Open changes are saved when refinement starts.',
+    visualRefinementCtaHint: 'Plan a UI change with rendered screens from the real application, then review and iterate inside this task.',
+    visualRefinementCta: 'Design the UI',
     refinementTitleRequired: 'Add a title to the task first. Your refinement text has been kept.',
     refinementCreatedButNotStarted: 'The task was saved, but refinement did not start. Try again; no duplicate task will be created.',
     refinementOverwriteTitle: 'Apply from an earlier version?',
@@ -873,9 +876,12 @@ const dictionary = {
     todoAutomationShort: 'KI-Aufgaben starten automatisch',
     activityTab: 'Fortschritt',
     taskTab: 'Auftrag',
+    visualRefinementTab: 'Visueller Entwurf',
     refinementTab: 'Refinement',
     refineTask: 'Mit Codex refinen',
     refinementCtaHint: 'Die Idee mit Projekt- und Codekontext ausarbeiten. Offene Änderungen werden beim Start automatisch gespeichert.',
+    visualRefinementCtaHint: 'Eine UI-Änderung mit gerenderten Screens der echten Anwendung planen, direkt im Task prüfen und iterieren.',
+    visualRefinementCta: 'UI entwerfen',
     refinementTitleRequired: 'Gib der Aufgabe zuerst einen Titel. Dein Refinement-Text wurde beibehalten.',
     refinementCreatedButNotStarted: 'Die Aufgabe wurde gespeichert, das Refinement aber nicht gestartet. Versuche es erneut; es wird keine doppelte Aufgabe erstellt.',
     refinementOverwriteTitle: 'Refinement aus früherem Stand übernehmen?',
@@ -1810,6 +1816,9 @@ function cancelRefinementOverwrite() {
 }
 const taskTabs = computed(() => [
   { key: 'task' as const, label: t.value.taskTab, icon: 'i-lucide-file-text' },
+  ...(selectedTaskId.value
+    ? [{ key: 'visual' as const, label: t.value.visualRefinementTab, icon: 'i-lucide-panels-top-left' }]
+    : []),
   ...(selectedTaskId.value && (editingTask.value?.agentEnabled || hasAgentActivity.value)
     ? [{ key: 'activity' as const, label: t.value.activityTab, icon: 'i-lucide-activity' }]
     : []),
@@ -2456,6 +2465,11 @@ function openTaskRefinementTab() {
   errorMessage.value = null;
   activeTaskTab.value = 'task';
   taskDescriptionView.value = 'refined';
+}
+
+function openTaskVisualRefinementTab() {
+  errorMessage.value = null;
+  activeTaskTab.value = 'visual';
 }
 
 async function focusTaskTitleForRefinement() {
@@ -6971,7 +6985,7 @@ const humanError = (error: unknown) => {
             </nav>
 
             <form
-              v-show="activeTaskTab === 'task'"
+              v-if="activeTaskTab === 'task'"
               id="task-form"
               class="min-w-0"
               @submit.prevent="saveTaskAction"
@@ -7217,23 +7231,34 @@ const humanError = (error: unknown) => {
                   />
                 </template>
 
-                <div v-if="taskDescriptionView === 'original' && !taskRefinements.length" class="mt-6 flex flex-col gap-3 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 sm:flex-row sm:items-center sm:justify-between dark:bg-teal-950/20 dark:ring-teal-900/60">
+                <div v-if="taskDescriptionView === 'original' && !taskRefinements.length" class="mt-6 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 dark:bg-teal-950/20 dark:ring-teal-900/60">
                   <div class="flex min-w-0 items-start gap-3">
                     <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-teal-100 dark:bg-zinc-950 dark:text-teal-300 dark:ring-teal-900/70">
                       <UIcon name="i-lucide-wand-sparkles" class="size-4" />
                     </span>
-                    <p class="text-sm leading-5 text-teal-950/80 dark:text-teal-100/80">{{ t.refinementCtaHint }}</p>
+                    <div class="min-w-0">
+                      <p class="text-sm font-semibold text-teal-950 dark:text-teal-100">{{ locale === 'de' ? 'Wie soll die Idee ausgearbeitet werden?' : 'How should this idea be worked through?' }}</p>
+                      <p class="mt-0.5 text-xs leading-5 text-teal-950/75 dark:text-teal-100/75">{{ locale === 'de' ? 'Wähle einen belastbaren Textauftrag oder einen visuellen Vorschlag aus der echten Anwendung.' : 'Choose an implementation-ready brief or a visual proposal rendered from the real application.' }}</p>
+                    </div>
                   </div>
-                  <UButton
-                    type="button"
-                    color="primary"
-                    variant="soft"
-                    icon="i-lucide-wand-sparkles"
-                    class="shrink-0 justify-center"
-                    @click="openTaskRefinementTab"
-                  >
-                    {{ refineTaskLabel }}
-                  </UButton>
+                  <div class="mt-4 grid gap-2 sm:grid-cols-2">
+                    <button type="button" class="flex min-h-12 items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskRefinementTab">
+                      <UIcon name="i-lucide-file-pen-line" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
+                      <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ refineTaskLabel }}</span>
+                        <span class="mt-0.5 block text-xs leading-4 text-zinc-500 dark:text-zinc-400">{{ t.refinementCtaHint }}</span>
+                      </span>
+                      <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
+                    </button>
+                    <button type="button" class="flex min-h-12 items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskVisualRefinementTab">
+                      <UIcon name="i-lucide-panels-top-left" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
+                      <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.visualRefinementCta }}</span>
+                        <span class="mt-0.5 block text-xs leading-4 text-zinc-500 dark:text-zinc-400">{{ t.visualRefinementCtaHint }}</span>
+                      </span>
+                      <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
+                    </button>
+                  </div>
                 </div>
 
                 <section v-if="taskAttachments.length" class="mt-7 border-t border-zinc-200 pt-6 dark:border-zinc-800">
@@ -7488,6 +7513,19 @@ const humanError = (error: unknown) => {
               </aside>
             </section>
             </form>
+
+            <section
+              v-if="activeTaskTab === 'visual'"
+              id="task-panel-visual"
+              role="tabpanel"
+              aria-labelledby="task-tab-visual"
+              class="min-w-0"
+            >
+              <TaskVisualRefinementPanel
+                :locale="locale"
+                :initial-brief="taskForm.description"
+              />
+            </section>
 
             <section
               v-if="activeTaskTab === 'activity'"
