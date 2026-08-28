@@ -13,7 +13,7 @@ codex:
   reasoning_effort: xhigh
   approval_policy: never
   thread_sandbox: workspace-write
-  turn_timeout_ms: 3600000
+  turn_timeout_ms: 10800000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000
 server:

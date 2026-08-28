@@ -104,6 +104,24 @@ button:focus-visible,
   background: rgb(161 161 170);
 }
 
+.ak-board-grid {
+  --ak-board-header-height: 3.5rem;
+  --ak-topic-band-height: 3.5rem;
+  grid-template-rows: var(--ak-board-header-height);
+}
+
+.ak-board-header-cell {
+  height: var(--ak-board-header-height);
+}
+
+.ak-band-label {
+  top: var(--ak-board-header-height);
+}
+
+.ak-row-label {
+  top: calc(var(--ak-board-header-height) + var(--ak-topic-band-height));
+}
+
 .dark .ak-board-viewport::-webkit-scrollbar-track {
   background: rgb(24 24 27);
 }

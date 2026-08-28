@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { parseTaskUploadParts } from '../server/lib/task-upload';
+import { maxTaskUploadBytes, MIN_TASK_UPLOAD_MB } from '../server/lib/upload-limits';
 
 const annotationData = {
   version: 1,
@@ -59,5 +60,16 @@ describe('annotated multipart uploads', () => {
       { name: 'files', filename: 'original.png', type: 'image/png', data: Buffer.from('image') },
       { name: 'annotations', data: Buffer.from(JSON.stringify(annotations)) },
     ])).toThrowError(expect.objectContaining({ statusMessage: 'invalid_upload_annotations' }));
+  });
+
+  test('rejects attachment payloads above the configured aggregate limit', () => {
+    expect(() => parseTaskUploadParts([
+      { name: 'files', filename: 'large.bin', type: 'application/octet-stream', data: Buffer.alloc(11) },
+    ], 10)).toThrowError(expect.objectContaining({ statusCode: 413, statusMessage: 'upload_too_large' }));
+  });
+
+  test('never configures less than 20 MB of attachment payload', () => {
+    expect(maxTaskUploadBytes({ KANBAN_MAX_UPLOAD_MB: '5' })).toBe(MIN_TASK_UPLOAD_MB * 1024 * 1024);
+    expect(maxTaskUploadBytes({ KANBAN_MAX_UPLOAD_MB: '32' })).toBe(32 * 1024 * 1024);
   });
 });

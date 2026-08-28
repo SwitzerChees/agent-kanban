@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
+import { commandPaletteTaskBuckets } from '~/utils/command-palette';
+import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'projects' | 'users';
@@ -448,6 +450,8 @@ const dictionary = {
     commandGroupActions: 'Quick actions',
     commandGroupRecentTasks: 'Recently updated tasks',
     commandGroupTasks: 'Tasks',
+    commandGroupCompletedTasks: 'Completed tasks',
+    commandCompleted: 'Done',
     commandGroupProjects: 'Projects',
     commandGroupTopics: 'Topics',
     commandGroupFilters: 'Filters',
@@ -783,6 +787,8 @@ const dictionary = {
     commandGroupActions: 'Schnellaktionen',
     commandGroupRecentTasks: 'Zuletzt aktualisierte Aufgaben',
     commandGroupTasks: 'Aufgaben',
+    commandGroupCompletedTasks: 'Erledigte Aufgaben',
+    commandCompleted: 'Erledigt',
     commandGroupProjects: 'Projekte',
     commandGroupTopics: 'Themen',
     commandGroupFilters: 'Filter',
@@ -1222,6 +1228,8 @@ const taskForm = reactive({
   tags: [] as string[],
 });
 const taskFiles = ref<PendingTaskFile[]>([]);
+const taskFileCompressionJobs = new Map<string, Promise<File>>();
+const taskFileSupersededUrls = new Map<string, string[]>();
 const taskModalBaseline = ref('');
 const taskDetailsBaseline = ref('');
 const refinementDraftDirty = ref(false);
@@ -3939,15 +3947,35 @@ const addTaskFiles = (files: File[]) => {
   const purpose: PendingTaskFile['purpose'] = selectedTaskId.value && activeTaskTab.value === 'activity'
     ? canRequestFollowUp.value ? 'follow-up' : 'guidance'
     : 'task';
-  const items: PendingTaskFile[] = files.map((file) => ({
-    id: fileId(),
-    file,
-    url: URL.createObjectURL(file),
-    purpose,
-    annotation: { version: 1, strokes: [] },
-    annotatedUrl: null,
-    renderedFile: null,
-  }));
+  const items: PendingTaskFile[] = files.map((file) => {
+    const id = fileId();
+    const item: PendingTaskFile = {
+      id,
+      file,
+      url: URL.createObjectURL(file),
+      purpose,
+      annotation: { version: 1, strokes: [] },
+      annotatedUrl: null,
+      renderedFile: null,
+    };
+    const compressionJob = compressImageForUpload(file).then((compressedFile) => {
+      const current = taskFiles.value.find((entry) => entry.id === id);
+      if (!current || compressedFile === file) return current?.file ?? file;
+      const optimizedName = compressedImageFileName(current.file.name);
+      const optimizedFile = compressedFile.name === optimizedName
+        ? compressedFile
+        : new File([compressedFile], optimizedName, {
+            type: compressedFile.type,
+            lastModified: current.file.lastModified,
+          });
+      taskFileSupersededUrls.set(id, [...(taskFileSupersededUrls.get(id) ?? []), current.url]);
+      const updated = { ...current, file: optimizedFile, url: URL.createObjectURL(optimizedFile) };
+      taskFiles.value = taskFiles.value.map((entry) => entry.id === id ? updated : entry);
+      return optimizedFile;
+    });
+    taskFileCompressionJobs.set(id, compressionJob);
+    return item;
+  });
   taskFiles.value = [...taskFiles.value, ...items];
 };
 
@@ -3956,7 +3984,12 @@ function clearTaskFiles() {
     URL.revokeObjectURL(item.url);
     if (item.annotatedUrl) URL.revokeObjectURL(item.annotatedUrl);
   }
+  for (const urls of taskFileSupersededUrls.values()) {
+    for (const url of urls) URL.revokeObjectURL(url);
+  }
   taskFiles.value = [];
+  taskFileCompressionJobs.clear();
+  taskFileSupersededUrls.clear();
   selectedAnnotationPendingFile.value = null;
 }
 
@@ -3965,6 +3998,9 @@ const removePendingTaskFiles = (items: Array<Pick<PendingTaskFile, 'id'>>) => {
   if (!ids.size) return;
   for (const pendingFile of taskFiles.value) {
     if (!ids.has(pendingFile.id)) continue;
+    taskFileCompressionJobs.delete(pendingFile.id);
+    for (const url of taskFileSupersededUrls.get(pendingFile.id) ?? []) URL.revokeObjectURL(url);
+    taskFileSupersededUrls.delete(pendingFile.id);
     URL.revokeObjectURL(pendingFile.url);
     if (pendingFile.annotatedUrl) URL.revokeObjectURL(pendingFile.annotatedUrl);
   }
@@ -3998,7 +4034,15 @@ const appendTaskFiles = async (form: FormData, files: PendingTaskFile[]) => {
   }> = [];
 
   for (const [index, item] of files.entries()) {
-    form.append('files', item.file);
+    const compressedFile = await (taskFileCompressionJobs.get(item.id) ?? Promise.resolve(item.file));
+    const currentName = taskFiles.value.find((entry) => entry.id === item.id)?.file.name ?? item.file.name;
+    const uploadFile = compressedFile.name === currentName
+      ? compressedFile
+      : new File([compressedFile], currentName, {
+          type: compressedFile.type,
+          lastModified: item.file.lastModified,
+        });
+    form.append('files', uploadFile);
     if (!item.renderedFile) continue;
     annotations.push({
       index,
@@ -5042,7 +5086,9 @@ const loadCommandPaletteIndex = async () => {
   commandPaletteLoading.value = true;
   commandPaletteError.value = false;
   try {
-    const response = await $fetch<CommandPaletteIndex>('/api/command-palette');
+    const response = await $fetch<CommandPaletteIndex>('/api/command-palette', {
+      query: selectedProjectId.value ? { projectId: selectedProjectId.value } : undefined,
+    });
     if (requestId === commandPaletteRequestId) commandPaletteIndex.value = response;
   } catch {
     if (requestId === commandPaletteRequestId) commandPaletteError.value = true;
@@ -5171,9 +5217,11 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
   id: `task:${task.id}`,
   prefix: task.key,
   label: task.title,
-  suffix: task.projectKey,
+  suffix: task.columnDone ? t.value.commandCompleted : task.projectKey,
   description: commandTaskDescription(task),
-  icon: task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round',
+  icon: task.columnDone
+    ? 'i-lucide-circle-check-big'
+    : task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round',
   keywords: [
     task.key,
     task.projectKey,
@@ -5183,6 +5231,7 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
     commandTaskColumnLabel(task),
     task.assigneeName,
     task.assigneeEmail,
+    task.columnDone ? `${t.value.commandCompleted} ${t.value.completedTasks}` : null,
     task.agentEnabled ? `${t.value.aiTask} AI agent Codex` : t.value.humanTask,
     ...task.tags,
   ].filter(Boolean).join(' '),
@@ -5276,14 +5325,23 @@ const commandPaletteGroups = computed<CommandPaletteGroup<AppCommandPaletteItem>
     });
   }
 
-  const indexedTasks = query
-    ? commandPaletteIndex.value.tasks
-    : commandPaletteIndex.value.tasks.slice(0, 6);
-  if (indexedTasks.length) {
+  const { active: indexedActiveTasks, completed: indexedCompletedTasks } = commandPaletteTaskBuckets(
+    commandPaletteIndex.value.tasks,
+    Boolean(query),
+  );
+  if (indexedActiveTasks.length) {
     groups.push({
       id: 'tasks',
       label: query ? t.value.commandGroupTasks : t.value.commandGroupRecentTasks,
-      items: indexedTasks.map(commandTaskItem),
+      items: indexedActiveTasks.map(commandTaskItem),
+      highlightedIcon: 'i-lucide-corner-down-left',
+    });
+  }
+  if (indexedCompletedTasks.length) {
+    groups.push({
+      id: 'completed-tasks',
+      label: t.value.commandGroupCompletedTasks,
+      items: indexedCompletedTasks.map(commandTaskItem),
       highlightedIcon: 'i-lucide-corner-down-left',
     });
   }
@@ -6449,13 +6507,13 @@ const humanError = (error: unknown) => {
 
           <div v-if="board.oberthemen.length" class="ak-board-viewport min-h-0 flex-1 overflow-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div
-              class="grid"
+              class="ak-board-grid grid"
               :style="{
                 gridTemplateColumns: `248px repeat(${board.columns.length}, minmax(214px, 1fr))`,
                 minWidth: `${248 + board.columns.length * 214}px`,
               }"
             >
-              <div class="sticky top-0 z-30 flex min-h-14 items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur md:left-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
+              <div class="ak-board-header-cell sticky top-0 z-30 flex items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur md:left-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
                 <UIcon name="i-lucide-git-branch" class="size-4 text-teal-600 dark:text-teal-300" />
                 <p class="text-sm font-semibold">{{ t.hierarchy }}</p>
               </div>
@@ -6464,7 +6522,7 @@ const humanError = (error: unknown) => {
                 :key="`header-${column.id}`"
                 :data-column-id="column.id"
                 :data-column-key="column.key"
-                class="sticky top-0 z-20 min-h-14 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
+                class="ak-board-header-cell sticky top-0 z-20 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
               >
                 <div class="flex items-center justify-between gap-3">
                   <div class="min-w-0">
@@ -6488,7 +6546,7 @@ const humanError = (error: unknown) => {
                 >
                   <div
                     :id="`topic-${topic.id}`"
-                    class="ak-band-label pointer-events-auto sticky top-18 flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+                    class="ak-band-label pointer-events-auto sticky flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
                     :class="[
                       selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
                       hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
@@ -6561,7 +6619,7 @@ const humanError = (error: unknown) => {
                       @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
                     >
-                      <div class="ak-row-label sticky top-36 flex min-h-14 w-full items-center gap-1 self-start">
+                      <div class="ak-row-label sticky flex min-h-14 w-full items-center gap-1 self-start">
                         <button
                           v-if="row.subtopic"
                           type="button"

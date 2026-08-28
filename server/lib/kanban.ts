@@ -317,8 +317,11 @@ function concurrencyLimit(value: number | undefined, fallback: number) {
   return Number.isInteger(value) && value! >= 0 ? value! : fallback;
 }
 
-export function getCommandPaletteIndex(user: User) {
-  const projects = listProjects(user);
+export function getCommandPaletteIndex(user: User, scopedProjectId?: string | null) {
+  const accessibleProjects = listProjects(user);
+  const projects = scopedProjectId
+    ? accessibleProjects.filter((project) => project.id === scopedProjectId)
+    : accessibleProjects;
   if (!projects.length) return { tasks: [], topics: [] };
 
   const projectIds = projects.map((project) => project.id);
