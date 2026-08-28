@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { CODEX_MODEL } from './agent-harness';
@@ -93,56 +93,68 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
   });
 
   try {
-    await runCodexSession({
-      config: { ...config.codex, model: CODEX_MODEL, reasoningEffort: context.reasoningEffort },
-      workspacePath,
-      issue,
-      promptTemplate: prompt,
-      promptPrefix: [
-        buildAgentsPromptPrefix(agentsContext),
-        visualRuntimeInstructions(),
-      ].join('\n\n---\n\n'),
-      attempt: null,
-      maxTurns: Math.min(4, Math.max(2, config.agent.maxTurns)),
-      signal,
-      onEvent: (event) => {
-        if (event.event === 'item/agentMessage/delta') return;
-        runtimeLogger.debug('visual refinement agent event', {
-          refinement_id: context.id,
-          event: event.event,
-          message: event.message,
-        });
-      },
-      refreshIssue: async () => issue,
-      shouldContinue: () => false,
-      completionCheck: async () => {
-        try {
-          await readVisualManifest(manifestPath, workspacePath);
-          return { ok: true, message: 'visual refinement manifest and screenshots verified' };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return {
-            ok: false,
-            message,
-            prompt: [
-              'The visual refinement is not complete yet.',
-              `Fix this validation problem: ${message}`,
-              `Then write the required manifest to ${manifestPath} and ensure every screenshot path exists.`,
-            ].join('\n'),
-          };
-        }
-      },
-      nativeSessionId: context.threadId,
-      onSession: (threadId) => {
-        if (threadId === context.threadId) return;
-        setRefinementThread(context.id, threadId, context.leaseToken);
-        context.threadId = threadId;
-      },
-      runtime: {
-        unitName: taskHarnessUnitName(context.taskId, context.id, 0),
-        sessionRoot,
-      },
-    });
+    try {
+      await runCodexSession({
+        config: { ...config.codex, model: CODEX_MODEL, reasoningEffort: context.reasoningEffort },
+        workspacePath,
+        issue,
+        promptTemplate: prompt,
+        promptPrefix: [
+          buildAgentsPromptPrefix(agentsContext),
+          visualRuntimeInstructions(),
+        ].join('\n\n---\n\n'),
+        attempt: null,
+        maxTurns: Math.min(4, Math.max(2, config.agent.maxTurns)),
+        signal,
+        onEvent: (event) => {
+          if (event.event === 'item/agentMessage/delta') return;
+          runtimeLogger.debug('visual refinement agent event', {
+            refinement_id: context.id,
+            event: event.event,
+            message: event.message,
+          });
+        },
+        refreshIssue: async () => issue,
+        shouldContinue: () => false,
+        completionCheck: async () => {
+          try {
+            await readVisualManifest(manifestPath, workspacePath);
+            return { ok: true, message: 'visual refinement manifest and screenshots verified' };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return {
+              ok: false,
+              message,
+              prompt: [
+                'The visual refinement is not complete yet.',
+                `Fix this validation problem: ${message}`,
+                `Then write the required manifest to ${manifestPath} and ensure every screenshot path exists.`,
+              ].join('\n'),
+            };
+          }
+        },
+        nativeSessionId: context.threadId,
+        onSession: (threadId) => {
+          if (threadId === context.threadId) return;
+          setRefinementThread(context.id, threadId, context.leaseToken);
+          context.threadId = threadId;
+        },
+        runtime: {
+          unitName: taskHarnessUnitName(context.taskId, context.id, 0),
+          sessionRoot,
+        },
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const recovered = await recoverVisualManifest(manifestPath, artifactDirectory, workspacePath);
+      if (!recovered) throw error;
+      runtimeLogger.warn('visual refinement recovered after agent session failure', {
+        refinement_id: context.id,
+        task_id: context.taskId,
+        artifacts: recovered.artifacts.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const manifest = await readVisualManifest(manifestPath, workspacePath);
     const visuals = await persistVisualArtifacts(context, manifest, workspacePath);
@@ -163,7 +175,7 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
   }
 }
 
-function buildVisualRefinementPrompt(context: RefinementContext, manifestPath: string, artifactDirectory: string) {
+export function buildVisualRefinementPrompt(context: RefinementContext, manifestPath: string, artifactDirectory: string) {
   const settings = context.visualSettings;
   const requestedViews = [
     (settings?.desktop ?? true) ? '- Desktop view (recommended width 1440)' : null,
@@ -195,7 +207,7 @@ function buildVisualRefinementPrompt(context: RefinementContext, manifestPath: s
     'When useful, capture the unchanged baseline before editing so the review can compare before and after. Keep the UI calm and concise, preserve unrelated worktree changes, and validate the rendered result at the requested viewports.',
     '',
     `Save screenshots below ${artifactDirectory}.`,
-    `Write the final manifest exactly to ${manifestPath}.`,
+    `Write the manifest exactly to ${manifestPath} as soon as the first complete target screenshot set exists. Keep it valid and update it immediately when a screenshot changes; do not postpone it until after optional checks.`,
     'The manifest must be strict JSON with this shape:',
     '{',
     '  "summary": "Short description of the approved visual direction",',
@@ -212,19 +224,20 @@ function buildVisualRefinementPrompt(context: RefinementContext, manifestPath: s
   ].join('\n');
 }
 
-function visualRuntimeInstructions() {
+export function visualRuntimeInstructions() {
   return [
     'Visual refinement runtime:',
     '- You are in the task-owned isolated worktree. Never edit or operate on the main checkout.',
     '- Preserve all existing changes. Never reset, clean, force-checkout, merge, deploy, or restart production.',
     '- Start the proposal app on a free non-production port. Never bind port 3000 and never stop the production service.',
-    '- Use agent-browser for browser interaction and screenshots of the real running application. If the direct agent-browser wrapper is unavailable, use `npx --yes agent-browser`; on hosts where Chromium reports no usable sandbox, launch the browser with `--args "--no-sandbox"`.',
+    '- Use agent-browser for browser interaction and screenshots of the real running application. Always reuse the injected `AGENT_BROWSER_SESSION`; do not create a second named browser session. If the direct agent-browser wrapper is unavailable, use `npx --yes agent-browser`; on hosts where Chromium reports no usable sandbox, launch the browser with `--args "--no-sandbox"`.',
     '- Keep generated evidence inside the requested visual-refinement artifact directory.',
-    '- Stop temporary development servers before finishing when practical.',
+    '- The rendered proposal and its manifest are the deliverable. Do not run repository-wide lint, typecheck, test, audit, or production-build suites for a visual refinement. Use only lightweight checks needed to render and inspect the changed screens.',
+    '- Close the browser session and stop temporary development servers as soon as the screenshots and manifest are complete. Never keep them running during an optional memory-intensive command.',
   ].join('\n');
 }
 
-async function readVisualManifest(manifestPath: string, workspacePath: string): Promise<VisualManifest> {
+export async function readVisualManifest(manifestPath: string, workspacePath: string): Promise<VisualManifest> {
   const manifestFile = await safeWorkspaceFile(manifestPath, workspacePath, false);
   let value: unknown;
   try {
@@ -238,6 +251,136 @@ async function readVisualManifest(manifestPath: string, workspacePath: string): 
     if (artifact.baselinePath) await safeWorkspaceFile(artifact.baselinePath, workspacePath, true);
   }
   return manifest;
+}
+
+export async function recoverVisualManifest(
+  manifestPath: string,
+  artifactDirectory: string,
+  workspacePath: string,
+): Promise<VisualManifest | null> {
+  try {
+    return await readVisualManifest(manifestPath, workspacePath);
+  } catch {
+    // A complete manifest is preferred. Recovery below is deliberately limited
+    // to rendered target screenshots and only runs after the agent session died.
+  }
+
+  const workspaceRoot = await realpath(workspacePath);
+  const resolvedArtifactDirectory = await realpath(artifactDirectory).catch(() => null);
+  if (!resolvedArtifactDirectory || (
+    resolvedArtifactDirectory !== workspaceRoot
+    && !resolvedArtifactDirectory.startsWith(`${workspaceRoot}${path.sep}`)
+  )) return null;
+
+  const directoryInfo = await lstat(resolvedArtifactDirectory);
+  if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return null;
+  const candidates = (await readdir(resolvedArtifactDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && !isBaselineFileName(entry.name) && isSupportedImageExtension(entry.name))
+    .map((entry) => path.join(resolvedArtifactDirectory, entry.name))
+    .sort();
+
+  const artifacts: VisualManifest['artifacts'] = [];
+  for (const screenshotPath of candidates) {
+    if (artifacts.length >= 6) break;
+    try {
+      const resolved = await safeWorkspaceFile(screenshotPath, workspacePath, true);
+      const bytes = await readFile(resolved);
+      const { width, height } = imageDimensions(bytes, path.extname(resolved).toLowerCase());
+      if (width < 240 || height < 240 || width > 8000 || height > 8000) continue;
+      artifacts.push({
+        title: visualTitleFromFileName(path.basename(resolved)),
+        caption: 'Wiederhergestellte gerenderte Zielansicht.',
+        route: '',
+        viewport: `${width} × ${height}`,
+        width,
+        height,
+        screenshotPath: resolved,
+        baselinePath: null,
+      });
+    } catch {
+      // Ignore corrupt or incomplete files left behind by the interrupted turn.
+    }
+  }
+  if (!artifacts.length) return null;
+
+  const recovered = manifestSchema.parse({
+    summary: artifacts.length === 1
+      ? 'Ein gerenderter visueller Entwurf wurde nach einem unterbrochenen Lauf wiederhergestellt.'
+      : `${artifacts.length} gerenderte Ansichten wurden nach einem unterbrochenen Lauf wiederhergestellt.`,
+    implementationNotes: [
+      'Die Screenshots waren bereits vollständig gespeichert; nur die abschliessenden Beschreibungsmetadaten konnten unvollständig sein.',
+    ],
+    artifacts,
+  });
+  const temporaryPath = path.join(resolvedArtifactDirectory, `.manifest-recovery-${randomUUID()}.json`);
+  await writeFile(temporaryPath, `${JSON.stringify(recovered, null, 2)}\n`, { flag: 'wx' });
+  await rename(temporaryPath, manifestPath);
+  return readVisualManifest(manifestPath, workspacePath);
+}
+
+function isSupportedImageExtension(fileName: string) {
+  return ['.png', '.jpg', '.jpeg', '.webp'].includes(path.extname(fileName).toLowerCase());
+}
+
+function isBaselineFileName(fileName: string) {
+  return /(^|[-_.])(baseline|before)([-_.]|$)/i.test(path.basename(fileName, path.extname(fileName)));
+}
+
+function visualTitleFromFileName(fileName: string) {
+  const words = path.basename(fileName, path.extname(fileName))
+    .replace(/(^|[-_.])(after|target|screenshot)([-_.]|$)/gi, ' ')
+    .split(/[^a-z0-9À-ɏ]+/i)
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`);
+  return words.join(' ').slice(0, 200) || 'Gerenderte Ansicht';
+}
+
+function imageDimensions(bytes: Buffer, extension: string) {
+  if (extension === '.png' && bytes.length >= 24) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  }
+  if ((extension === '.jpg' || extension === '.jpeg') && bytes.length >= 4) {
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = bytes[offset + 1]!;
+      if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+        return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
+      }
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+        offset += 2;
+        continue;
+      }
+      const segmentLength = bytes.readUInt16BE(offset + 2);
+      if (segmentLength < 2) break;
+      offset += segmentLength + 2;
+    }
+  }
+  if (extension === '.webp' && bytes.length >= 30) {
+    const format = bytes.subarray(12, 16).toString('ascii');
+    if (format === 'VP8X') {
+      return {
+        width: 1 + bytes.readUIntLE(24, 3),
+        height: 1 + bytes.readUIntLE(27, 3),
+      };
+    }
+    if (format === 'VP8L' && bytes[20] === 0x2f) {
+      return {
+        width: 1 + (bytes[21]! | ((bytes[22]! & 0x3f) << 8)),
+        height: 1 + ((bytes[22]! >> 6) | (bytes[23]! << 2) | ((bytes[24]! & 0x0f) << 10)),
+      };
+    }
+    if (format === 'VP8 ' && bytes.subarray(23, 26).equals(Buffer.from([0x9d, 0x01, 0x2a]))) {
+      return {
+        width: bytes.readUInt16LE(26) & 0x3fff,
+        height: bytes.readUInt16LE(28) & 0x3fff,
+      };
+    }
+  }
+  throw new Error('visual_artifact_dimensions_invalid');
 }
 
 async function safeWorkspaceFile(value: string, workspacePath: string, imageOnly: boolean) {

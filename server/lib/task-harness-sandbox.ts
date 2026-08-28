@@ -189,7 +189,11 @@ export function taskHarnessResourceProperties(env: NodeJS.ProcessEnv = process.e
     `MemoryHigh=${memoryHighMb}M`,
     `MemoryMax=${memoryMaxMb}M`,
     `TasksMax=${tasksMax}`,
-    'OOMPolicy=stop',
+    // Keep the supervising agent alive when one memory-heavy child (for
+    // example a dev server or build) is selected by the cgroup OOM killer.
+    // The hard limit still applies, but the agent can close resources,
+    // preserve generated artifacts, and report the failed command cleanly.
+    'OOMPolicy=continue',
   ];
 }
 
