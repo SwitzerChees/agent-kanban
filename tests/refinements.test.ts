@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
@@ -31,6 +32,76 @@ afterAll(() => {
 });
 
 describe('task refinements', () => {
+  test('stores visual review artifacts privately, pins feedback, and attaches screenshots on apply', async () => {
+    const project = await kanban.createProject({
+      name: 'Visual Refinement Project',
+      key: 'VISUALREF',
+      folderPath: path.join(testRoot, 'workspace-visual-refinement'),
+    }, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Redesign the task dialog',
+      description: 'Make the refinement workflow consistent.',
+    }, admin);
+    const run = refinements.createTaskRefinement(task!.id, {
+      kind: 'visual',
+      brief: 'Show a calm desktop and mobile proposal.',
+      visualSettings: { desktop: true, mobile: true, states: false },
+    }, admin);
+    expect(run).toMatchObject({ kind: 'visual', visualMode: 'force', visualSettings: { desktop: true, mobile: true, states: false } });
+
+    const claim = refinements.claimNextQueuedRefinement();
+    expect(claim).toMatchObject({ id: run.id, kind: 'visual', visualSettings: { desktop: true, mobile: true, states: false } });
+    const screenArtifactId = randomUUID();
+    const baselineArtifactId = randomUUID();
+    const screenPath = path.join(testRoot, `${screenArtifactId}.png`);
+    const baselinePath = path.join(testRoot, `${baselineArtifactId}.png`);
+    writeFileSync(screenPath, Buffer.from('screen'));
+    writeFileSync(baselinePath, Buffer.from('baseline'));
+    const createdAt = new Date().toISOString();
+    dbModule.db.insert(dbModule.schema.taskRefinementArtifacts).values([
+      { id: screenArtifactId, taskId: task!.id, refinementId: run.id, fileName: 'task-dialog-after.png', mimeType: 'image/png', size: 6, storagePath: screenPath, createdAt },
+      { id: baselineArtifactId, taskId: task!.id, refinementId: run.id, fileName: 'task-dialog-before.png', mimeType: 'image/png', size: 8, storagePath: baselinePath, createdAt },
+    ]).run();
+    refinements.completeRefinement(run.id, {
+      complexity: 'moderate',
+      resultMarkdown: '## Visuelle Umsetzung\n\nRuhiger Task-Dialog.',
+      visuals: [{
+        artifactId: screenArtifactId,
+        baselineArtifactId,
+        fileName: 'task-dialog-after.png',
+        mimeType: 'image/png',
+        title: 'Task-Dialog',
+        viewport: '1440 × 900',
+      }],
+    }, claim!.leaseToken);
+    expect((await kanban.getTaskDetail(task!.id, admin)).task.attachments).toHaveLength(0);
+
+    const comment = refinements.createRefinementVisualComment(task!.id, run.id, {
+      scope: 'view', artifactId: screenArtifactId, x: 4240, y: 3150, body: 'Make this action quieter.',
+    }, admin);
+    expect(comment).toMatchObject({ artifactId: screenArtifactId, x: 4240, y: 3150, resolvedAt: null });
+
+    const applied = refinements.applyTaskRefinement(task!.id, run.id, {}, admin);
+    expect(applied.refinement).toMatchObject({ appliedBy: admin.id, kind: 'visual' });
+    expect(applied.refinement.visuals[0]).toMatchObject({
+      artifactId: screenArtifactId,
+      attachmentId: expect.any(String),
+      baselineAttachmentId: expect.any(String),
+    });
+    expect((await kanban.getTaskDetail(task!.id, admin)).task.attachments).toHaveLength(2);
+
+    const iteration = refinements.createTaskRefinement(task!.id, { kind: 'visual', parentRefinementId: run.id }, admin);
+    expect(iteration).toMatchObject({ kind: 'visual', parentRefinementId: run.id });
+    expect(refinements.getTaskRefinement(task!.id, run.id, admin).visualComments[0])
+      .toMatchObject({ incorporatedByRefinementId: iteration.id });
+    const iterationClaim = refinements.claimNextQueuedRefinement();
+    expect(iterationClaim).toMatchObject({
+      id: iteration.id,
+      visualFeedbackComments: [{ id: comment.id, body: 'Make this action quieter.' }],
+    });
+    refinements.failRefinement(iteration.id, new Error('test cleanup'), iterationClaim!.leaseToken);
+  });
+
   test('runs a versioned challenge-question round and applies the result safely', async () => {
     const project = await kanban.createProject({
       name: 'Refinement Project',

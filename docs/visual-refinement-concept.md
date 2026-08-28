@@ -13,7 +13,7 @@ Der Modus ersetzt das bestehende Text-Refinement nicht. Beide Einstiege liegen a
 
 1. **Start:** Brief, Zielansichten und Viewports festlegen. Offene Task-Änderungen werden wie beim bestehenden Refinement zuerst gespeichert.
 2. **Render:** Ein Agent arbeitet im persistenten Task-Worktree, startet die App auf einem isolierten Port und rendert die vereinbarten Zustände.
-3. **Review:** Screens als Artefakte ansehen, zwischen Desktop/Mobile/Zuständen wechseln, zoomen und mit dem Ausgangsstand vergleichen.
+3. **Review:** Screens als Artefakte ansehen, zwischen Desktop/Mobile/Zuständen wechseln und – wenn vorhanden – mit dem Ausgangsstand vergleichen.
 4. **Feedback:** Einen Änderungswunsch für die aktuelle Ansicht oder global für alle Ansichten schreiben. Optional lässt sich ein Pin direkt auf dem Screen setzen. Feedback ist an Scope, Artefakt und Version gebunden.
 5. **Iteration:** Alle offenen Kommentare werden als strukturierte Folgeanweisung an denselben Worktree übergeben. Eine neue Version referenziert ihre Vorgängerversion.
 6. **Übernahme:** Ausgewählte Screens werden zu normalen Task-Anhängen. Umsetzungshinweise und Akzeptanzkriterien erscheinen in der neuen Beschreibungsansicht **Visuelle Umsetzung**. Der temporäre Arbeits-Tab verschwindet.
@@ -32,19 +32,17 @@ Der Haupt-Tab **Visueller Entwurf** ist damit kein dauerhaft leerer Bereich. Er 
 
 ### Im Review
 
-- Screen auswählen, Original öffnen und zoomen
+- Screen auswählen und Original öffnen
 - Mit dem Ausgangsstand vergleichen (Split View)
 - Feedback für die aktuelle oder alle Ansichten hinzufügen
 - Optional einen Pin setzen, um den Bezug innerhalb eines Screens zu präzisieren
 - Kommentar erledigen oder wieder öffnen
-- Einzelnen Screen für die spätere Übernahme ein-/ausschliessen
 - Neue Iteration aus allen offenen Kommentaren starten
 - Fehlgeschlagenen Render erneut versuchen
 
 ### Bei der Freigabe
 
 - In Task übernehmen
-- Freigegebene Version und Screens explizit auswählen
 - Neue Beschreibungsansicht **Visuelle Umsetzung** ergänzen, Original und Text-Refinement nicht still überschreiben
 - Screenshot-Artefakte als normale Task-Dateien anhängen
 - Wiederaufnahme aus **Visuelle Umsetzung** ermöglichen
@@ -62,20 +60,20 @@ Der Haupt-Tab **Visueller Entwurf** ist damit kein dauerhaft leerer Bereich. Er 
 
 ### Datenmodell erweitern
 
-- `task_refinements.kind`: `brief | visual`
-- `task_refinement_artifacts`: Refinement-ID, Version, Route, Viewport, Zustand, Datei, Dimensionen, Reihenfolge und optional Vorgänger-Artefakt
+- `task_refinements.kind`: `text | visual`
+- `task_refinement_artifacts`: private Render-Dateien vor der Übernahme; sichtbare Metadaten wie Route, Viewport, Dimensionen und optionaler Ausgangs-Screen liegen versioniert am Refinement
 - visuelle Kommentaranker: Artefakt-ID plus normalisierte `x/y`-Koordinaten oder Region; Textkommentare behalten ihre bestehenden Text-Offsets
-- Auswahl/Freigabe: übernommene Artefakte, freigegebene Version und Übernahmezeitpunkt
-- Render-Metadaten: Worktree-Commit, Ausgangsrevision, Port-/Fixture-Profil und Capture-Protokoll
+- Freigabe: übernommene Artefakte, freigegebene Version und Übernahmezeitpunkt
+- Render-Metadaten: Worktree-Revision und Ausgangsrevision
 
 ### API-Schnittstellen
 
 - `POST /api/tasks/:taskId/refinements` mit `kind: "visual"`, Brief und Capture-Scope
-- `GET /api/tasks/:taskId/refinements/:id/artifacts`
-- `POST /api/tasks/:taskId/refinements/:id/artifacts/:artifactId/comments`
-- `PATCH .../comments/:commentId` für Text und Status
-- `POST /api/tasks/:taskId/refinements/:id/iterations` aus offenen Kommentaren
-- `POST /api/tasks/:taskId/refinements/:id/apply` mit ausgewählten Artefakten
+- `GET /api/tasks/:taskId/refinements/:id/artifacts/:artifactId`
+- `POST /api/tasks/:taskId/refinements/:id/visual-comments`
+- `PATCH /api/tasks/:taskId/refinements/:id/visual-comments/:commentId`
+- `POST /api/tasks/:taskId/refinements` mit `parentRefinementId` für eine Iteration aus offenen Kommentaren
+- `POST /api/tasks/:taskId/refinements/:id/apply`
 
 ### Agent- und Browser-Lauf
 
@@ -88,10 +86,10 @@ Der Haupt-Tab **Visueller Entwurf** ist damit kein dauerhaft leerer Bereich. Er 
 
 ## Statusmodell
 
-`idle → queued → running → review → iterating → review → approved`
+`idle → queued → running → completed/review → applied`
 
 Zusätzlich: `awaiting_input`, `failed` und `cancelled`. Ein fehlgeschlagener Render verändert weder Task noch letzte freigegebene Version.
 
-## Prototypgrenze
+## Umgesetzter Stand
 
-Der aktuelle Stand implementiert den vollständigen Interaktionsentwurf im echten Task-Dialog mit lokalen Demo-Zuständen. Persistenz, Agent-Orchestrierung, neue API-Routen und Datenbankmigrationen sind bewusst noch nicht umgesetzt.
+Der Arbeitsmodus ist persistent umgesetzt. Der Agent arbeitet im task-eigenen Worktree, das Review nutzt private Refinement-Artefakte, Feedback und Pins werden autorisiert gespeichert, Iterationen übernehmen offene Kommentare und die Freigabe kopiert die finalen Screens in die normalen Task-Anhänge. Das Text-Refinement verwendet denselben temporären Arbeits-Tab-Lifecycle.
