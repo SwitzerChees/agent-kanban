@@ -1,14 +1,16 @@
 import { execFileSync } from 'node:child_process';
+import { copyFileSync, rmSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, gt, inArray, isNull, lte, max, or } from 'drizzle-orm';
 import { createError } from 'h3';
-import { db, schema } from './db';
+import { appDataDir, db, schema } from './db';
 import type { TaskRefinement, User } from './db/schema';
-import { getProject } from './kanban';
+import { getProject, logTaskActivity } from './kanban';
 import { activeTaskDescription, publicTaskDescription } from './task-description';
 import type { AgentHarness, ReasoningEffort } from './agent-harness';
 
 export type RefinementStatus = 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed' | 'cancelled';
+export type RefinementKind = 'text' | 'visual';
 export type RefinementComplexity = 'simple' | 'moderate' | 'complex';
 export type RefinementVisualMode = 'auto' | 'off' | 'force';
 export type RefinementAnswer = string | string[] | boolean | null;
@@ -27,12 +29,37 @@ export interface RefinementQuestion {
 }
 
 export interface RefinementVisual {
-  attachmentId: string;
+  artifactId?: string | null;
+  attachmentId?: string | null;
   fileName: string;
   mimeType: string;
   prompt?: string | null;
   caption?: string | null;
   createdAt?: string | null;
+  title?: string | null;
+  route?: string | null;
+  viewport?: string | null;
+  width?: number | null;
+  height?: number | null;
+  baselineAttachmentId?: string | null;
+  baselineArtifactId?: string | null;
+}
+
+export interface RefinementVisualComment {
+  id: string;
+  taskId: string;
+  refinementId: string;
+  authorId: string;
+  authorName: string | null;
+  scope: 'view' | 'all';
+  artifactId: string | null;
+  x: number | null;
+  y: number | null;
+  body: string;
+  resolvedAt: string | null;
+  incorporatedByRefinementId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface RefinementFeedbackComment {
@@ -71,6 +98,7 @@ export interface PublicTaskRefinement extends Omit<TaskRefinement,
   | 'questionsJson'
   | 'visualsJson'
   | 'resultJson'
+  | 'visualSettingsJson'
   | 'leaseOwner'
   | 'leaseToken'
   | 'leaseExpiresAt'
@@ -79,12 +107,16 @@ export interface PublicTaskRefinement extends Omit<TaskRefinement,
   questions: RefinementQuestion[];
   visuals: RefinementVisual[];
   comments: RefinementFeedbackComment[];
+  visualComments: RefinementVisualComment[];
+  visualSettings: { desktop: boolean; mobile: boolean; states: boolean };
   result: RefinementResult | null;
   requestedByName: string | null;
 }
 
 export interface RefinementContext {
   id: string;
+  version?: number;
+  kind?: RefinementKind;
   taskId: string;
   taskKey: string;
   taskTitle: string;
@@ -99,6 +131,7 @@ export interface RefinementContext {
   requestedByName: string | null;
   brief: string | null;
   visualMode: RefinementVisualMode;
+  visualSettings?: { desktop: boolean; mobile: boolean; states: boolean };
   sourceCodeRevision: string | null;
   threadId: string | null;
   leaseOwner: string;
@@ -108,6 +141,7 @@ export interface RefinementContext {
   questions: RefinementQuestion[];
   answeredQuestions: RefinementQuestion[];
   feedbackComments: RefinementFeedbackComment[];
+  visualFeedbackComments?: RefinementVisualComment[];
   attachments: Array<{
     id: string;
     fileName: string;
@@ -126,9 +160,11 @@ const normalizeDescription = (value: string | null | undefined) => (value ?? '')
   .trimEnd();
 
 export function createTaskRefinement(taskId: string, input: {
+  kind?: RefinementKind;
   brief?: string | null;
   visualMode?: RefinementVisualMode;
   parentRefinementId?: string | null;
+  visualSettings?: Partial<{ desktop: boolean; mobile: boolean; states: boolean }>;
 }, user: User): PublicTaskRefinement {
   const { task, project } = authorizeTask(taskId, user);
   const active = activeRefinementForTask(taskId);
@@ -145,20 +181,43 @@ export function createTaskRefinement(taskId: string, input: {
   const parent = input.parentRefinementId
     ? requireTaskRefinement(taskId, input.parentRefinementId)
     : null;
-  if (parent) assertLatestCompletedRefinement(taskId, parent);
+  const kind = input.kind ?? 'text';
+  if (kind === 'visual' && task.agentStatus !== 'idle') {
+    throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
+  }
+  if (parent && parent.kind !== kind) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
+  }
+  if (parent) assertLatestCompletedRefinement(taskId, parent, kind);
   const feedbackComments = parent
     ? db.select().from(schema.taskRefinementComments).where(and(
         eq(schema.taskRefinementComments.refinementId, parent.id),
         isNull(schema.taskRefinementComments.incorporatedByRefinementId),
       )).orderBy(asc(schema.taskRefinementComments.createdAt)).all()
     : [];
-  if (parent && !feedbackComments.length) {
+  const visualFeedbackComments = parent && kind === 'visual'
+    ? db.select().from(schema.taskRefinementVisualComments).where(and(
+        eq(schema.taskRefinementVisualComments.refinementId, parent.id),
+        isNull(schema.taskRefinementVisualComments.incorporatedByRefinementId),
+        isNull(schema.taskRefinementVisualComments.resolvedAt),
+      )).orderBy(asc(schema.taskRefinementVisualComments.createdAt)).all()
+    : [];
+  if (parent && kind === 'text' && !feedbackComments.length) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_feedback_missing' });
+  }
+  if (parent && kind === 'visual' && !visualFeedbackComments.length) {
     throw createError({ statusCode: 409, statusMessage: 'refinement_feedback_missing' });
   }
   const brief = input.brief?.trim()
-    || (parent ? 'Arbeite alle markierten Kommentare gezielt in die bestehende Refinement-Fassung ein.' : null);
+    || (parent
+      ? kind === 'visual'
+        ? 'Arbeite alle offenen visuellen Kommentare gezielt in eine neue UI-Iteration ein.'
+        : 'Arbeite alle markierten Kommentare gezielt in die bestehende Refinement-Fassung ein.'
+      : null);
   const sourceCodeRevision = readCodeRevision(project.folderPath);
-  const sourceDescription = parent?.resultMarkdown?.trim() || activeTaskDescription(task);
+  const sourceDescription = kind === 'visual'
+    ? activeTaskDescription(task)
+    : parent?.resultMarkdown?.trim() || activeTaskDescription(task);
 
   try {
     db.transaction((tx) => {
@@ -170,12 +229,13 @@ export function createTaskRefinement(taskId: string, input: {
       tx.insert(schema.taskRefinements).values({
         id: refinementId,
         taskId,
+        kind,
         version,
         status: 'queued',
         requestedBy: user.id,
         parentRefinementId: parent?.id ?? null,
         brief,
-        visualMode: input.visualMode ?? 'auto',
+        visualMode: kind === 'visual' ? 'force' : input.visualMode ?? 'auto',
         sourceDescription,
         sourceTaskUpdatedAt: task.updatedAt,
         sourceCodeRevision,
@@ -186,7 +246,8 @@ export function createTaskRefinement(taskId: string, input: {
         resultJson: null,
         complexity: null,
         visualsJson: '[]',
-        threadId: null,
+        visualSettingsJson: JSON.stringify(normalizeVisualSettings(input.visualSettings)),
+        threadId: kind === 'visual' ? parent?.threadId ?? null : null,
         leaseOwner: null,
         leaseToken: null,
         leaseExpiresAt: null,
@@ -209,14 +270,22 @@ export function createTaskRefinement(taskId: string, input: {
           updatedAt: now,
         }).where(inArray(schema.taskRefinementComments.id, feedbackComments.map((comment) => comment.id))).run();
       }
+      if (visualFeedbackComments.length) {
+        tx.update(schema.taskRefinementVisualComments).set({
+          incorporatedByRefinementId: refinementId,
+          updatedAt: now,
+        }).where(inArray(schema.taskRefinementVisualComments.id, visualFeedbackComments.map((comment) => comment.id))).run();
+      }
 
       insertActivity(tx, task.projectId, task.id, user.id, 'refinement_queued', {
         refinementId,
+        kind,
         version,
         visualMode: input.visualMode ?? 'auto',
         sourceCodeRevision,
         parentRefinementId: parent?.id ?? null,
         feedbackCommentIds: feedbackComments.map((comment) => comment.id),
+        visualFeedbackCommentIds: visualFeedbackComments.map((comment) => comment.id),
       }, now);
     });
   } catch (error) {
@@ -252,6 +321,18 @@ export function getTaskRefinement(taskId: string, refinementId: string, user: Us
   return toPublicRefinement(refinement);
 }
 
+export function getTaskRefinementArtifact(taskId: string, refinementId: string, artifactId: string, user: User) {
+  authorizeTask(taskId, user);
+  requireTaskRefinement(taskId, refinementId);
+  const artifact = db.select().from(schema.taskRefinementArtifacts).where(and(
+    eq(schema.taskRefinementArtifacts.id, artifactId),
+    eq(schema.taskRefinementArtifacts.taskId, taskId),
+    eq(schema.taskRefinementArtifacts.refinementId, refinementId),
+  )).get();
+  if (!artifact) throw createError({ statusCode: 404, statusMessage: 'visual_refinement_artifact_not_found' });
+  return artifact;
+}
+
 export function createRefinementComment(taskId: string, refinementId: string, input: {
   quote: string;
   prefix?: string | null;
@@ -262,6 +343,7 @@ export function createRefinementComment(taskId: string, refinementId: string, in
 }, user: User): RefinementFeedbackComment {
   const { task } = authorizeTask(taskId, user);
   const refinement = requireTaskRefinement(taskId, refinementId);
+  if (refinement.kind !== 'text') throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
   assertCommentableRefinement(taskId, refinement);
   const quote = input.quote.trim();
   const body = input.body.trim();
@@ -297,6 +379,7 @@ export function createRefinementComment(taskId: string, refinementId: string, in
 export function updateRefinementComment(taskId: string, refinementId: string, commentId: string, bodyValue: string, user: User) {
   authorizeTask(taskId, user);
   const refinement = requireTaskRefinement(taskId, refinementId);
+  if (refinement.kind !== 'text') throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
   assertCommentableRefinement(taskId, refinement);
   const comment = requireRefinementComment(taskId, refinementId, commentId);
   if (comment.authorId !== user.id && user.role !== 'admin') {
@@ -317,6 +400,7 @@ export function updateRefinementComment(taskId: string, refinementId: string, co
 export function deleteRefinementComment(taskId: string, refinementId: string, commentId: string, user: User) {
   authorizeTask(taskId, user);
   const refinement = requireTaskRefinement(taskId, refinementId);
+  if (refinement.kind !== 'text') throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
   assertCommentableRefinement(taskId, refinement);
   const comment = requireRefinementComment(taskId, refinementId, commentId);
   if (comment.authorId !== user.id && user.role !== 'admin') {
@@ -326,6 +410,102 @@ export function deleteRefinementComment(taskId: string, refinementId: string, co
     throw createError({ statusCode: 409, statusMessage: 'refinement_comment_locked' });
   }
   db.delete(schema.taskRefinementComments).where(eq(schema.taskRefinementComments.id, commentId)).run();
+  return { deleted: true };
+}
+
+export function createRefinementVisualComment(taskId: string, refinementId: string, input: {
+  scope: 'view' | 'all';
+  artifactId?: string | null;
+  x?: number | null;
+  y?: number | null;
+  body: string;
+}, user: User): RefinementVisualComment {
+  const { task } = authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  if (refinement.kind !== 'visual') throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
+  assertCommentableRefinement(taskId, refinement);
+  const visuals = parseJsonArray<RefinementVisual>(refinement.visualsJson);
+  const artifactId = input.scope === 'all' ? null : input.artifactId?.trim() || null;
+  if (input.scope === 'view' && (!artifactId || !visuals.some((visual) => (visual.artifactId ?? visual.attachmentId) === artifactId))) {
+    throw createError({ statusCode: 400, statusMessage: 'visual_refinement_artifact_invalid' });
+  }
+  const pinned = input.x != null || input.y != null;
+  if (pinned && (input.x == null || input.y == null || input.x < 0 || input.x > 10_000 || input.y < 0 || input.y > 10_000)) {
+    throw createError({ statusCode: 400, statusMessage: 'visual_refinement_pin_invalid' });
+  }
+  if (input.scope === 'all' && pinned) {
+    throw createError({ statusCode: 400, statusMessage: 'visual_refinement_pin_invalid' });
+  }
+  const body = input.body.trim();
+  if (!body) throw createError({ statusCode: 400, statusMessage: 'refinement_comment_invalid' });
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    tx.insert(schema.taskRefinementVisualComments).values({
+      id,
+      taskId,
+      refinementId,
+      authorId: user.id,
+      scope: input.scope,
+      artifactId,
+      x: pinned ? Math.round(input.x!) : null,
+      y: pinned ? Math.round(input.y!) : null,
+      body,
+      resolvedAt: null,
+      incorporatedByRefinementId: null,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+    insertActivity(tx, task.projectId, task.id, user.id, 'visual_refinement_comment_created', {
+      refinementId,
+      commentId: id,
+      artifactId,
+      pinned,
+      scope: input.scope,
+    }, now);
+  });
+  return requirePublicRefinementVisualComment(taskId, refinementId, id);
+}
+
+export function updateRefinementVisualComment(taskId: string, refinementId: string, commentId: string, input: {
+  body?: string;
+  resolved?: boolean;
+}, user: User): RefinementVisualComment {
+  authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  if (refinement.kind !== 'visual') throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
+  assertCommentableRefinement(taskId, refinement);
+  const comment = requireRefinementVisualComment(taskId, refinementId, commentId);
+  if (comment.authorId !== user.id && user.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'refinement_comment_forbidden' });
+  }
+  if (comment.incorporatedByRefinementId) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_comment_locked' });
+  }
+  const now = new Date().toISOString();
+  const body = input.body === undefined ? comment.body : input.body.trim();
+  if (!body) throw createError({ statusCode: 400, statusMessage: 'refinement_comment_invalid' });
+  db.update(schema.taskRefinementVisualComments).set({
+    body,
+    resolvedAt: input.resolved === undefined ? comment.resolvedAt : input.resolved ? now : null,
+    updatedAt: now,
+  }).where(eq(schema.taskRefinementVisualComments.id, commentId)).run();
+  return requirePublicRefinementVisualComment(taskId, refinementId, commentId);
+}
+
+export function deleteRefinementVisualComment(taskId: string, refinementId: string, commentId: string, user: User) {
+  authorizeTask(taskId, user);
+  const refinement = requireTaskRefinement(taskId, refinementId);
+  if (refinement.kind !== 'visual') throw createError({ statusCode: 409, statusMessage: 'refinement_kind_mismatch' });
+  assertCommentableRefinement(taskId, refinement);
+  const comment = requireRefinementVisualComment(taskId, refinementId, commentId);
+  if (comment.authorId !== user.id && user.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'refinement_comment_forbidden' });
+  }
+  if (comment.incorporatedByRefinementId) {
+    throw createError({ statusCode: 409, statusMessage: 'refinement_comment_locked' });
+  }
+  db.delete(schema.taskRefinementVisualComments).where(eq(schema.taskRefinementVisualComments.id, commentId)).run();
   return { deleted: true };
 }
 
@@ -403,6 +583,34 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   if (refinement.appliedAt) {
     throw createError({ statusCode: 409, statusMessage: 'refinement_already_applied' });
   }
+  if (refinement.kind === 'visual') {
+    const now = new Date().toISOString();
+    const appliedVisuals = materializeAppliedVisuals(refinement, user.id);
+    db.transaction((tx) => {
+      const refinementUpdate = tx.update(schema.taskRefinements).set({
+        appliedAt: now,
+        appliedBy: user.id,
+        visualsJson: JSON.stringify(appliedVisuals),
+        updatedAt: now,
+      }).where(and(
+        eq(schema.taskRefinements.id, refinementId),
+        eq(schema.taskRefinements.status, 'completed'),
+        isNull(schema.taskRefinements.appliedAt),
+      )).run();
+      if (refinementUpdate.changes !== 1) {
+        throw createError({ statusCode: 409, statusMessage: 'refinement_state_changed' });
+      }
+      insertActivity(tx, task.projectId, task.id, user.id, 'visual_refinement_applied', {
+        refinementId,
+        version: refinement.version,
+        artifactCount: appliedVisuals.length,
+      }, now);
+    });
+    return {
+      refinement: requirePublicRefinement(refinementId),
+      task: publicTaskDescription(requireTask(taskId)),
+    };
+  }
   if (task.agentStatus === 'running' || task.agentStatus === 'waiting_external' || task.agentStatus === 'done' || task.agentStatus === 'failed') {
     throw createError({ statusCode: 409, statusMessage: 'task_locked_after_agent_start' });
   }
@@ -465,6 +673,56 @@ export function applyTaskRefinement(taskId: string, refinementId: string, input:
   };
 }
 
+function materializeAppliedVisuals(refinement: TaskRefinement, userId: string) {
+  return parseJsonArray<RefinementVisual>(refinement.visualsJson).map((visual) => ({
+    ...visual,
+    attachmentId: visual.attachmentId ?? (visual.artifactId
+      ? materializeVisualArtifact(refinement, visual.artifactId, userId)
+      : null),
+    baselineAttachmentId: visual.baselineAttachmentId ?? (visual.baselineArtifactId
+      ? materializeVisualArtifact(refinement, visual.baselineArtifactId, userId)
+      : null),
+  }));
+}
+
+function materializeVisualArtifact(refinement: TaskRefinement, artifactId: string, userId: string) {
+  const artifact = db.select().from(schema.taskRefinementArtifacts).where(and(
+    eq(schema.taskRefinementArtifacts.id, artifactId),
+    eq(schema.taskRefinementArtifacts.taskId, refinement.taskId),
+    eq(schema.taskRefinementArtifacts.refinementId, refinement.id),
+  )).get();
+  if (!artifact) throw createError({ statusCode: 409, statusMessage: 'visual_refinement_artifact_not_found' });
+  const attachmentId = randomUUID();
+  const safeName = artifact.fileName.replace(/[^A-Za-z0-9._-]/g, '_') || 'visual-refinement.png';
+  const task = requireTask(refinement.taskId);
+  const storagePath = appDataDir('uploads', task.projectId, task.id, `${attachmentId}-${safeName}`);
+  copyFileSync(artifact.storagePath, storagePath);
+  try {
+    const now = new Date().toISOString();
+    db.insert(schema.attachments).values({
+      id: attachmentId,
+      taskId: task.id,
+      fileName: artifact.fileName,
+      mimeType: artifact.mimeType,
+      size: statSync(storagePath).size,
+      storagePath,
+      createdBy: userId,
+      createdAt: now,
+    }).run();
+    logTaskActivity(task.projectId, task.id, userId, 'attachment_added', {
+      fileName: artifact.fileName,
+      mimeType: artifact.mimeType,
+      size: artifact.size,
+      source: 'visual_refinement',
+      refinementId: refinement.id,
+    });
+    return attachmentId;
+  } catch (error) {
+    rmSync(storagePath, { force: true });
+    throw error;
+  }
+}
+
 export function cancelTaskRefinement(taskId: string, refinementId: string, user: User) {
   const { task } = authorizeTask(taskId, user);
   const refinement = requireTaskRefinement(taskId, refinementId);
@@ -498,6 +756,10 @@ export function cancelTaskRefinement(taskId: string, refinementId: string, user:
       incorporatedByRefinementId: null,
       updatedAt: now,
     }).where(eq(schema.taskRefinementComments.incorporatedByRefinementId, refinementId)).run();
+    tx.update(schema.taskRefinementVisualComments).set({
+      incorporatedByRefinementId: null,
+      updatedAt: now,
+    }).where(eq(schema.taskRefinementVisualComments.incorporatedByRefinementId, refinementId)).run();
     insertActivity(tx, task.projectId, task.id, user.id, 'refinement_cancelled', {
       refinementId,
       version: refinement.version,
@@ -567,6 +829,8 @@ export function getRefinementForWorker(refinementId: string): RefinementContext 
 
   return {
     id: refinement.id,
+    version: refinement.version,
+    kind: refinement.kind,
     taskId: task.id,
     taskKey: task.key,
     taskTitle: task.title,
@@ -581,6 +845,7 @@ export function getRefinementForWorker(refinementId: string): RefinementContext 
     requestedByName: requester?.name ?? null,
     brief: refinement.brief,
     visualMode: refinement.visualMode,
+    visualSettings: normalizeVisualSettings(parseJsonObject(refinement.visualSettingsJson)),
     sourceCodeRevision: refinement.sourceCodeRevision,
     threadId: refinement.threadId,
     leaseOwner: requireClaimField(refinement.leaseOwner, 'refinement_lease_owner_missing'),
@@ -590,6 +855,7 @@ export function getRefinementForWorker(refinementId: string): RefinementContext 
     questions,
     answeredQuestions: questions.filter((question) => question.answeredAt != null),
     feedbackComments: listFeedbackCommentsForRun(refinement.id),
+    visualFeedbackComments: listVisualFeedbackCommentsForRun(refinement.id),
     attachments: attachments.map((attachment) => ({
       id: attachment.id,
       fileName: attachment.fileName,
@@ -785,6 +1051,10 @@ export function failRefinement(refinementId: string, error: unknown, leaseToken?
       incorporatedByRefinementId: null,
       updatedAt: now,
     }).where(eq(schema.taskRefinementComments.incorporatedByRefinementId, refinementId)).run();
+    tx.update(schema.taskRefinementVisualComments).set({
+      incorporatedByRefinementId: null,
+      updatedAt: now,
+    }).where(eq(schema.taskRefinementVisualComments.incorporatedByRefinementId, refinementId)).run();
     const task = requireTask(refinement.taskId);
     insertActivity(tx, task.projectId, task.id, null, 'refinement_failed', {
       refinementId,
@@ -931,6 +1201,7 @@ function toPublicRefinement(refinement: TaskRefinement): PublicTaskRefinement {
     questionsJson,
     visualsJson,
     resultJson,
+    visualSettingsJson,
     leaseOwner: _leaseOwner,
     leaseToken: _leaseToken,
     leaseExpiresAt: _leaseExpiresAt,
@@ -946,6 +1217,8 @@ function toPublicRefinement(refinement: TaskRefinement): PublicTaskRefinement {
     questions: parseQuestions(questionsJson),
     visuals: parseJsonArray<RefinementVisual>(visualsJson),
     comments: listRefinementComments(refinement.id),
+    visualComments: listRefinementVisualComments(refinement.id),
+    visualSettings: normalizeVisualSettings(parseJsonObject(visualSettingsJson)),
     result: parseJsonObject<RefinementResult>(resultJson),
     requestedByName: requester?.name ?? null,
   };
@@ -965,6 +1238,28 @@ function listFeedbackCommentsForRun(refinementId: string): RefinementFeedbackCom
     .orderBy(asc(schema.taskRefinementComments.createdAt))
     .all()
     .map(toPublicRefinementComment);
+}
+
+function listRefinementVisualComments(refinementId: string): RefinementVisualComment[] {
+  return db.select().from(schema.taskRefinementVisualComments)
+    .where(eq(schema.taskRefinementVisualComments.refinementId, refinementId))
+    .orderBy(asc(schema.taskRefinementVisualComments.createdAt))
+    .all()
+    .map(toPublicRefinementVisualComment);
+}
+
+function listVisualFeedbackCommentsForRun(refinementId: string): RefinementVisualComment[] {
+  return db.select().from(schema.taskRefinementVisualComments)
+    .where(eq(schema.taskRefinementVisualComments.incorporatedByRefinementId, refinementId))
+    .orderBy(asc(schema.taskRefinementVisualComments.createdAt))
+    .all()
+    .map(toPublicRefinementVisualComment);
+}
+
+function toPublicRefinementVisualComment(comment: typeof schema.taskRefinementVisualComments.$inferSelect): RefinementVisualComment {
+  const author = db.select({ name: schema.users.name }).from(schema.users)
+    .where(eq(schema.users.id, comment.authorId)).get();
+  return { ...comment, scope: comment.scope as 'view' | 'all', authorName: author?.name ?? null };
 }
 
 function toPublicRefinementComment(comment: typeof schema.taskRefinementComments.$inferSelect): RefinementFeedbackComment {
@@ -988,18 +1283,34 @@ function requirePublicRefinementComment(taskId: string, refinementId: string, co
   return toPublicRefinementComment(requireRefinementComment(taskId, refinementId, commentId));
 }
 
-function latestCompletedRefinement(taskId: string) {
+function requireRefinementVisualComment(taskId: string, refinementId: string, commentId: string) {
+  const comment = db.select().from(schema.taskRefinementVisualComments)
+    .where(and(
+      eq(schema.taskRefinementVisualComments.id, commentId),
+      eq(schema.taskRefinementVisualComments.taskId, taskId),
+      eq(schema.taskRefinementVisualComments.refinementId, refinementId),
+    )).get();
+  if (!comment) throw createError({ statusCode: 404, statusMessage: 'refinement_comment_not_found' });
+  return comment;
+}
+
+function requirePublicRefinementVisualComment(taskId: string, refinementId: string, commentId: string) {
+  return toPublicRefinementVisualComment(requireRefinementVisualComment(taskId, refinementId, commentId));
+}
+
+function latestCompletedRefinement(taskId: string, kind: RefinementKind) {
   return db.select().from(schema.taskRefinements).where(and(
     eq(schema.taskRefinements.taskId, taskId),
+    eq(schema.taskRefinements.kind, kind),
     eq(schema.taskRefinements.status, 'completed'),
   )).orderBy(desc(schema.taskRefinements.version)).get();
 }
 
-function assertLatestCompletedRefinement(taskId: string, refinement: TaskRefinement) {
+function assertLatestCompletedRefinement(taskId: string, refinement: TaskRefinement, kind: RefinementKind = refinement.kind) {
   if (refinement.status !== 'completed' || !refinement.resultMarkdown?.trim()) {
     throw createError({ statusCode: 409, statusMessage: 'refinement_not_completed' });
   }
-  if (latestCompletedRefinement(taskId)?.id !== refinement.id) {
+  if (latestCompletedRefinement(taskId, kind)?.id !== refinement.id) {
     throw createError({ statusCode: 409, statusMessage: 'refinement_not_latest' });
   }
 }
@@ -1033,6 +1344,19 @@ function parseJsonObject<T extends Record<string, unknown>>(value: string | null
   } catch {
     return null;
   }
+}
+
+function normalizeVisualSettings(value: unknown): { desktop: boolean; mobile: boolean; states: boolean } {
+  const settings = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Partial<Record<'desktop' | 'mobile' | 'states', unknown>>
+    : {};
+  const normalized = {
+    desktop: settings.desktop !== false,
+    mobile: settings.mobile !== false,
+    states: settings.states === true,
+  };
+  if (!normalized.desktop && !normalized.mobile && !normalized.states) normalized.desktop = true;
+  return normalized;
 }
 
 function validateAnswer(question: RefinementQuestion, answer: RefinementAnswer | undefined) {
@@ -1138,6 +1462,9 @@ function refinementPublicErrorCode(error: unknown) {
   const message = error instanceof Error ? error.message : String(error ?? '');
   const classification = `${code} ${name} ${message}`.toLowerCase();
   if (name === 'ZodError') return 'refinement_invalid_output';
+  if (/serveroverloaded|model is at capacity|server is at capacity|server (?:is )?overloaded|too many requests|rate.?limit/.test(classification)) {
+    return 'refinement_capacity';
+  }
   if (/security|policy|sandbox|approval|permission|symlink|outside_allowed/.test(classification)) {
     return 'refinement_security_policy';
   }

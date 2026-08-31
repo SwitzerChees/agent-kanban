@@ -305,7 +305,7 @@ describe('agent harness runtime contracts', () => {
       '--property=MemoryHigh=2048M',
       '--property=MemoryMax=3072M',
       '--property=TasksMax=1024',
-      '--property=OOMPolicy=stop',
+      '--property=OOMPolicy=continue',
       '--property=NoNewPrivileges=yes',
       '--setenv=PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=/tmp/agent-kanban-sessions/run-123/prime-supervisor',
       '--setenv=AGENT_BROWSER_SESSION=task-run-123',
@@ -324,7 +324,7 @@ describe('agent harness runtime contracts', () => {
       'MemoryHigh=4096M',
       'MemoryMax=4096M',
       'TasksMax=64',
-      'OOMPolicy=stop',
+      'OOMPolicy=continue',
     ]);
   });
 

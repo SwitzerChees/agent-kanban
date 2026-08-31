@@ -224,6 +224,7 @@ export const taskAgentRuns = sqliteTable('task_agent_runs', {
 export const taskRefinements = sqliteTable('task_refinements', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['text', 'visual'] }).notNull().default('text'),
   version: integer('version').notNull(),
   status: text('status', { enum: ['queued', 'running', 'awaiting_input', 'completed', 'failed', 'cancelled'] }).notNull().default('queued'),
   requestedBy: text('requested_by').notNull().references(() => users.id),
@@ -240,6 +241,7 @@ export const taskRefinements = sqliteTable('task_refinements', {
   resultJson: text('result_json'),
   complexity: text('complexity', { enum: ['simple', 'moderate', 'complex'] }),
   visualsJson: text('visuals_json').notNull().default('[]'),
+  visualSettingsJson: text('visual_settings_json').notNull().default('{}'),
   threadId: text('thread_id'),
   leaseOwner: text('lease_owner'),
   leaseToken: text('lease_token'),
@@ -271,6 +273,33 @@ export const taskRefinementComments = sqliteTable('task_refinement_comments', {
   incorporatedByRefinementId: text('incorporated_by_refinement_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const taskRefinementVisualComments = sqliteTable('task_refinement_visual_comments', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  refinementId: text('refinement_id').notNull().references(() => taskRefinements.id, { onDelete: 'cascade' }),
+  authorId: text('author_id').notNull().references(() => users.id),
+  scope: text('scope', { enum: ['view', 'all'] }).notNull().default('view'),
+  artifactId: text('artifact_id'),
+  x: integer('x'),
+  y: integer('y'),
+  body: text('body').notNull(),
+  resolvedAt: text('resolved_at'),
+  incorporatedByRefinementId: text('incorporated_by_refinement_id'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const taskRefinementArtifacts = sqliteTable('task_refinement_artifacts', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  refinementId: text('refinement_id').notNull().references(() => taskRefinements.id, { onDelete: 'cascade' }),
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type').notNull(),
+  size: integer('size').notNull(),
+  storagePath: text('storage_path').notNull(),
+  createdAt: text('created_at').notNull(),
 });
 
 export const attachments = sqliteTable('attachments', {
@@ -347,6 +376,8 @@ export type Task = typeof tasks.$inferSelect;
 export type TaskAgentRun = typeof taskAgentRuns.$inferSelect;
 export type TaskRefinement = typeof taskRefinements.$inferSelect;
 export type TaskRefinementComment = typeof taskRefinementComments.$inferSelect;
+export type TaskRefinementVisualComment = typeof taskRefinementVisualComments.$inferSelect;
+export type TaskRefinementArtifact = typeof taskRefinementArtifacts.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type TaskTag = typeof taskTags.$inferSelect;
 export type AttachmentAnnotation = typeof attachmentAnnotations.$inferSelect;

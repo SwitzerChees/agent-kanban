@@ -14,6 +14,9 @@ Environment=PORT=3000
 Environment=NUXT_TELEMETRY_DISABLED=1
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.bun/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Give each transient task harness enough headroom for memory-intensive builds.
+Environment=KANBAN_TASK_MEMORY_HIGH_MB=4096
+Environment=KANBAN_TASK_MEMORY_MAX_MB=4096
 ExecStart=/home/ubuntu/.local/bin/node .output/server/index.mjs
 Restart=on-failure
 RestartSec=5

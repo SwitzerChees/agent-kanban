@@ -317,8 +317,11 @@ function concurrencyLimit(value: number | undefined, fallback: number) {
   return Number.isInteger(value) && value! >= 0 ? value! : fallback;
 }
 
-export function getCommandPaletteIndex(user: User) {
-  const projects = listProjects(user);
+export function getCommandPaletteIndex(user: User, scopedProjectId?: string | null) {
+  const accessibleProjects = listProjects(user);
+  const projects = scopedProjectId
+    ? accessibleProjects.filter((project) => project.id === scopedProjectId)
+    : accessibleProjects;
   if (!projects.length) return { tasks: [], topics: [] };
 
   const projectIds = projects.map((project) => project.id);
@@ -1184,7 +1187,10 @@ export async function deleteTask(taskId: string, user: User) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_cannot_delete' });
   }
   logTaskActivity(task.projectId, taskId, user.id, 'task_deleted', { key: task.key, title: task.title });
+  const refinementArtifacts = db.select().from(schema.taskRefinementArtifacts)
+    .where(eq(schema.taskRefinementArtifacts.taskId, taskId)).all();
   await rollbackTaskAttachments(taskId);
+  await Promise.allSettled(refinementArtifacts.map((artifact) => fs.rm(artifact.storagePath, { force: true })));
   db.delete(schema.tasks).where(eq(schema.tasks.id, taskId)).run();
   return { ok: true };
 }

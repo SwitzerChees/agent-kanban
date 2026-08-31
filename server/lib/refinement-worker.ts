@@ -30,6 +30,7 @@ import {
   type RefinementVisual,
 } from './refinements';
 import { loadWorkflow } from './workflow';
+import { processClaimedVisualRefinement } from './visual-refinement-worker';
 import type { CodexRuntimeEvent } from './types';
 
 const MAX_QUESTION_ROUNDS = 3;
@@ -308,6 +309,10 @@ export class RefinementWorker {
 }
 
 export async function processClaimedRefinement(context: RefinementContext, signal: AbortSignal) {
+  if (context.kind === 'visual') {
+    await processClaimedVisualRefinement(context, signal);
+    return;
+  }
   runtimeLogger.info('refinement master sync started', {
     refinement_id: context.id,
     task_id: context.taskId,

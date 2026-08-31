@@ -17,6 +17,11 @@ import type { CodexRuntimeEvent, Issue } from './types';
 import { notifyVoiceJobProgress, notifyVoiceJobStatus } from './voice-agent';
 import { agentWaitInstructions } from './agent-wait';
 import {
+  configuredAgentRetries,
+  isRetryableAgentFailure,
+  runWithAgentRetries,
+} from './agent-retry';
+import {
   cleanupTaskHarnessSession,
   closeTaskBrowserSession,
   listTaskHarnessUnits,
@@ -26,6 +31,12 @@ import {
 } from './task-harness-sandbox';
 
 let dispatcher: LocalTaskDispatcher | null = null;
+
+export {
+  configuredAgentRetries,
+  isRetryableAgentFailure,
+  runWithAgentRetries,
+} from './agent-retry';
 
 export function startLocalTaskDispatcher() {
   if (!dispatcher) {
@@ -730,11 +741,6 @@ async function cleanupTaskSession(sessionRoot: string, taskId: string, runId: st
   }
 }
 
-export function configuredAgentRetries() {
-  const requested = Number.parseInt(process.env.KANBAN_AGENT_RETRY_COUNT ?? '1', 10);
-  return Number.isFinite(requested) ? Math.min(2, Math.max(0, requested)) : 1;
-}
-
 export function maxGlobalTasks() {
   const requested = Number.parseInt(process.env.KANBAN_MAX_GLOBAL_TASKS ?? '4', 10);
   return Number.isFinite(requested) ? Math.min(32, Math.max(1, requested)) : 4;
@@ -788,62 +794,6 @@ export function agentCompletionHandoffInstructions() {
     '- Include a separate short section with concrete places or flows the user can test.',
     '- Mention any remaining limitation plainly. Do not claim completion before the requested validation succeeds.',
   ].join('\n');
-}
-
-export async function runWithAgentRetries<T>(options: {
-  retries: number;
-  signal: AbortSignal;
-  run: (attempt: number) => Promise<T>;
-  onRetry?: (attempt: number, error: unknown) => void | Promise<void>;
-  shouldRetry?: (error: unknown) => boolean;
-  retryDelayMs?: number;
-}) {
-  const retries = Math.min(2, Math.max(0, Math.trunc(options.retries)));
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    if (options.signal.aborted) throw new Error('turn_cancelled');
-    try {
-      return await options.run(attempt);
-    } catch (error) {
-      lastError = error;
-      if (options.signal.aborted || attempt >= retries || options.shouldRetry?.(error) === false) throw error;
-      await options.onRetry?.(attempt + 1, error);
-      await abortableDelay(options.retryDelayMs ?? 1_500, options.signal);
-    }
-  }
-  throw lastError;
-}
-
-export function isRetryableAgentFailure(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return ![
-    'completion_gate_failed:',
-    'Autonomous quality gate still failing',
-    'autonomous limit reached:',
-    'maxTokens reached',
-    'maxTurns reached',
-    'maxContinuations reached',
-    'turn_cancelled',
-    'read-only file system',
-    'EROFS:',
-    'EACCES:',
-  ].some((marker) => message.includes(marker));
-}
-
-function abortableDelay(ms: number, signal: AbortSignal) {
-  if (signal.aborted) return Promise.reject(new Error('turn_cancelled'));
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    timer.unref();
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(new Error('turn_cancelled'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 export function taskSlotAvailability(projectId: string, harness: AgentHarness) {

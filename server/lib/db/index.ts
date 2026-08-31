@@ -243,6 +243,7 @@ export function ensureDatabase() {
     CREATE TABLE IF NOT EXISTS task_refinements (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL DEFAULT 'text',
       version INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'queued',
       requested_by TEXT NOT NULL REFERENCES users(id),
@@ -259,6 +260,7 @@ export function ensureDatabase() {
       result_json TEXT,
       complexity TEXT,
       visuals_json TEXT NOT NULL DEFAULT '[]',
+      visual_settings_json TEXT NOT NULL DEFAULT '{}',
       thread_id TEXT,
       lease_owner TEXT,
       lease_token TEXT,
@@ -291,6 +293,33 @@ export function ensureDatabase() {
       incorporated_by_refinement_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS task_refinement_visual_comments (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      refinement_id TEXT NOT NULL REFERENCES task_refinements(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL REFERENCES users(id),
+      scope TEXT NOT NULL DEFAULT 'view',
+      artifact_id TEXT,
+      x INTEGER,
+      y INTEGER,
+      body TEXT NOT NULL,
+      resolved_at TEXT,
+      incorporated_by_refinement_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS task_refinement_artifacts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      refinement_id TEXT NOT NULL REFERENCES task_refinements(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      storage_path TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS attachments (
@@ -498,6 +527,7 @@ export function ensureDatabase() {
     sqlite.exec(`ALTER TABLE task_refinements ADD COLUMN ${name} ${definition};`);
     refinementColumns.add(name);
   };
+  addRefinementColumn('kind', "TEXT NOT NULL DEFAULT 'text'");
   addRefinementColumn('version', 'INTEGER NOT NULL DEFAULT 1');
   addRefinementColumn('status', "TEXT NOT NULL DEFAULT 'queued'");
   addRefinementColumn('requested_by', 'TEXT REFERENCES users(id)');
@@ -514,6 +544,7 @@ export function ensureDatabase() {
   addRefinementColumn('result_json', 'TEXT');
   addRefinementColumn('complexity', 'TEXT');
   addRefinementColumn('visuals_json', "TEXT NOT NULL DEFAULT '[]'");
+  addRefinementColumn('visual_settings_json', "TEXT NOT NULL DEFAULT '{}'");
   addRefinementColumn('thread_id', 'TEXT');
   addRefinementColumn('lease_owner', 'TEXT');
   addRefinementColumn('lease_token', 'TEXT');
@@ -551,8 +582,10 @@ export function ensureDatabase() {
     updated_at = COALESCE(updated_at, created_at, ?),
     questions_json = COALESCE(questions_json, '[]'),
     visuals_json = COALESCE(visuals_json, '[]'),
+    visual_settings_json = COALESCE(visual_settings_json, '{}'),
     round = COALESCE(round, 1),
     visual_mode = COALESCE(visual_mode, 'auto'),
+    kind = COALESCE(kind, 'text'),
     status = COALESCE(status, 'queued')
   `).run(refinementMigrationNow, refinementMigrationNow, refinementMigrationNow);
 
@@ -618,6 +651,7 @@ export function ensureDatabase() {
     SET error = CASE
       WHEN status = 'failed' AND error IN (
         'refinement_timeout',
+        'refinement_capacity',
         'refinement_invalid_output',
         'refinement_security_policy',
         'refinement_question_limit',
@@ -640,6 +674,12 @@ export function ensureDatabase() {
       ON task_refinement_comments(refinement_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_refinement_comments_pending
       ON task_refinement_comments(refinement_id, incorporated_by_refinement_id);
+    CREATE INDEX IF NOT EXISTS idx_task_refinement_visual_comments_refinement
+      ON task_refinement_visual_comments(refinement_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_task_refinement_visual_comments_pending
+      ON task_refinement_visual_comments(refinement_id, incorporated_by_refinement_id);
+    CREATE INDEX IF NOT EXISTS idx_task_refinement_artifacts_refinement
+      ON task_refinement_artifacts(refinement_id, created_at);
   `);
 
   // Older versions replaced tasks.description when a refinement was applied.

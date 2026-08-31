@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
+import { commandPaletteTaskBuckets } from '~/utils/command-palette';
+import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'wiki' | 'projects' | 'users';
-type TaskTab = 'activity' | 'task' | 'comments';
+type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
+type TaskDescriptionView = TaskDescriptionSource | 'visual';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
 type ReasoningEffort = 'low' | 'medium' | 'xhigh';
 
@@ -190,12 +193,37 @@ interface TaskRefinementQuestionApi {
 }
 
 interface TaskRefinementVisualApi {
-  attachmentId: string;
+  artifactId?: string | null;
+  attachmentId?: string | null;
   fileName: string;
   mimeType: string;
   prompt?: string | null;
   caption?: string | null;
   createdAt?: string | null;
+  title?: string | null;
+  route?: string | null;
+  viewport?: string | null;
+  width?: number | null;
+  height?: number | null;
+  baselineAttachmentId?: string | null;
+  baselineArtifactId?: string | null;
+}
+
+interface TaskRefinementVisualCommentApi {
+  id: string;
+  taskId: string;
+  refinementId: string;
+  authorId: string;
+  authorName?: string | null;
+  scope: 'view' | 'all';
+  artifactId: string | null;
+  x: number | null;
+  y: number | null;
+  body: string;
+  resolvedAt?: string | null;
+  incorporatedByRefinementId?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface TaskRefinementCommentApi {
@@ -219,12 +247,14 @@ interface TaskRefinementApi {
   id: string;
   taskId: string;
   version: number;
+  kind: 'text' | 'visual';
   status: 'queued' | 'running' | 'awaiting_input' | 'completed' | 'failed' | 'cancelled';
   requestedBy: string;
   requestedByName?: string | null;
   parentRefinementId?: string | null;
   brief?: string | null;
   visualMode: 'auto' | 'off' | 'force';
+  visualSettings: { desktop: boolean; mobile: boolean; states: boolean };
   sourceDescription?: string | null;
   sourceTaskUpdatedAt: string;
   sourceCodeRevision?: string | null;
@@ -237,6 +267,7 @@ interface TaskRefinementApi {
   questions: TaskRefinementQuestionApi[];
   visuals: TaskRefinementVisualApi[];
   comments: TaskRefinementCommentApi[];
+  visualComments: TaskRefinementVisualCommentApi[];
   createdAt: string;
   startedAt?: string | null;
   awaitingInputAt?: string | null;
@@ -434,6 +465,8 @@ const dictionary = {
     commandGroupActions: 'Quick actions',
     commandGroupRecentTasks: 'Recently updated tasks',
     commandGroupTasks: 'Tasks',
+    commandGroupCompletedTasks: 'Completed tasks',
+    commandCompleted: 'Done',
     commandGroupProjects: 'Projects',
     commandGroupTopics: 'Topics',
     commandGroupFilters: 'Filters',
@@ -556,9 +589,12 @@ const dictionary = {
     todoAutomationShort: 'AI tasks start automatically',
     activityTab: 'Progress',
     taskTab: 'Task brief',
+    visualRefinementTab: 'Visual proposal',
     refinementTab: 'Refinement',
     refineTask: 'Refine with Codex',
     refinementCtaHint: 'Turn the current idea into an implementation-ready brief. Open changes are saved when refinement starts.',
+    visualRefinementCtaHint: 'Plan a UI change with rendered screens from the real application, then review and iterate inside this task.',
+    visualRefinementCta: 'Design the UI',
     refinementTitleRequired: 'Add a title to the task first. Your refinement text has been kept.',
     refinementCreatedButNotStarted: 'The task was saved, but refinement did not start. Try again; no duplicate task will be created.',
     refinementOverwriteTitle: 'Apply from an earlier version?',
@@ -766,6 +802,8 @@ const dictionary = {
     commandGroupActions: 'Schnellaktionen',
     commandGroupRecentTasks: 'Zuletzt aktualisierte Aufgaben',
     commandGroupTasks: 'Aufgaben',
+    commandGroupCompletedTasks: 'Erledigte Aufgaben',
+    commandCompleted: 'Erledigt',
     commandGroupProjects: 'Projekte',
     commandGroupTopics: 'Themen',
     commandGroupFilters: 'Filter',
@@ -888,9 +926,12 @@ const dictionary = {
     todoAutomationShort: 'KI-Aufgaben starten automatisch',
     activityTab: 'Fortschritt',
     taskTab: 'Auftrag',
+    visualRefinementTab: 'Visueller Entwurf',
     refinementTab: 'Refinement',
     refineTask: 'Mit Codex refinen',
     refinementCtaHint: 'Die Idee mit Projekt- und Codekontext ausarbeiten. Offene Änderungen werden beim Start automatisch gespeichert.',
+    visualRefinementCtaHint: 'Eine UI-Änderung mit gerenderten Screens der echten Anwendung planen, direkt im Task prüfen und iterieren.',
+    visualRefinementCta: 'UI entwerfen',
     refinementTitleRequired: 'Gib der Aufgabe zuerst einen Titel. Dein Refinement-Text wurde beibehalten.',
     refinementCreatedButNotStarted: 'Die Aufgabe wurde gespeichert, das Refinement aber nicht gestartet. Versuche es erneut; es wird keine doppelte Aufgabe erstellt.',
     refinementOverwriteTitle: 'Refinement aus früherem Stand übernehmen?',
@@ -1100,6 +1141,7 @@ const taskCreateRequestId = ref('');
 const selectedTaskDetail = ref<TaskDetail | null>(null);
 const taskRefinements = ref<TaskRefinementApi[]>([]);
 const selectedRefinementId = ref<string | null>(null);
+const selectedVisualRefinementId = ref<string | null>(null);
 const pendingRefinementApplyId = ref<string | null>(null);
 const refinementBusy = ref(false);
 const taskMessage = ref('');
@@ -1113,7 +1155,9 @@ const commentMentionActiveIndex = ref(0);
 const commentComposerEl = ref<HTMLElement | null>(null);
 const followUpMessage = ref('');
 const activeTaskTab = ref<TaskTab>('activity');
-const taskDescriptionView = ref<TaskDescriptionSource>('original');
+const taskDescriptionView = ref<TaskDescriptionView>('original');
+const textRefinementOpen = ref(false);
+const visualRefinementOpen = ref(false);
 const tagDropdownOpen = ref(false);
 const boardFilterPopoverOpen = ref(false);
 const boardSearchQuery = ref('');
@@ -1161,7 +1205,6 @@ let annotationResizeObserver: ResizeObserver | null = null;
 let annotationResizeFrame: number | null = null;
 const DONE_RETENTION_MS = 30 * 60 * 1000;
 const UNASSIGNED_ID = '__unassigned__';
-const descriptionSources: TaskDescriptionSource[] = ['original', 'refined'];
 
 const loginForm = reactive({ email: '', password: '' });
 const apiTokenForm = reactive({ name: '', expiry: '90' as '30' | '90' | '365' | 'never' });
@@ -1204,6 +1247,8 @@ const taskForm = reactive({
   tags: [] as string[],
 });
 const taskFiles = ref<PendingTaskFile[]>([]);
+const taskFileCompressionJobs = new Map<string, Promise<File>>();
+const taskFileSupersededUrls = new Map<string, string[]>();
 const taskModalBaseline = ref('');
 const taskDetailsBaseline = ref('');
 const refinementDraftDirty = ref(false);
@@ -1307,12 +1352,15 @@ function closeTaskModalImmediately() {
   deleteAttachmentModalOpen.value = false;
   selectedAttachmentForDeletion.value = null;
   tagDropdownOpen.value = false;
+  textRefinementOpen.value = false;
+  visualRefinementOpen.value = false;
   taskModalOpen.value = false;
   taskCreateRequestId.value = '';
   closeTaskEventStream();
   stopRefinementPolling();
   taskRefinements.value = [];
   selectedRefinementId.value = null;
+  selectedVisualRefinementId.value = null;
   refinementCommentInteractionActive.value = false;
   clearTaskFiles();
 }
@@ -1918,11 +1966,16 @@ async function setupCommentMentionVisibilityObserver() {
   }
 }
 
-const selectedTaskRefinement = computed(() => taskRefinements.value.find((run) => run.id === selectedRefinementId.value)
-  ?? taskRefinements.value[0]
+const textTaskRefinements = computed(() => taskRefinements.value.filter((run) => run.kind === 'text'));
+const visualTaskRefinements = computed(() => taskRefinements.value.filter((run) => run.kind === 'visual'));
+const selectedTaskRefinement = computed(() => textTaskRefinements.value.find((run) => run.id === selectedRefinementId.value)
+  ?? textTaskRefinements.value[0]
   ?? null);
-const activeTaskRefinement = computed(() => taskRefinements.value.find((run) => ['queued', 'running'].includes(run.status)) ?? null);
-const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
+const selectedTaskVisualRefinement = computed(() => visualTaskRefinements.value.find((run) => run.id === selectedVisualRefinementId.value)
+  ?? visualTaskRefinements.value[0]
+  ?? null);
+const activeTaskRefinement = computed(() => taskRefinements.value.find((run) => ['queued', 'running', 'awaiting_input'].includes(run.status)) ?? null);
+const refinementPanelRuns = computed(() => textTaskRefinements.value.map((run) => ({
   id: run.id,
   version: run.version,
   parentRefinementId: run.parentRefinementId,
@@ -1949,7 +2002,7 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
     })),
   resultMarkdown: run.resultMarkdown,
   visuals: run.visuals.map((visual) => ({
-    id: visual.attachmentId,
+    id: visual.attachmentId || visual.fileName,
     url: `/api/tasks/${run.taskId}/attachments/${visual.attachmentId}`,
     downloadUrl: `/api/tasks/${run.taskId}/attachments/${visual.attachmentId}?download=1`,
     title: visual.fileName,
@@ -1961,21 +2014,66 @@ const refinementPanelRuns = computed(() => taskRefinements.value.map((run) => ({
   comments: run.comments,
 })));
 const selectedRefinementPanelRun = computed(() => refinementPanelRuns.value.find((run) => run.id === selectedTaskRefinement.value?.id) ?? null);
+const visualRefinementPanelRuns = computed(() => visualTaskRefinements.value.map((run) => ({
+  id: run.id,
+  version: run.version,
+  status: run.status,
+  brief: run.brief,
+  resultMarkdown: run.resultMarkdown,
+  appliedAt: run.appliedAt,
+  error: run.error,
+  createdAt: run.createdAt,
+  visualSettings: run.visualSettings,
+  artifacts: run.visuals.map((visual) => ({
+    id: visual.artifactId || visual.attachmentId || visual.fileName,
+    title: visual.title || visual.fileName,
+    caption: visual.caption,
+    route: visual.route,
+    viewport: visual.viewport,
+    url: visual.attachmentId
+      ? `/api/tasks/${run.taskId}/attachments/${visual.attachmentId}`
+      : `/api/tasks/${run.taskId}/refinements/${run.id}/artifacts/${visual.artifactId}`,
+    baselineUrl: visual.baselineAttachmentId
+      ? `/api/tasks/${run.taskId}/attachments/${visual.baselineAttachmentId}`
+      : visual.baselineArtifactId
+        ? `/api/tasks/${run.taskId}/refinements/${run.id}/artifacts/${visual.baselineArtifactId}`
+        : null,
+  })),
+  comments: run.visualComments,
+})));
+const selectedVisualRefinementPanelRun = computed(() => visualRefinementPanelRuns.value.find((run) => run.id === selectedTaskVisualRefinement.value?.id) ?? null);
 const selectedTaskHasRefinement = computed(() => Boolean(selectedTaskDetail.value?.task.refinedDescription?.trim()));
-const selectedTaskHasRefinementWorkspace = computed(() => taskDescriptionView.value === 'refined' || taskRefinements.value.length > 0);
-const latestCompletedTaskRefinement = computed(() => taskRefinements.value.find((run) => run.status === 'completed') ?? null);
+const selectedTaskHasRefinementWorkspace = computed(() => selectedTaskHasRefinement.value);
+const latestAppliedVisualRefinement = computed(() => visualRefinementPanelRuns.value.find((run) => Boolean(run.appliedAt)) ?? null);
+const selectedTaskHasVisualImplementation = computed(() => Boolean(latestAppliedVisualRefinement.value));
+const selectedTaskHasDescriptionWorkspace = computed(() => selectedTaskHasRefinementWorkspace.value || selectedTaskHasVisualImplementation.value);
+const descriptionSources = computed<TaskDescriptionView[]>(() => [
+  'original',
+  ...(selectedTaskHasRefinementWorkspace.value ? ['refined' as const] : []),
+  ...(selectedTaskHasVisualImplementation.value ? ['visual' as const] : []),
+]);
+const latestCompletedTaskRefinement = computed(() => textTaskRefinements.value.find((run) => run.status === 'completed') ?? null);
+const latestCompletedVisualRefinement = computed(() => visualTaskRefinements.value.find((run) => run.status === 'completed') ?? null);
 const selectedTaskDescriptionSource = computed<TaskDescriptionSource>(() => selectedTaskDetail.value?.task.descriptionSource ?? 'original');
-const selectedTaskVisibleDescription = computed(() => taskDescriptionView.value === 'refined'
-  ? selectedTaskDetail.value?.task.refinedDescription ?? ''
-  : taskForm.description);
-const selectedTaskDescriptionViewIsActive = computed(() => taskDescriptionView.value === selectedTaskDescriptionSource.value);
+const selectedTaskVisibleDescription = computed(() => taskDescriptionView.value === 'visual'
+  ? ''
+  : taskDescriptionView.value === 'refined'
+    ? selectedTaskDetail.value?.task.refinedDescription ?? ''
+    : taskForm.description);
+const selectedTaskDescriptionViewIsActive = computed(() => taskDescriptionView.value !== 'visual' && taskDescriptionView.value === selectedTaskDescriptionSource.value);
 const selectedTaskDescriptionLabel = computed(() => {
-  if (!selectedTaskHasRefinementWorkspace.value) return t.value.description;
+  if (!selectedTaskHasDescriptionWorkspace.value) return t.value.description;
+  if (taskDescriptionView.value === 'visual') return locale.value === 'de' ? 'Visuelle Umsetzung' : 'Visual implementation';
   return taskDescriptionView.value === 'refined' ? t.value.refinedDescription : t.value.originalDescription;
 });
-const selectedTaskDescriptionHint = computed(() => taskDescriptionView.value === 'refined'
-  ? t.value.refinedDescriptionHint
-  : t.value.originalDescriptionHint);
+const selectedTaskDescriptionHint = computed(() => {
+  if (taskDescriptionView.value === 'visual') {
+    return locale.value === 'de'
+      ? 'Freigegebene UI-Richtung, Screens und Umsetzungshinweise.'
+      : 'Approved UI direction, screens, and implementation notes.';
+  }
+  return taskDescriptionView.value === 'refined' ? t.value.refinedDescriptionHint : t.value.originalDescriptionHint;
+});
 const selectedTaskActiveDescription = computed(() => selectedTaskDescriptionSource.value === 'refined'
   ? selectedTaskDetail.value?.task.refinedDescription ?? ''
   : taskForm.description);
@@ -1992,6 +2090,12 @@ function cancelRefinementOverwrite() {
 }
 const taskTabs = computed(() => [
   { key: 'task' as const, label: t.value.taskTab, icon: 'i-lucide-file-text' },
+  ...(textRefinementOpen.value
+    ? [{ key: 'refinement' as const, label: t.value.refinementTab, icon: 'i-lucide-file-pen-line' }]
+    : []),
+  ...(visualRefinementOpen.value
+    ? [{ key: 'visual' as const, label: t.value.visualRefinementTab, icon: 'i-lucide-panels-top-left' }]
+    : []),
   ...(selectedTaskId.value && (editingTask.value?.agentEnabled || hasAgentActivity.value)
     ? [{ key: 'activity' as const, label: t.value.activityTab, icon: 'i-lucide-activity' }]
     : []),
@@ -2021,7 +2125,7 @@ const waitingAgentRun = computed(() => selectedTaskDetail.value?.agentRun?.statu
   ? selectedTaskDetail.value.agentRun
   : null);
 const taskAttachments = computed(() => editingTask.value?.attachments ?? []);
-const taskImageAttachments = computed(() => (editingTask.value?.attachments ?? []).filter(isImageAttachment));
+const taskImageAttachments = computed(() => taskAttachments.value.filter(isImageAttachment));
 const selectedAnnotationName = computed(() => selectedAnnotationAttachment.value?.fileName ?? selectedAnnotationPendingFile.value?.file.name ?? '');
 const selectedAnnotationImageUrl = computed(() => selectedAnnotationAttachment.value?.url ?? selectedAnnotationPendingFile.value?.url ?? '');
 const columnItems = computed(() => board.value?.columns.map((column) => ({
@@ -2639,8 +2743,13 @@ async function loadTaskRefinements(taskId: string, options: { silent?: boolean }
     const response = await $fetch<{ refinements: TaskRefinementApi[] }>(`/api/tasks/${taskId}/refinements`);
     if (selectedTaskId.value !== taskId) return;
     taskRefinements.value = response.refinements;
-    if (!selectedRefinementId.value || !response.refinements.some((run) => run.id === selectedRefinementId.value)) {
-      selectedRefinementId.value = response.refinements[0]?.id ?? null;
+    const textRuns = response.refinements.filter((run) => run.kind === 'text');
+    const visualRuns = response.refinements.filter((run) => run.kind === 'visual');
+    if (!selectedRefinementId.value || !textRuns.some((run) => run.id === selectedRefinementId.value)) {
+      selectedRefinementId.value = textRuns[0]?.id ?? null;
+    }
+    if (!selectedVisualRefinementId.value || !visualRuns.some((run) => run.id === selectedVisualRefinementId.value)) {
+      selectedVisualRefinementId.value = visualRuns[0]?.id ?? null;
     }
   } catch (error) {
     if (!options.silent) errorMessage.value = humanError(error);
@@ -2661,8 +2770,106 @@ function scheduleRefinementPolling() {
 
 function openTaskRefinementTab() {
   errorMessage.value = null;
-  activeTaskTab.value = 'task';
-  taskDescriptionView.value = 'refined';
+  textRefinementOpen.value = true;
+  selectedRefinementId.value = textTaskRefinements.value.find((run) => !run.appliedAt)?.id ?? textTaskRefinements.value[0]?.id ?? null;
+  activeTaskTab.value = 'refinement';
+}
+
+function openTaskVisualRefinementTab() {
+  errorMessage.value = null;
+  visualRefinementOpen.value = true;
+  selectedVisualRefinementId.value = visualTaskRefinements.value.find((run) => !run.appliedAt)?.id ?? visualTaskRefinements.value[0]?.id ?? null;
+  activeTaskTab.value = 'visual';
+}
+
+async function applyTaskVisualRefinement(runId: string) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/tasks/${taskId}/refinements/${runId}/apply`, { method: 'POST', body: {} });
+    await loadTaskRefinements(taskId, { silent: true });
+    selectedTaskDetail.value = await $fetch<TaskDetail>(`/api/tasks/${taskId}`);
+    if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
+    visualRefinementOpen.value = false;
+    activeTaskTab.value = 'task';
+    taskDescriptionView.value = 'visual';
+    await establishTaskModalBaseline();
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    refinementBusy.value = false;
+  }
+}
+
+function resumeTaskVisualRefinement(runId: string) {
+  selectedVisualRefinementId.value = runId;
+  visualRefinementOpen.value = true;
+  activeTaskTab.value = 'visual';
+}
+
+function resumeTaskRefinement() {
+  const run = textTaskRefinements.value.find((item) => item.appliedAt) ?? textTaskRefinements.value[0];
+  selectedRefinementId.value = run?.id ?? null;
+  textRefinementOpen.value = true;
+  activeTaskTab.value = 'refinement';
+}
+
+async function startTaskVisualRefinement(payload: { brief: string; visualSettings: { desktop: boolean; mobile: boolean; states: boolean }; parentRefinementId?: string }) {
+  if (refinementBusy.value || taskSubmitting.value) return;
+  if (!taskForm.title.trim()) { await focusTaskTitleForRefinement(); return; }
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    const taskId = await persistTaskBeforeRefinement();
+    const response = await $fetch<{ refinement: TaskRefinementApi }>(`/api/tasks/${taskId}/refinements`, {
+      method: 'POST',
+      body: { ...payload, kind: 'visual', visualMode: 'force' },
+    });
+    taskRefinements.value = [response.refinement, ...taskRefinements.value.filter((run) => run.id !== response.refinement.id)];
+    selectedVisualRefinementId.value = response.refinement.id;
+    visualRefinementOpen.value = true;
+    activeTaskTab.value = 'visual';
+    scheduleRefinementPolling();
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    refinementBusy.value = false;
+  }
+}
+
+async function createVisualRefinementComment(runId: string, payload: { scope: 'view' | 'all'; artifactId: string | null; x: number | null; y: number | null; body: string }) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/tasks/${taskId}/refinements/${runId}/visual-comments`, { method: 'POST', body: payload });
+    await loadTaskRefinements(taskId, { silent: true });
+    selectedVisualRefinementId.value = runId;
+  } catch (error) { errorMessage.value = humanError(error); } finally { refinementBusy.value = false; }
+}
+
+async function updateVisualRefinementComment(runId: string, payload: { commentId: string; resolved: boolean }) {
+  const taskId = selectedTaskId.value;
+  if (!taskId || refinementBusy.value) return;
+  refinementBusy.value = true;
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/tasks/${taskId}/refinements/${runId}/visual-comments/${payload.commentId}`, { method: 'PATCH', body: { resolved: payload.resolved } });
+    await loadTaskRefinements(taskId, { silent: true });
+    selectedVisualRefinementId.value = runId;
+  } catch (error) { errorMessage.value = humanError(error); } finally { refinementBusy.value = false; }
+}
+
+async function iterateTaskVisualRefinement(runId: string) {
+  const run = visualTaskRefinements.value.find((item) => item.id === runId);
+  await startTaskVisualRefinement({
+    brief: run?.brief?.trim() || taskForm.title,
+    visualSettings: run?.visualSettings ?? { desktop: true, mobile: true, states: false },
+    parentRefinementId: runId,
+  });
 }
 
 async function focusTaskTitleForRefinement() {
@@ -2685,11 +2892,12 @@ async function startTaskRefinement(payload: { brief: string; visualMode: 'auto';
     const taskId = await persistTaskBeforeRefinement();
     const response = await $fetch<{ refinement: TaskRefinementApi }>(`/api/tasks/${taskId}/refinements`, {
       method: 'POST',
-      body: payload,
+      body: { ...payload, kind: 'text' },
     });
     taskRefinements.value = [response.refinement, ...taskRefinements.value.filter((run) => run.id !== response.refinement.id)];
     selectedRefinementId.value = response.refinement.id;
-    taskDescriptionView.value = 'refined';
+    textRefinementOpen.value = true;
+    activeTaskTab.value = 'refinement';
     refinementDraftDirty.value = false;
     scheduleRefinementPolling();
   } catch (error) {
@@ -2699,6 +2907,9 @@ async function startTaskRefinement(payload: { brief: string; visualMode: 'auto';
       const recoveredRun = activeTaskRefinement.value;
       if (recoveredRun) {
         selectedRefinementId.value = recoveredRun.id;
+        textRefinementOpen.value = recoveredRun.kind === 'text';
+        visualRefinementOpen.value = recoveredRun.kind === 'visual';
+        activeTaskTab.value = recoveredRun.kind === 'visual' ? 'visual' : 'refinement';
         refinementDraftDirty.value = false;
         scheduleRefinementPolling();
         return;
@@ -2848,6 +3059,7 @@ async function applyTaskRefinement(runId: string, allowDescriptionOverwrite = fa
     taskDescriptionView.value = 'refined';
     await loadTaskRefinements(taskId, { silent: true });
     if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
+    textRefinementOpen.value = false;
     activeTaskTab.value = 'task';
     await establishTaskModalBaseline();
     refinementOverwriteModalOpen.value = false;
@@ -2906,8 +3118,9 @@ function syncTaskFormFromDetail(detailTask: Task, resetDescriptionView = false) 
   }
 }
 
-async function activateTaskDescription(source: TaskDescriptionSource) {
+async function activateTaskDescription(source: TaskDescriptionView) {
   const taskId = selectedTaskId.value;
+  if (source === 'visual') return;
   if (!taskId || taskSubmitting.value || hasAgentActivity.value || source === selectedTaskDescriptionSource.value) return;
   if (source === 'refined' && !selectedTaskHasRefinement.value) return;
   taskSubmitting.value = true;
@@ -2936,6 +3149,7 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   selectedTaskDetail.value = null;
   taskRefinements.value = [];
   selectedRefinementId.value = null;
+  selectedVisualRefinementId.value = null;
   refinementDraftDirty.value = false;
   refinementCommentInteractionActive.value = false;
   taskMessage.value = '';
@@ -2944,6 +3158,8 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
   tagDropdownOpen.value = false;
   activeTaskTab.value = 'task';
   taskDescriptionView.value = 'original';
+  textRefinementOpen.value = false;
+  visualRefinementOpen.value = false;
   Object.assign(taskForm, {
     title: '',
     description: '',
@@ -2972,23 +3188,32 @@ const openTaskDetail = async (task: Task) => {
   taskCreateRequestId.value = '';
   taskRefinements.value = [];
   selectedRefinementId.value = null;
+  selectedVisualRefinementId.value = null;
   clearTaskFiles();
   taskMessage.value = '';
   resetCommentComposer();
   followUpMessage.value = '';
   tagDropdownOpen.value = false;
+  textRefinementOpen.value = false;
+  visualRefinementOpen.value = false;
   const [detail] = await Promise.all([
     $fetch<TaskDetail>(`/api/tasks/${task.id}`),
     loadTaskRefinements(task.id),
   ]);
   selectedTaskDetail.value = detail;
-  const latestRefinement = taskRefinements.value[0];
+  const latestRefinement = taskRefinements.value.find((run) => !run.appliedAt && ['queued', 'running', 'awaiting_input', 'completed'].includes(run.status));
   activeTaskTab.value = hasAgentActivity.value ? 'activity' : 'task';
   syncTaskFormFromDetail(selectedTaskDetail.value.task, true);
-  if (latestRefinement
-    && !latestRefinement.appliedAt
-    && ['queued', 'running', 'awaiting_input', 'completed'].includes(latestRefinement.status)) {
-    taskDescriptionView.value = 'refined';
+  if (latestRefinement) {
+    if (latestRefinement.kind === 'visual') {
+      selectedVisualRefinementId.value = latestRefinement.id;
+      visualRefinementOpen.value = true;
+      activeTaskTab.value = 'visual';
+    } else {
+      selectedRefinementId.value = latestRefinement.id;
+      textRefinementOpen.value = true;
+      activeTaskTab.value = 'refinement';
+    }
   }
   taskModalOpen.value = true;
   openTaskEventStream(task.id);
@@ -3930,15 +4155,35 @@ const addTaskFiles = (files: File[]) => {
   const purpose: PendingTaskFile['purpose'] = selectedTaskId.value && activeTaskTab.value === 'activity'
     ? canRequestFollowUp.value ? 'follow-up' : 'guidance'
     : 'task';
-  const items: PendingTaskFile[] = files.map((file) => ({
-    id: fileId(),
-    file,
-    url: URL.createObjectURL(file),
-    purpose,
-    annotation: { version: 1, strokes: [] },
-    annotatedUrl: null,
-    renderedFile: null,
-  }));
+  const items: PendingTaskFile[] = files.map((file) => {
+    const id = fileId();
+    const item: PendingTaskFile = {
+      id,
+      file,
+      url: URL.createObjectURL(file),
+      purpose,
+      annotation: { version: 1, strokes: [] },
+      annotatedUrl: null,
+      renderedFile: null,
+    };
+    const compressionJob = compressImageForUpload(file).then((compressedFile) => {
+      const current = taskFiles.value.find((entry) => entry.id === id);
+      if (!current || compressedFile === file) return current?.file ?? file;
+      const optimizedName = compressedImageFileName(current.file.name);
+      const optimizedFile = compressedFile.name === optimizedName
+        ? compressedFile
+        : new File([compressedFile], optimizedName, {
+            type: compressedFile.type,
+            lastModified: current.file.lastModified,
+          });
+      taskFileSupersededUrls.set(id, [...(taskFileSupersededUrls.get(id) ?? []), current.url]);
+      const updated = { ...current, file: optimizedFile, url: URL.createObjectURL(optimizedFile) };
+      taskFiles.value = taskFiles.value.map((entry) => entry.id === id ? updated : entry);
+      return optimizedFile;
+    });
+    taskFileCompressionJobs.set(id, compressionJob);
+    return item;
+  });
   taskFiles.value = [...taskFiles.value, ...items];
 };
 
@@ -3947,7 +4192,12 @@ function clearTaskFiles() {
     URL.revokeObjectURL(item.url);
     if (item.annotatedUrl) URL.revokeObjectURL(item.annotatedUrl);
   }
+  for (const urls of taskFileSupersededUrls.values()) {
+    for (const url of urls) URL.revokeObjectURL(url);
+  }
   taskFiles.value = [];
+  taskFileCompressionJobs.clear();
+  taskFileSupersededUrls.clear();
   selectedAnnotationPendingFile.value = null;
 }
 
@@ -3956,6 +4206,9 @@ const removePendingTaskFiles = (items: Array<Pick<PendingTaskFile, 'id'>>) => {
   if (!ids.size) return;
   for (const pendingFile of taskFiles.value) {
     if (!ids.has(pendingFile.id)) continue;
+    taskFileCompressionJobs.delete(pendingFile.id);
+    for (const url of taskFileSupersededUrls.get(pendingFile.id) ?? []) URL.revokeObjectURL(url);
+    taskFileSupersededUrls.delete(pendingFile.id);
     URL.revokeObjectURL(pendingFile.url);
     if (pendingFile.annotatedUrl) URL.revokeObjectURL(pendingFile.annotatedUrl);
   }
@@ -3989,7 +4242,15 @@ const appendTaskFiles = async (form: FormData, files: PendingTaskFile[]) => {
   }> = [];
 
   for (const [index, item] of files.entries()) {
-    form.append('files', item.file);
+    const compressedFile = await (taskFileCompressionJobs.get(item.id) ?? Promise.resolve(item.file));
+    const currentName = taskFiles.value.find((entry) => entry.id === item.id)?.file.name ?? item.file.name;
+    const uploadFile = compressedFile.name === currentName
+      ? compressedFile
+      : new File([compressedFile], currentName, {
+          type: compressedFile.type,
+          lastModified: item.file.lastModified,
+        });
+    form.append('files', uploadFile);
     if (!item.renderedFile) continue;
     annotations.push({
       index,
@@ -5033,7 +5294,9 @@ const loadCommandPaletteIndex = async () => {
   commandPaletteLoading.value = true;
   commandPaletteError.value = false;
   try {
-    const response = await $fetch<CommandPaletteIndex>('/api/command-palette');
+    const response = await $fetch<CommandPaletteIndex>('/api/command-palette', {
+      query: selectedProjectId.value ? { projectId: selectedProjectId.value } : undefined,
+    });
     if (requestId === commandPaletteRequestId) commandPaletteIndex.value = response;
   } catch {
     if (requestId === commandPaletteRequestId) commandPaletteError.value = true;
@@ -5162,9 +5425,11 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
   id: `task:${task.id}`,
   prefix: task.key,
   label: task.title,
-  suffix: task.projectKey,
+  suffix: task.columnDone ? t.value.commandCompleted : task.projectKey,
   description: commandTaskDescription(task),
-  icon: task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round',
+  icon: task.columnDone
+    ? 'i-lucide-circle-check-big'
+    : task.agentEnabled ? 'i-lucide-sparkles' : 'i-lucide-user-round',
   keywords: [
     task.key,
     task.projectKey,
@@ -5174,6 +5439,7 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
     commandTaskColumnLabel(task),
     task.assigneeName,
     task.assigneeEmail,
+    task.columnDone ? `${t.value.commandCompleted} ${t.value.completedTasks}` : null,
     task.agentEnabled ? `${t.value.aiTask} AI agent Codex` : t.value.humanTask,
     ...task.tags,
   ].filter(Boolean).join(' '),
@@ -5267,14 +5533,23 @@ const commandPaletteGroups = computed<CommandPaletteGroup<AppCommandPaletteItem>
     });
   }
 
-  const indexedTasks = query
-    ? commandPaletteIndex.value.tasks
-    : commandPaletteIndex.value.tasks.slice(0, 6);
-  if (indexedTasks.length) {
+  const { active: indexedActiveTasks, completed: indexedCompletedTasks } = commandPaletteTaskBuckets(
+    commandPaletteIndex.value.tasks,
+    Boolean(query),
+  );
+  if (indexedActiveTasks.length) {
     groups.push({
       id: 'tasks',
       label: query ? t.value.commandGroupTasks : t.value.commandGroupRecentTasks,
-      items: indexedTasks.map(commandTaskItem),
+      items: indexedActiveTasks.map(commandTaskItem),
+      highlightedIcon: 'i-lucide-corner-down-left',
+    });
+  }
+  if (indexedCompletedTasks.length) {
+    groups.push({
+      id: 'completed-tasks',
+      label: t.value.commandGroupCompletedTasks,
+      items: indexedCompletedTasks.map(commandTaskItem),
       highlightedIcon: 'i-lucide-corner-down-left',
     });
   }
@@ -5580,7 +5855,12 @@ const humanError = (error: unknown) => {
     refinement_comment_locked: { en: 'This feedback is already being incorporated and can no longer be changed.', de: 'Dieses Feedback wird bereits eingearbeitet und kann nicht mehr geändert werden.' },
     refinement_comment_not_found: { en: 'The refinement comment no longer exists.', de: 'Der Refinement-Kommentar ist nicht mehr vorhanden.' },
     refinement_comment_forbidden: { en: 'Only the comment author can change this feedback.', de: 'Nur der Autor kann diesen Kommentar verändern.' },
+    refinement_kind_mismatch: { en: 'This action belongs to a different refinement mode.', de: 'Diese Aktion gehört zu einem anderen Refinement-Modus.' },
+    visual_refinement_artifact_invalid: { en: 'Choose a valid visual before adding this feedback.', de: 'Wähle eine gültige Ansicht, bevor du dieses Feedback hinzufügst.' },
+    visual_refinement_artifact_not_found: { en: 'A rendered screen is no longer available. Start a new iteration.', de: 'Ein gerenderter Screen ist nicht mehr verfügbar. Starte eine neue Iteration.' },
+    visual_refinement_pin_invalid: { en: 'The screenshot pin is outside the selected view.', de: 'Der Screenshot-Pin liegt ausserhalb der gewählten Ansicht.' },
     refinement_timeout: { en: 'The selected AI harness took too long to finish this refinement. You can try again.', de: 'Der gewählte KI-Harness hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.' },
+    refinement_capacity: { en: 'The AI model was temporarily at capacity. You can start the refinement again.', de: 'Das KI-Modell war vorübergehend ausgelastet. Du kannst das Refinement erneut starten.' },
     refinement_invalid_output: { en: 'The selected AI harness returned an incomplete refinement. You can try again without changing the task.', de: 'Der gewählte KI-Harness hat ein unvollständiges Refinement geliefert. Du kannst es erneut versuchen, ohne dass die Aufgabe verändert wurde.' },
     refinement_security_policy: { en: 'The refinement stopped because a project access rule was not satisfied.', de: 'Das Refinement wurde gestoppt, weil eine Regel für den Projektzugriff nicht erfüllt war.' },
     refinement_question_limit: { en: 'The refinement reached its maximum number of challenge rounds. Start a new run with the gathered answers.', de: 'Das Refinement hat die maximale Anzahl Challenge-Runden erreicht. Starte mit den gesammelten Antworten einen neuen Lauf.' },
@@ -6768,13 +7048,13 @@ const humanError = (error: unknown) => {
 
           <div v-if="board.oberthemen.length" class="ak-board-viewport min-h-0 flex-1 overflow-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <div
-              class="grid"
+              class="ak-board-grid grid"
               :style="{
                 gridTemplateColumns: `248px repeat(${board.columns.length}, minmax(214px, 1fr))`,
                 minWidth: `${248 + board.columns.length * 214}px`,
               }"
             >
-              <div class="sticky top-0 z-30 flex min-h-14 items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur md:left-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
+              <div class="ak-board-header-cell sticky top-0 z-30 flex items-center gap-2 border-b border-r border-teal-100 bg-teal-50/95 px-3 text-teal-950 backdrop-blur md:left-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100">
                 <UIcon name="i-lucide-git-branch" class="size-4 text-teal-600 dark:text-teal-300" />
                 <p class="text-sm font-semibold">{{ t.hierarchy }}</p>
               </div>
@@ -6783,7 +7063,7 @@ const humanError = (error: unknown) => {
                 :key="`header-${column.id}`"
                 :data-column-id="column.id"
                 :data-column-key="column.key"
-                class="sticky top-0 z-20 min-h-14 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
+                class="ak-board-header-cell sticky top-0 z-20 border-b border-r border-zinc-200 bg-zinc-100/95 px-3 py-2 text-zinc-900 backdrop-blur last:border-r-0 dark:border-zinc-700 dark:bg-zinc-900/95 dark:text-zinc-100"
               >
                 <div class="flex items-center justify-between gap-3">
                   <div class="min-w-0">
@@ -6807,7 +7087,7 @@ const humanError = (error: unknown) => {
                 >
                   <div
                     :id="`topic-${topic.id}`"
-                    class="ak-band-label pointer-events-auto sticky top-18 flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
+                    class="ak-band-label pointer-events-auto sticky flex min-h-14 w-full items-center gap-1 self-start border-b border-zinc-200 bg-zinc-100 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-900"
                     :class="[
                       selectedOberthemaId === topic.id ? 'ring-2 ring-inset ring-teal-500/50' : '',
                       hierarchyDragOverId === `oberthema:${topic.id}` ? 'ak-hierarchy-drop-target' : '',
@@ -6880,7 +7160,7 @@ const humanError = (error: unknown) => {
                       @dragenter.prevent="row.subtopic && markHierarchyDropTarget($event, `unterthema:${row.subtopic.id}`)"
                       @drop.prevent.stop="row.subtopic && dropOnUnterthema($event, topic.id, row.subtopic.id)"
                     >
-                      <div class="ak-row-label sticky top-36 flex min-h-14 w-full items-center gap-1 self-start">
+                      <div class="ak-row-label sticky flex min-h-14 w-full items-center gap-1 self-start">
                         <button
                           v-if="row.subtopic"
                           type="button"
@@ -7510,7 +7790,7 @@ const humanError = (error: unknown) => {
             </nav>
 
             <form
-              v-show="activeTaskTab === 'task'"
+              v-if="activeTaskTab === 'task'"
               id="task-form"
               class="min-w-0"
               @submit.prevent="saveTaskAction"
@@ -7542,7 +7822,7 @@ const humanError = (error: unknown) => {
                       <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                         <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionLabel }}</p>
                         <div
-                          v-if="selectedTaskHasRefinementWorkspace"
+                          v-if="selectedTaskHasDescriptionWorkspace"
                           class="inline-flex rounded-lg bg-zinc-100 p-1 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-800"
                           role="tablist"
                           :aria-label="t.descriptionVersions"
@@ -7561,23 +7841,34 @@ const humanError = (error: unknown) => {
                               : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'"
                             @click="taskDescriptionView = source"
                           >
-                            <UIcon v-if="selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-3.5 text-teal-600 dark:text-teal-400" />
-                            {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
+                            <UIcon v-if="source !== 'visual' && selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-3.5 text-teal-600 dark:text-teal-400" />
+                            {{ source === 'original' ? t.originalDescription : source === 'refined' ? t.refinedDescription : (locale === 'de' ? 'Visuelle Umsetzung' : 'Visual implementation') }}
                           </button>
                         </div>
                       </div>
-                      <div v-if="selectedTaskHasRefinementWorkspace" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div v-if="selectedTaskHasDescriptionWorkspace" class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <p class="max-w-2xl leading-5 text-zinc-500 dark:text-zinc-400">{{ selectedTaskDescriptionHint }}</p>
                         <UBadge v-if="selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
                           {{ t.activeDescription }}
                         </UBadge>
                       </div>
+                      <TaskVisualImplementationPanel
+                        v-if="taskDescriptionView === 'visual' && latestAppliedVisualRefinement"
+                        :locale="locale"
+                        :run="latestAppliedVisualRefinement"
+                        @resume="resumeTaskVisualRefinement"
+                      />
                       <div
-                        v-if="selectedTaskVisibleDescription"
+                        v-else-if="selectedTaskVisibleDescription"
                         :id="`task-description-panel-${taskDescriptionView}`"
-                        :aria-labelledby="selectedTaskHasRefinementWorkspace ? `task-description-tab-${taskDescriptionView}` : undefined"
+                        :aria-labelledby="selectedTaskHasDescriptionWorkspace ? `task-description-tab-${taskDescriptionView}` : undefined"
                         role="tabpanel"
                       >
+                        <div v-if="taskDescriptionView === 'refined'" class="mb-3 flex justify-end">
+                          <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-rotate-ccw" @click="resumeTaskRefinement">
+                            {{ locale === 'de' ? 'Refinement wieder aufnehmen' : 'Resume refinement' }}
+                          </UButton>
+                        </div>
                         <UEditor
                           :model-value="selectedTaskVisibleDescription"
                           content-type="markdown"
@@ -7606,9 +7897,9 @@ const humanError = (error: unknown) => {
                       />
                     </UFormField>
 
-                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasRefinementWorkspace ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
+                    <UFormField :label="selectedTaskDescriptionLabel" :description="selectedTaskHasDescriptionWorkspace ? selectedTaskDescriptionHint : t.markdownEditorHelp" size="lg">
                       <div
-                        v-if="selectedTaskHasRefinementWorkspace"
+                        v-if="selectedTaskHasDescriptionWorkspace"
                         class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
                       >
                         <div
@@ -7630,15 +7921,15 @@ const humanError = (error: unknown) => {
                               : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'"
                             @click="taskDescriptionView = source"
                           >
-                            <UIcon v-if="selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-4 text-teal-600 dark:text-teal-400" />
-                            {{ source === 'original' ? t.originalDescription : t.refinedDescription }}
+                            <UIcon v-if="source !== 'visual' && selectedTaskDescriptionSource === source" name="i-lucide-circle-check" class="size-4 text-teal-600 dark:text-teal-400" />
+                            {{ source === 'original' ? t.originalDescription : source === 'refined' ? t.refinedDescription : (locale === 'de' ? 'Visuelle Umsetzung' : 'Visual implementation') }}
                           </button>
                         </div>
                         <UBadge v-if="selectedTaskHasRefinement && selectedTaskDescriptionViewIsActive" color="primary" variant="soft" icon="i-lucide-check" size="sm">
                           {{ t.activeDescription }}
                         </UBadge>
                         <UButton
-                          v-else-if="selectedTaskHasRefinement"
+                          v-else-if="selectedTaskHasRefinement && taskDescriptionView !== 'visual'"
                           type="button"
                           color="neutral"
                           variant="soft"
@@ -7655,7 +7946,7 @@ const humanError = (error: unknown) => {
                         v-if="taskDescriptionView === 'original'"
                         id="task-description-panel-original"
                         role="tabpanel"
-                        :aria-labelledby="selectedTaskHasRefinementWorkspace ? 'task-description-tab-original' : undefined"
+                        :aria-labelledby="selectedTaskHasDescriptionWorkspace ? 'task-description-tab-original' : undefined"
                         class="ak-markdown-editor overflow-hidden rounded-xl border border-zinc-300 bg-white transition focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 dark:border-zinc-700 dark:bg-zinc-950"
                       >
                         <UEditor
@@ -7691,50 +7982,26 @@ const humanError = (error: unknown) => {
                       </div>
 
                       <div
-                        v-else
+                        v-else-if="taskDescriptionView === 'refined'"
                         id="task-description-panel-refined"
                         role="tabpanel"
                         aria-labelledby="task-description-tab-refined"
                         class="rounded-xl bg-zinc-50 px-4 py-4 ring-1 ring-zinc-200 sm:px-5 dark:bg-zinc-900/60 dark:ring-zinc-800"
                       >
-                        <TaskRefinementPanel
-                          embedded
-                          :runs="refinementPanelRuns"
-                          :current-run="selectedRefinementPanelRun"
-                          :labels="taskRefinementLabels"
-                          :busy="refinementBusy || taskSubmitting"
-                          :create-on-start="!selectedTaskId"
-                          :task-ready="Boolean(taskForm.title.trim())"
-                          :description-changed="selectedRefinementDescriptionChanged"
-                          :locale="locale === 'de' ? 'de-CH' : 'en-US'"
-                          @start="startTaskRefinement"
-                          @submit-answers="submitRefinementAnswers"
-                          @apply="requestApplyTaskRefinement"
-                          @cancel="cancelTaskRefinement"
-                          @retry="retryTaskRefinement"
-                          @select-run="selectTaskRefinement"
-                          @dirty-change="refinementDraftDirty = $event"
-                          @request-task-details="focusTaskTitleForRefinement"
-                        >
-                          <template #result="{ markdown, run }">
-                            <RefinementCommentDocument
-                              v-if="markdown"
-                              :markdown="markdown"
-                              :comments="run?.comments || []"
-                              :can-comment="run?.id === latestCompletedTaskRefinement?.id && !activeTaskRefinement"
-                              :busy="refinementBusy || taskSubmitting"
-                              :locale="locale === 'de' ? 'de-CH' : 'en-US'"
-                              :current-user-id="user?.id"
-                              :current-user-is-admin="user?.role === 'admin'"
-                              @create="run?.id && createRefinementComment(run.id, $event)"
-                              @update="run?.id && updateRefinementComment(run.id, $event)"
-                              @delete="run?.id && deleteRefinementComment(run.id, $event)"
-                              @revise="run?.id && reviseTaskRefinement(run.id)"
-                              @interaction-change="refinementCommentInteractionActive = $event"
-                            />
-                          </template>
-                        </TaskRefinementPanel>
+                        <div class="mb-3 flex justify-end">
+                          <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-rotate-ccw" @click="resumeTaskRefinement">
+                            {{ locale === 'de' ? 'Refinement wieder aufnehmen' : 'Resume refinement' }}
+                          </UButton>
+                        </div>
+                        <UEditor :model-value="selectedTaskVisibleDescription" content-type="markdown" :editable="false" :image="false" :mention="false" class="ak-markdown-readonly text-sm leading-6 text-zinc-700 dark:text-zinc-300" :ui="{ content: 'px-0 py-0', base: 'px-0 text-sm' }" />
                       </div>
+
+                      <TaskVisualImplementationPanel
+                        v-else-if="latestAppliedVisualRefinement"
+                        :locale="locale"
+                        :run="latestAppliedVisualRefinement"
+                        @resume="resumeTaskVisualRefinement"
+                      />
                     </UFormField>
                   </div>
 
@@ -7756,23 +8023,31 @@ const humanError = (error: unknown) => {
                   />
                 </template>
 
-                <div v-if="taskDescriptionView === 'original' && !taskRefinements.length" class="mt-6 flex flex-col gap-3 rounded-xl bg-teal-50/70 p-4 ring-1 ring-teal-100 sm:flex-row sm:items-center sm:justify-between dark:bg-teal-950/20 dark:ring-teal-900/60">
+                <div v-if="taskDescriptionView === 'original' && !selectedTaskHasRefinement && !selectedTaskHasVisualImplementation && !activeTaskRefinement" class="mt-6 rounded-xl bg-zinc-50 p-4 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:ring-zinc-800">
                   <div class="flex min-w-0 items-start gap-3">
                     <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-white text-teal-700 ring-1 ring-teal-100 dark:bg-zinc-950 dark:text-teal-300 dark:ring-teal-900/70">
                       <UIcon name="i-lucide-wand-sparkles" class="size-4" />
                     </span>
-                    <p class="text-sm leading-5 text-teal-950/80 dark:text-teal-100/80">{{ t.refinementCtaHint }}</p>
+                    <div class="min-w-0">
+                      <p class="text-sm font-semibold text-zinc-950 dark:text-zinc-100">{{ locale === 'de' ? 'Idee ausarbeiten' : 'Develop this idea' }}</p>
+                    </div>
                   </div>
-                  <UButton
-                    type="button"
-                    color="primary"
-                    variant="soft"
-                    icon="i-lucide-wand-sparkles"
-                    class="shrink-0 justify-center"
-                    @click="openTaskRefinementTab"
-                  >
-                    {{ refineTaskLabel }}
-                  </UButton>
+                  <div class="mt-4 grid gap-2 sm:grid-cols-2">
+                    <button type="button" class="flex min-h-12 items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskRefinementTab">
+                      <UIcon name="i-lucide-file-pen-line" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
+                      <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ refineTaskLabel }}</span>
+                      </span>
+                      <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
+                    </button>
+                    <button type="button" class="flex min-h-12 items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskVisualRefinementTab">
+                      <UIcon name="i-lucide-panels-top-left" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
+                      <span class="min-w-0">
+                        <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.visualRefinementCta }}</span>
+                      </span>
+                      <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
+                    </button>
+                  </div>
                 </div>
 
                 <section v-if="taskAttachments.length" class="mt-7 border-t border-zinc-200 pt-6 dark:border-zinc-800">
@@ -8027,6 +8302,79 @@ const humanError = (error: unknown) => {
               </aside>
             </section>
             </form>
+
+            <section
+              v-if="textRefinementOpen"
+              id="task-panel-refinement"
+              role="tabpanel"
+              aria-labelledby="task-tab-refinement"
+              class="min-w-0"
+              :class="activeTaskTab === 'refinement' ? '' : 'hidden'"
+            >
+              <TaskRefinementPanel
+                :runs="refinementPanelRuns"
+                :current-run="selectedRefinementPanelRun"
+                :initial-brief="taskForm.description"
+                :labels="taskRefinementLabels"
+                :busy="refinementBusy || taskSubmitting"
+                :create-on-start="!selectedTaskId"
+                :task-ready="Boolean(taskForm.title.trim())"
+                :description-changed="selectedRefinementDescriptionChanged"
+                :locale="locale === 'de' ? 'de-CH' : 'en-US'"
+                @start="startTaskRefinement"
+                @submit-answers="submitRefinementAnswers"
+                @apply="requestApplyTaskRefinement"
+                @cancel="cancelTaskRefinement"
+                @retry="retryTaskRefinement"
+                @select-run="selectTaskRefinement"
+                @dirty-change="refinementDraftDirty = $event"
+                @request-task-details="focusTaskTitleForRefinement"
+              >
+                <template #result="{ markdown, run }">
+                  <RefinementCommentDocument
+                    v-if="markdown"
+                    :markdown="markdown"
+                    :comments="run?.comments || []"
+                    :can-comment="run?.id === latestCompletedTaskRefinement?.id && !activeTaskRefinement"
+                    :busy="refinementBusy || taskSubmitting"
+                    :locale="locale === 'de' ? 'de-CH' : 'en-US'"
+                    :current-user-id="user?.id"
+                    :current-user-is-admin="user?.role === 'admin'"
+                    @create="run?.id && createRefinementComment(run.id, $event)"
+                    @update="run?.id && updateRefinementComment(run.id, $event)"
+                    @delete="run?.id && deleteRefinementComment(run.id, $event)"
+                    @revise="run?.id && reviseTaskRefinement(run.id)"
+                    @interaction-change="refinementCommentInteractionActive = $event"
+                  />
+                </template>
+              </TaskRefinementPanel>
+            </section>
+
+            <section
+              v-if="visualRefinementOpen"
+              id="task-panel-visual"
+              role="tabpanel"
+              aria-labelledby="task-tab-visual"
+              class="min-w-0"
+              :class="activeTaskTab === 'visual' ? '' : 'hidden'"
+            >
+              <TaskVisualRefinementPanel
+                :locale="locale"
+                :runs="visualRefinementPanelRuns"
+                :current-run="selectedVisualRefinementPanelRun"
+                :initial-brief="taskForm.description"
+                :busy="refinementBusy || taskSubmitting"
+                :task-ready="Boolean(taskForm.title.trim())"
+                :can-comment="selectedTaskVisualRefinement?.id === latestCompletedVisualRefinement?.id && !activeTaskRefinement"
+                @start="startTaskVisualRefinement"
+                @apply="applyTaskVisualRefinement"
+                @iterate="iterateTaskVisualRefinement"
+                @select-run="selectedVisualRefinementId = $event"
+                @add-comment="createVisualRefinementComment"
+                @update-comment="updateVisualRefinementComment"
+                @request-task-details="focusTaskTitleForRefinement"
+              />
+            </section>
 
             <section
               v-if="activeTaskTab === 'activity'"
