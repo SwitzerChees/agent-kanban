@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -38,6 +38,19 @@ export const projects = sqliteTable('projects', {
   folderPath: text('folder_path').notNull(),
   agentConcurrencyLimit: integer('agent_concurrency_limit').notNull().default(1),
   createdBy: text('created_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const wikiPages = sqliteTable('wiki_pages', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  parentId: text('parent_id').references((): AnySQLiteColumn => wikiPages.id, { onDelete: 'set null' }),
+  title: text('title').notNull(),
+  content: text('content').notNull().default(''),
+  position: integer('position').notNull().default(0),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -361,6 +374,7 @@ export const activity = sqliteTable('activity', {
 export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type WikiPage = typeof wikiPages.$inferSelect;
 export type ProjectHarnessLimit = typeof projectHarnessLimits.$inferSelect;
 export type ProjectChatThread = typeof projectChatThreads.$inferSelect;
 export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;

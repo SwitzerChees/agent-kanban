@@ -12,6 +12,7 @@ security:
   - bearerAuth: []
 tags:
   - name: Projects
+  - name: Wiki
   - name: Project chat
   - name: Hierarchy
   - name: Tasks
@@ -60,6 +61,50 @@ paths:
       operationId: getBoard
       summary: Get the board, columns, hierarchy, members, tags, and tasks
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/projects/{projectId}/wiki/pages:
+    get:
+      tags: [Wiki]
+      operationId: listWikiPages
+      summary: List the complete project-local wiki page tree
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [Wiki]
+      operationId: createWikiPage
+      summary: Create a root page or child page in the project wiki
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiPageWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-pages/{pageId}:
+    patch:
+      tags: [Wiki]
+      operationId: updateWikiPage
+      summary: Update wiki page content, title, parent, or position
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiPageWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [Wiki]
+      operationId: deleteWikiPage
+      summary: Delete a wiki page that has no child pages
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
@@ -577,6 +622,7 @@ components:
       name: ak_session
   parameters:
     ProjectId: { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+    WikiPageId: { name: pageId, in: path, required: true, schema: { type: string, format: uuid } }
     ChatId: { name: chatId, in: path, required: true, schema: { type: string, format: uuid } }
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
     OberthemaId: { name: oberthemaId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -615,6 +661,13 @@ components:
             codex: { type: integer, minimum: 0, maximum: 100, default: 1 }
             opencode: { type: integer, minimum: 0, maximum: 100, default: 1 }
             prime-agent: { type: integer, minimum: 0, maximum: 100, default: 1 }
+    WikiPageWrite:
+      type: object
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        content: { type: string, maxLength: 1000000, description: Markdown content }
+        parentId: { type: [string, 'null'], format: uuid }
+        position: { type: integer, minimum: 0, maximum: 1000000000 }
     TaskCreate:
       type: object
       required: [title]
