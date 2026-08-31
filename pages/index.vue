@@ -1841,6 +1841,7 @@ const visualRefinementPanelRuns = computed(() => visualTaskRefinements.value.map
   appliedAt: run.appliedAt,
   error: run.error,
   createdAt: run.createdAt,
+  visualSettings: run.visualSettings,
   artifacts: run.visuals.map((visual) => ({
     id: visual.artifactId || visual.attachmentId || visual.fileName,
     title: visual.title || visual.fileName,

@@ -32,6 +32,7 @@ export interface VisualRefinementRun {
   appliedAt?: string | null;
   error?: string | null;
   createdAt: string;
+  visualSettings?: { desktop: boolean; mobile: boolean; states: boolean };
   artifacts: VisualRefinementArtifact[];
   comments: VisualRefinementComment[];
 }
@@ -84,8 +85,9 @@ const copy = computed(() => props.locale === 'de' ? {
   noScreens: 'The run completed without screenshots.', failed: 'The visual proposal could not be completed.', newAttempt: 'Start a new proposal', history: 'Choose version',
 });
 
-const brief = ref(props.initialBrief);
-const targets = reactive({ desktop: true, mobile: true, states: false });
+const initialRun = props.currentRun ?? props.runs[0] ?? null;
+const brief = ref(initialRun?.brief?.trim() || props.initialBrief);
+const targets = reactive({ ...(initialRun?.visualSettings ?? { desktop: true, mobile: true, states: false }) });
 const activeArtifactIndex = ref(0);
 const compareMode = ref(false);
 const comparePosition = ref(48);
@@ -124,7 +126,13 @@ const failureDescription = computed(() => {
 });
 
 watch(() => props.initialBrief, (value) => { if (!brief.value.trim()) brief.value = value; });
-watch(() => activeRun.value?.id, () => { activeArtifactIndex.value = 0; compareMode.value = false; resetPin(); });
+watch(() => activeRun.value?.id, () => {
+  brief.value = activeRun.value?.brief?.trim() || props.initialBrief;
+  Object.assign(targets, activeRun.value?.visualSettings ?? { desktop: true, mobile: true, states: false });
+  activeArtifactIndex.value = 0;
+  compareMode.value = false;
+  resetPin();
+});
 
 function startRun() {
   if (!props.taskReady) { emit('requestTaskDetails'); return; }
@@ -192,7 +200,8 @@ function toggleComment(comment: VisualRefinementComment) {
           <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-zinc-100 text-teal-700 dark:bg-zinc-900 dark:text-teal-300"><UIcon name="i-lucide-panels-top-left" class="size-4.5" /></span>
           <h2 id="visual-refinement-title" class="text-base font-semibold text-zinc-950 dark:text-white">{{ copy.title }}</h2>
         </div>
-        <label v-if="runs.length > 1" class="sr-only">{{ copy.history }}</label>
+        <select v-if="runs.length > 1" class="h-8 rounded-lg border border-zinc-300 bg-white px-2 text-xs font-semibold text-zinc-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200" :aria-label="copy.history" :value="activeRun?.id" @change="emit('selectRun', ($event.target as HTMLSelectElement).value)"><option v-for="run in runs" :key="run.id" :value="run.id">V{{ run.version }}</option></select>
+        <UBadge v-else-if="activeRun" color="neutral" variant="soft" size="sm">V{{ activeRun.version }}</UBadge>
       </div>
       <UAlert v-if="activeRun?.status === 'failed'" class="mt-5" color="error" variant="soft" icon="i-lucide-circle-alert" :title="copy.failed" :description="failureDescription" />
       <UAlert v-if="!taskReady" class="mt-5" color="warning" variant="soft" icon="i-lucide-heading-1" :description="copy.titleRequired" />
