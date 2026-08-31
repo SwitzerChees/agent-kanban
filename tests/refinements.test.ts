@@ -261,6 +261,7 @@ describe('task refinements', () => {
     const sanitizedCases = [
       { error: Object.assign(new Error('untrusted malformed payload'), { code: 'invalid_output' }), code: 'refinement_invalid_output' },
       { error: Object.assign(new Error('private git failure detail'), { code: 'refinement_master_sync_failed' }), code: 'refinement_master_sync_failed' },
+      { error: new Error('turn_failed: Selected model is at capacity (serverOverloaded)'), code: 'refinement_capacity' },
       { error: Object.assign(new Error('workspace policy rejected a path'), { code: 'security_violation' }), code: 'refinement_security_policy' },
       { error: new Error('refinement_max_question_rounds_exceeded'), code: 'refinement_question_limit' },
     ];

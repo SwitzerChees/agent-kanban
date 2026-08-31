@@ -651,6 +651,7 @@ export function ensureDatabase() {
     SET error = CASE
       WHEN status = 'failed' AND error IN (
         'refinement_timeout',
+        'refinement_capacity',
         'refinement_invalid_output',
         'refinement_security_policy',
         'refinement_question_limit',

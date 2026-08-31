@@ -4,6 +4,11 @@ import path from 'node:path';
 import { lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
+import {
+  configuredAgentRetries,
+  isTransientAgentCapacityFailure,
+  runWithAgentRetries,
+} from './agent-retry';
 import { CODEX_MODEL } from './agent-harness';
 import { resolveServiceConfig } from './config';
 import { runCodexSession } from './codex';
@@ -94,54 +99,70 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
 
   try {
     try {
-      await runCodexSession({
-        config: { ...config.codex, model: CODEX_MODEL, reasoningEffort: context.reasoningEffort },
-        workspacePath,
-        issue,
-        promptTemplate: prompt,
-        promptPrefix: [
-          buildAgentsPromptPrefix(agentsContext),
-          visualRuntimeInstructions(),
-        ].join('\n\n---\n\n'),
-        attempt: null,
-        maxTurns: Math.min(4, Math.max(2, config.agent.maxTurns)),
+      const retryCount = configuredAgentRetries();
+      await runWithAgentRetries({
+        retries: retryCount,
         signal,
-        onEvent: (event) => {
-          if (event.event === 'item/agentMessage/delta') return;
-          runtimeLogger.debug('visual refinement agent event', {
+        retryDelayMs: visualRefinementRetryDelayMs(),
+        shouldRetry: isTransientAgentCapacityFailure,
+        run: attempt => runCodexSession({
+          config: { ...config.codex, model: CODEX_MODEL, reasoningEffort: context.reasoningEffort },
+          workspacePath,
+          issue,
+          promptTemplate: prompt,
+          promptPrefix: [
+            buildAgentsPromptPrefix(agentsContext),
+            visualRuntimeInstructions(),
+          ].join('\n\n---\n\n'),
+          attempt: attempt === 0 ? null : attempt,
+          maxTurns: Math.min(4, Math.max(2, config.agent.maxTurns)),
+          signal,
+          onEvent: (event) => {
+            if (event.event === 'item/agentMessage/delta') return;
+            runtimeLogger.debug('visual refinement agent event', {
+              refinement_id: context.id,
+              event: event.event,
+              message: event.message,
+            });
+          },
+          refreshIssue: async () => issue,
+          shouldContinue: () => false,
+          completionCheck: async () => {
+            try {
+              await readVisualManifest(manifestPath, workspacePath);
+              return { ok: true, message: 'visual refinement manifest and screenshots verified' };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              return {
+                ok: false,
+                message,
+                prompt: [
+                  'The visual refinement is not complete yet.',
+                  `Fix this validation problem: ${message}`,
+                  `Then write the required manifest to ${manifestPath} and ensure every screenshot path exists.`,
+                ].join('\n'),
+              };
+            }
+          },
+          nativeSessionId: context.threadId,
+          onSession: (threadId) => {
+            if (threadId === context.threadId) return;
+            setRefinementThread(context.id, threadId, context.leaseToken);
+            context.threadId = threadId;
+          },
+          runtime: {
+            unitName: taskHarnessUnitName(context.taskId, context.id, attempt),
+            sessionRoot,
+          },
+        }),
+        onRetry: (retry, error) => {
+          runtimeLogger.warn('retrying visual refinement after temporary model capacity failure', {
             refinement_id: context.id,
-            event: event.event,
-            message: event.message,
+            task_id: context.taskId,
+            retry,
+            max_retries: retryCount,
+            error: error instanceof Error ? error.message : String(error),
           });
-        },
-        refreshIssue: async () => issue,
-        shouldContinue: () => false,
-        completionCheck: async () => {
-          try {
-            await readVisualManifest(manifestPath, workspacePath);
-            return { ok: true, message: 'visual refinement manifest and screenshots verified' };
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            return {
-              ok: false,
-              message,
-              prompt: [
-                'The visual refinement is not complete yet.',
-                `Fix this validation problem: ${message}`,
-                `Then write the required manifest to ${manifestPath} and ensure every screenshot path exists.`,
-              ].join('\n'),
-            };
-          }
-        },
-        nativeSessionId: context.threadId,
-        onSession: (threadId) => {
-          if (threadId === context.threadId) return;
-          setRefinementThread(context.id, threadId, context.leaseToken);
-          context.threadId = threadId;
-        },
-        runtime: {
-          unitName: taskHarnessUnitName(context.taskId, context.id, 0),
-          sessionRoot,
         },
       });
     } catch (error) {
@@ -173,6 +194,11 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
   } finally {
     await closeTaskBrowserSession(browserSession);
   }
+}
+
+export function visualRefinementRetryDelayMs(env: NodeJS.ProcessEnv = process.env) {
+  const parsed = Number.parseInt(env.KANBAN_REFINEMENT_RETRY_DELAY_MS ?? '10000', 10);
+  return Number.isFinite(parsed) ? Math.min(60_000, Math.max(1_000, parsed)) : 10_000;
 }
 
 export function buildVisualRefinementPrompt(context: RefinementContext, manifestPath: string, artifactDirectory: string) {

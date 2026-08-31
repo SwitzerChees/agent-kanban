@@ -299,6 +299,7 @@ const localizedFailureMessage = computed(() => {
   const messages = props.locale.toLowerCase().startsWith('de')
     ? {
         refinement_timeout: 'Der gewählte KI-Harness hat für dieses Refinement zu lange benötigt. Du kannst es erneut versuchen.',
+        refinement_capacity: 'Das KI-Modell war vorübergehend ausgelastet. Du kannst das Refinement erneut starten.',
         refinement_invalid_output: 'Der gewählte KI-Harness hat ein unvollständiges Refinement geliefert. Du kannst es erneut versuchen.',
         refinement_master_sync_failed: 'Der Projekt-Master konnte vor dem Refinement nicht aktualisiert werden. Prüfe Branch, Remote und mögliche Pull-Konflikte und versuche es erneut.',
         refinement_security_policy: 'Das Refinement wurde gestoppt, weil eine Regel für den Projektzugriff nicht erfüllt war.',
@@ -307,6 +308,7 @@ const localizedFailureMessage = computed(() => {
       }
     : {
         refinement_timeout: 'The selected AI harness took too long to finish this refinement. You can try again.',
+        refinement_capacity: 'The AI model was temporarily at capacity. You can start the refinement again.',
         refinement_invalid_output: 'The selected AI harness returned an incomplete refinement. You can try again.',
         refinement_master_sync_failed: 'The project master branch could not be updated before refinement. Check the branch, remote, and possible pull conflicts, then try again.',
         refinement_security_policy: 'The refinement stopped because a project access rule was not satisfied.',

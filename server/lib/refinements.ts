@@ -1462,6 +1462,9 @@ function refinementPublicErrorCode(error: unknown) {
   const message = error instanceof Error ? error.message : String(error ?? '');
   const classification = `${code} ${name} ${message}`.toLowerCase();
   if (name === 'ZodError') return 'refinement_invalid_output';
+  if (/serveroverloaded|model is at capacity|server is at capacity|server (?:is )?overloaded|too many requests|rate.?limit/.test(classification)) {
+    return 'refinement_capacity';
+  }
   if (/security|policy|sandbox|approval|permission|symlink|outside_allowed/.test(classification)) {
     return 'refinement_security_policy';
   }

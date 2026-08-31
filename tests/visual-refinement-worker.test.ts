@@ -36,6 +36,10 @@ describe('visual refinement worker resilience', () => {
     } as unknown as Parameters<typeof visualWorker.buildVisualRefinementPrompt>[0], '/workspace/manifest.json', '/workspace/artifacts');
     expect(prompt).toContain('as soon as the first complete target screenshot set exists');
     expect(prompt).toContain('do not postpone it until after optional checks');
+
+    expect(visualWorker.visualRefinementRetryDelayMs({})).toBe(10_000);
+    expect(visualWorker.visualRefinementRetryDelayMs({ KANBAN_REFINEMENT_RETRY_DELAY_MS: '1' })).toBe(1_000);
+    expect(visualWorker.visualRefinementRetryDelayMs({ KANBAN_REFINEMENT_RETRY_DELAY_MS: '999999' })).toBe(60_000);
   });
 
   test('recovers complete target screenshots after an interrupted agent session', async () => {

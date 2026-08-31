@@ -115,6 +115,9 @@ const failureDescription = computed(() => {
   if (!code || code === 'refinement_failed') return props.locale === 'de'
     ? 'Du kannst den Entwurf mit denselben Angaben erneut starten.'
     : 'You can start the proposal again with the same settings.';
+  if (code === 'refinement_capacity') return props.locale === 'de'
+    ? 'Das KI-Modell war vorübergehend ausgelastet. Du kannst den Entwurf erneut starten.'
+    : 'The AI model was temporarily at capacity. You can start the proposal again.';
   if (code === 'refinement_timeout') return props.locale === 'de' ? 'Der Render-Lauf hat zu lange gedauert.' : 'The render run took too long.';
   if (code === 'refinement_master_sync_failed') return props.locale === 'de' ? 'Der Task-Worktree konnte nicht vorbereitet werden.' : 'The task worktree could not be prepared.';
   return props.locale === 'de' ? 'Der Render-Lauf wurde sicher beendet.' : 'The render run was stopped safely.';
