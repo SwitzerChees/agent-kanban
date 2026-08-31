@@ -5,7 +5,7 @@ import { commandPaletteTaskBuckets } from '~/utils/command-palette';
 import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 
 type Locale = 'en' | 'de';
-type View = 'board' | 'projects' | 'users';
+type View = 'board' | 'wiki' | 'projects' | 'users';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type TaskDescriptionView = TaskDescriptionSource | 'visual';
@@ -1069,6 +1069,7 @@ const dictionary = {
 } as const;
 
 const locale = ref<Locale>('en');
+useHead(() => ({ htmlAttrs: { lang: locale.value } }));
 const colorMode = useColorMode();
 const activeView = ref<View>('board');
 const user = ref<User | null>(null);
@@ -1419,6 +1420,7 @@ const apiTokenExpiryItems = computed(() => [
   { label: t.value.apiTokenExpiryNever, value: 'never' },
 ]);
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
+const projectSurfaceCopy = computed(() => ({ board: 'Board', wiki: 'Wiki' }));
 const selectedOberthema = computed(() => board.value?.oberthemen.find((topic) => topic.id === selectedOberthemaId.value) ?? null);
 const selectedUnterthema = computed(() => board.value?.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value) ?? null);
 const userInitials = computed(() => {
@@ -2036,8 +2038,32 @@ const closeSidebarOnMobile = () => {
   if (isMobileViewport.value) closeMobileSidebar();
 };
 
+const syncProjectSurfaceRoute = (surface: Extract<View, 'board' | 'wiki'>) => {
+  if (!import.meta.client) return;
+  const base = `${window.location.pathname}${window.location.search}`;
+  window.history.replaceState(window.history.state, '', surface === 'wiki' ? `${base}#wiki` : base);
+};
+
+const projectIdFromWikiRoute = () => {
+  if (!import.meta.client) return null;
+  const encodedProjectId = window.location.hash.match(/^#wiki\/([^/]+)(?:\/|$)/)?.[1];
+  if (!encodedProjectId) return null;
+  try {
+    return decodeURIComponent(encodedProjectId);
+  } catch {
+    return null;
+  }
+};
+
+const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki'>) => {
+  activeView.value = surface;
+  syncProjectSurfaceRoute(surface);
+  closeSidebarOnMobile();
+};
+
 const selectAdminView = (view: Extract<View, 'projects' | 'users'>) => {
   activeView.value = view;
+  syncProjectSurfaceRoute('board');
   closeSidebarOnMobile();
 };
 
@@ -2150,7 +2176,7 @@ onMounted(async () => {
   syncMobileViewport();
   sidebarCollapsed.value = isMobileViewport.value
     || localStorage.getItem('ak_sidebar_collapsed') === 'true';
-  selectedProjectId.value = localStorage.getItem('ak_project');
+  selectedProjectId.value = projectIdFromWikiRoute() ?? localStorage.getItem('ak_project');
   window.addEventListener('keydown', handleWindowKeydown, true);
   window.addEventListener('keyup', handleWindowKeyup, true);
   window.addEventListener('pointerdown', handleWindowPointerDown, true);
@@ -2161,6 +2187,7 @@ onMounted(async () => {
   window.addEventListener('blur', handleWindowBlur);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   await loadSession();
+  if (window.location.hash.startsWith('#wiki') && selectedProjectId.value) activeView.value = 'wiki';
   startBoardRefresh();
 });
 
@@ -2290,6 +2317,7 @@ const selectProject = async (projectId: string) => {
   }
   selectedProjectId.value = projectId;
   activeView.value = 'board';
+  syncProjectSurfaceRoute('board');
   closeSidebarOnMobile();
 };
 
@@ -6046,7 +6074,7 @@ const humanError = (error: unknown) => {
         </button>
 
         <nav v-if="isAdmin" class="mb-4 grid gap-1" :aria-label="t.admin">
-          <p v-if="!sidebarCollapsed" class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ t.admin }}</p>
+          <p v-if="!sidebarCollapsed" class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-600 dark:text-zinc-400">{{ t.admin }}</p>
           <UButton
             :variant="activeView === 'projects' ? 'soft' : 'ghost'"
             color="neutral"
@@ -6075,8 +6103,8 @@ const humanError = (error: unknown) => {
 
         <nav class="ak-sidebar-projects min-h-0 flex-1 overflow-y-auto overflow-x-hidden" :aria-label="t.workspace">
           <div v-if="!sidebarCollapsed" class="mb-2 flex items-center justify-between px-2">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ t.workspace }}</p>
-            <span class="text-[11px] tabular-nums text-zinc-400">{{ projects.length }}</span>
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-600 dark:text-zinc-400">{{ t.workspace }}</p>
+            <span class="text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">{{ projects.length }}</span>
           </div>
           <div class="grid gap-1">
             <button
@@ -6086,18 +6114,18 @@ const humanError = (error: unknown) => {
               class="ak-project-nav-item group flex w-full items-center rounded-xl text-left transition"
               :class="[
                 sidebarCollapsed ? 'h-11 justify-center px-0' : 'min-h-12 gap-3 px-2 py-1.5',
-                project.id === selectedProjectId && activeView === 'board'
+                project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki')
                   ? 'bg-teal-50 text-teal-950 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.18)] dark:bg-teal-950/45 dark:text-teal-50'
                   : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900',
               ]"
-              :aria-current="project.id === selectedProjectId && activeView === 'board' ? 'page' : undefined"
+              :aria-current="project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki') ? 'page' : undefined"
               :aria-label="project.name"
               :title="project.name"
               @click="selectProject(project.id)"
             >
               <span
                 class="grid size-9 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tracking-wide transition"
-                :class="project.id === selectedProjectId && activeView === 'board'
+                :class="project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki')
                   ? 'border-teal-200 bg-white text-teal-700 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200'
                   : 'border-zinc-200 bg-white text-zinc-500 group-hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400'"
               >
@@ -6177,7 +6205,7 @@ const humanError = (error: unknown) => {
         :aria-hidden="isMobileViewport && !sidebarCollapsed ? 'true' : undefined"
         :inert="isMobileViewport && !sidebarCollapsed"
       >
-        <header v-if="activeView !== 'board'" class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
+        <header v-if="activeView === 'projects' || activeView === 'users'" class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
           <div class="flex min-w-0 items-center gap-3">
             <UButton
               class="md:hidden"
@@ -6315,6 +6343,16 @@ const humanError = (error: unknown) => {
           </UCard>
         </section>
 
+        <ProjectWiki
+          v-else-if="activeView === 'wiki' && board"
+          :project="board.project"
+          :locale="locale"
+          :is-mobile-viewport="isMobileViewport"
+          :sidebar-collapsed="sidebarCollapsed"
+          @show-board="selectProjectSurface('board')"
+          @open-sidebar="openMobileSidebar"
+        />
+
         <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
           <div class="ak-board-toolbar flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <UButton
@@ -6339,6 +6377,30 @@ const humanError = (error: unknown) => {
               <h1 class="ak-display truncate text-base font-semibold tracking-tight text-zinc-950 dark:text-white">
                 {{ selectedProject?.name }}
               </h1>
+            </div>
+
+            <div class="ak-surface-switch" role="tablist" :aria-label="selectedProject?.name">
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button is-active"
+                :aria-label="projectSurfaceCopy.board"
+                :aria-selected="true"
+              >
+                <UIcon name="i-lucide-columns-3" class="size-3.5" />
+                <span class="hidden sm:inline">{{ projectSurfaceCopy.board }}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button"
+                :aria-label="projectSurfaceCopy.wiki"
+                :aria-selected="false"
+                @click="selectProjectSurface('wiki')"
+              >
+                <UIcon name="i-lucide-notebook-tabs" class="size-3.5" />
+                <span class="hidden sm:inline">{{ projectSurfaceCopy.wiki }}</span>
+              </button>
             </div>
 
             <USelect

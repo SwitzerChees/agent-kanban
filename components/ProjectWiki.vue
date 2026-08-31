@@ -1,0 +1,686 @@
+<script setup lang="ts">
+import type { EditorToolbarItem } from '@nuxt/ui';
+import TaskItem from '@tiptap/extension-task-item';
+import TaskList from '@tiptap/extension-task-list';
+
+type Locale = 'en' | 'de';
+type WikiTemplateId = 'blank' | 'meeting' | 'checklist';
+
+interface WikiProject {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+}
+
+interface WikiPage {
+  id: string;
+  projectId: string;
+  parentId: string | null;
+  title: string;
+  content: string;
+  position: number;
+  createdBy: string;
+  updatedBy: string;
+  createdByName: string | null;
+  updatedByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface WikiTreeRow {
+  page: WikiPage;
+  depth: number;
+}
+
+const props = defineProps<{
+  project: WikiProject;
+  locale: Locale;
+  isMobileViewport: boolean;
+  sidebarCollapsed: boolean;
+}>();
+
+const emit = defineEmits<{
+  showBoard: [];
+  openSidebar: [];
+}>();
+
+const copy = computed(() => props.locale === 'de' ? {
+  board: 'Board',
+  wiki: 'Wiki',
+  pages: 'Seiten',
+  search: 'Seiten durchsuchen …',
+  newPage: 'Neue Seite',
+  addChild: 'Unterseite anlegen',
+  edit: 'Bearbeiten',
+  save: 'Speichern',
+  cancel: 'Abbrechen',
+  delete: 'Seite löschen',
+  deleteConfirm: 'Diese Wiki-Seite wirklich löschen?',
+  share: 'Link kopieren',
+  copied: 'Link kopiert',
+  saved: 'Gespeichert',
+  saving: 'Wird gespeichert …',
+  editedBy: 'Bearbeitet von',
+  pageTree: 'Wiki-Seiten',
+  outline: 'Auf dieser Seite',
+  noOutline: 'Noch keine Überschriften',
+  noResults: 'Keine passenden Seiten.',
+  emptyTitle: 'Wissen, das beim Projekt bleibt',
+  emptyBody: 'Halte Meeting-Notizen, Entscheidungen, Checklisten und wiederkehrende Abläufe direkt neben dem Board fest.',
+  chooseTemplate: 'Mit einer Vorlage starten',
+  blank: 'Leere Seite',
+  blankHint: 'Für freie Notizen und Dokumentation',
+  meeting: 'Meeting-Notiz',
+  meetingHint: 'Agenda, Notizen, Entscheidungen und nächste Schritte',
+  checklist: 'Checkliste',
+  checklistHint: 'Wiederkehrende Abläufe und offene Punkte',
+  untitled: 'Unbenannte Seite',
+  meetingTitle: 'Neue Meeting-Notiz',
+  checklistTitle: 'Neue Checkliste',
+  titleLabel: 'Seitentitel',
+  contentLabel: 'Inhalt der Wiki-Seite',
+  placeholder: 'Schreibe Notizen, füge Überschriften hinzu oder erstelle eine Checkliste …',
+  rootPages: 'Projekt-Wiki',
+  loading: 'Wiki wird geladen …',
+  retry: 'Erneut versuchen',
+  childDeleteError: 'Die Seite hat noch Unterseiten. Lösche oder verschiebe diese zuerst.',
+  genericError: 'Die Wiki-Aktion konnte nicht abgeschlossen werden.',
+  bold: 'Fett',
+  italic: 'Kursiv',
+  paragraph: 'Absatz',
+  heading1: 'Überschrift 1',
+  heading2: 'Überschrift 2',
+  heading3: 'Überschrift 3',
+  bulletList: 'Aufzählung',
+  orderedList: 'Nummerierte Liste',
+  taskList: 'Checkliste',
+  quote: 'Zitat',
+  link: 'Link',
+  undo: 'Rückgängig',
+  redo: 'Wiederholen',
+} : {
+  board: 'Board',
+  wiki: 'Wiki',
+  pages: 'Pages',
+  search: 'Search pages …',
+  newPage: 'New page',
+  addChild: 'Add child page',
+  edit: 'Edit',
+  save: 'Save',
+  cancel: 'Cancel',
+  delete: 'Delete page',
+  deleteConfirm: 'Delete this wiki page?',
+  share: 'Copy link',
+  copied: 'Link copied',
+  saved: 'Saved',
+  saving: 'Saving …',
+  editedBy: 'Edited by',
+  pageTree: 'Wiki pages',
+  outline: 'On this page',
+  noOutline: 'No headings yet',
+  noResults: 'No matching pages.',
+  emptyTitle: 'Knowledge that stays with the project',
+  emptyBody: 'Keep meeting notes, decisions, checklists, and recurring processes right beside the board.',
+  chooseTemplate: 'Start with a template',
+  blank: 'Blank page',
+  blankHint: 'For free-form notes and documentation',
+  meeting: 'Meeting notes',
+  meetingHint: 'Agenda, notes, decisions, and next steps',
+  checklist: 'Checklist',
+  checklistHint: 'Recurring processes and open items',
+  untitled: 'Untitled page',
+  meetingTitle: 'New meeting notes',
+  checklistTitle: 'New checklist',
+  titleLabel: 'Page title',
+  contentLabel: 'Wiki page content',
+  placeholder: 'Write notes, add headings, or create a checklist …',
+  rootPages: 'Project wiki',
+  loading: 'Loading wiki …',
+  retry: 'Try again',
+  childDeleteError: 'This page still has child pages. Delete or move them first.',
+  genericError: 'The wiki action could not be completed.',
+  bold: 'Bold',
+  italic: 'Italic',
+  paragraph: 'Paragraph',
+  heading1: 'Heading 1',
+  heading2: 'Heading 2',
+  heading3: 'Heading 3',
+  bulletList: 'Bullet list',
+  orderedList: 'Numbered list',
+  taskList: 'Checklist',
+  quote: 'Quote',
+  link: 'Link',
+  undo: 'Undo',
+  redo: 'Redo',
+});
+
+const pages = ref<WikiPage[]>([]);
+const selectedPageId = ref<string | null>(null);
+const searchQuery = ref('');
+const loading = ref(true);
+const saving = ref(false);
+const editing = ref(false);
+const createMenuOpen = ref(false);
+const mobilePagesOpen = ref(false);
+const copied = ref(false);
+const errorMessage = ref<string | null>(null);
+const draftTitle = ref('');
+const draftContent = ref('');
+
+const templates = computed(() => [{
+  id: 'blank' as const,
+  label: copy.value.blank,
+  hint: copy.value.blankHint,
+  icon: 'i-lucide-file-plus-2',
+  title: copy.value.untitled,
+  content: '',
+}, {
+  id: 'meeting' as const,
+  label: copy.value.meeting,
+  hint: copy.value.meetingHint,
+  icon: 'i-lucide-calendar-clock',
+  title: copy.value.meetingTitle,
+  content: props.locale === 'de'
+    ? '## Agenda\n\n- [ ] Thema ergänzen\n\n## Notizen\n\n\n## Entscheidungen\n\n\n## Nächste Schritte\n\n- [ ] Aufgabe ergänzen\n'
+    : '## Agenda\n\n- [ ] Add topic\n\n## Notes\n\n\n## Decisions\n\n\n## Next steps\n\n- [ ] Add action item\n',
+}, {
+  id: 'checklist' as const,
+  label: copy.value.checklist,
+  hint: copy.value.checklistHint,
+  icon: 'i-lucide-list-checks',
+  title: copy.value.checklistTitle,
+  content: props.locale === 'de'
+    ? '## Checkliste\n\n- [ ] Ersten Punkt ergänzen\n- [ ] Zweiten Punkt ergänzen\n'
+    : '## Checklist\n\n- [ ] Add first item\n- [ ] Add second item\n',
+}]);
+
+const editorToolbarItems = computed<EditorToolbarItem[][]>(() => [[
+  { kind: 'paragraph', icon: 'i-lucide-pilcrow', tooltip: { text: copy.value.paragraph }, 'aria-label': copy.value.paragraph },
+  { kind: 'heading', level: 1, icon: 'i-lucide-heading-1', tooltip: { text: copy.value.heading1 }, 'aria-label': copy.value.heading1 },
+  { kind: 'heading', level: 2, icon: 'i-lucide-heading-2', tooltip: { text: copy.value.heading2 }, 'aria-label': copy.value.heading2 },
+  { kind: 'heading', level: 3, icon: 'i-lucide-heading-3', tooltip: { text: copy.value.heading3 }, 'aria-label': copy.value.heading3 },
+], [
+  { kind: 'mark', mark: 'bold', icon: 'i-lucide-bold', tooltip: { text: copy.value.bold }, 'aria-label': copy.value.bold },
+  { kind: 'mark', mark: 'italic', icon: 'i-lucide-italic', tooltip: { text: copy.value.italic }, 'aria-label': copy.value.italic },
+], [
+  { kind: 'bulletList', icon: 'i-lucide-list', tooltip: { text: copy.value.bulletList }, 'aria-label': copy.value.bulletList },
+  { kind: 'orderedList', icon: 'i-lucide-list-ordered', tooltip: { text: copy.value.orderedList }, 'aria-label': copy.value.orderedList },
+  { kind: 'taskList', icon: 'i-lucide-list-checks', tooltip: { text: copy.value.taskList }, 'aria-label': copy.value.taskList },
+  { kind: 'blockquote', icon: 'i-lucide-text-quote', tooltip: { text: copy.value.quote }, 'aria-label': copy.value.quote },
+  { kind: 'link', icon: 'i-lucide-link-2', tooltip: { text: copy.value.link }, 'aria-label': copy.value.link },
+], [
+  { kind: 'undo', icon: 'i-lucide-undo-2', tooltip: { text: copy.value.undo }, 'aria-label': copy.value.undo },
+  { kind: 'redo', icon: 'i-lucide-redo-2', tooltip: { text: copy.value.redo }, 'aria-label': copy.value.redo },
+]]);
+const wikiEditorExtensions = [TaskList, TaskItem.configure({ nested: true })];
+
+const selectedPage = computed(() => pages.value.find((page) => page.id === selectedPageId.value) ?? null);
+const dirty = computed(() => Boolean(selectedPage.value && (
+  draftTitle.value.trim() !== selectedPage.value.title
+  || draftContent.value !== selectedPage.value.content
+)));
+
+const treeRows = computed<WikiTreeRow[]>(() => {
+  const byParent = new Map<string | null, WikiPage[]>();
+  for (const page of pages.value) {
+    const parentId = pages.value.some((candidate) => candidate.id === page.parentId) ? page.parentId : null;
+    const siblings = byParent.get(parentId) ?? [];
+    siblings.push(page);
+    byParent.set(parentId, siblings);
+  }
+  const rows: WikiTreeRow[] = [];
+  const append = (parentId: string | null, depth: number, visited: Set<string>) => {
+    for (const page of byParent.get(parentId) ?? []) {
+      if (visited.has(page.id)) continue;
+      const nextVisited = new Set(visited).add(page.id);
+      rows.push({ page, depth });
+      append(page.id, Math.min(depth + 1, 5), nextVisited);
+    }
+  };
+  append(null, 0, new Set());
+  return rows;
+});
+
+const visibleTreeRows = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase(props.locale === 'de' ? 'de-CH' : 'en');
+  if (!query) return treeRows.value;
+  return treeRows.value.filter(({ page }) => `${page.title}\n${page.content}`.toLocaleLowerCase().includes(query));
+});
+
+const outline = computed(() => {
+  const source = editing.value ? draftContent.value : selectedPage.value?.content ?? '';
+  const headings: Array<{ level: number; label: string; index: number }> = [];
+  for (const match of source.matchAll(/^(#{1,3})\s+(.+)$/gm)) {
+    headings.push({ level: match[1]!.length, label: match[2]!.replace(/[*_`]/g, '').trim(), index: headings.length });
+  }
+  return headings;
+});
+
+const updatedLabel = computed(() => {
+  if (!selectedPage.value) return '';
+  const date = new Date(selectedPage.value.updatedAt);
+  return new Intl.DateTimeFormat(props.locale === 'de' ? 'de-CH' : 'en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+});
+
+const updatedInitials = computed(() => (selectedPage.value?.updatedByName ?? 'AK')
+  .split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join(''));
+
+watch(() => props.project.id, () => void loadPages());
+
+onMounted(() => {
+  void loadPages();
+  window.addEventListener('keydown', handleSaveShortcut);
+  window.addEventListener('beforeunload', handleBeforeUnload);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleSaveShortcut);
+  window.removeEventListener('beforeunload', handleBeforeUnload);
+});
+
+async function loadPages() {
+  loading.value = true;
+  errorMessage.value = null;
+  editing.value = false;
+  try {
+    const response = await $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`);
+    pages.value = response.pages;
+    const routeMatch = import.meta.client
+      ? window.location.hash.match(/^#wiki\/([^/]+)\/([^/]+)$/)
+      : null;
+    const routeProjectId = decodeHashSegment(routeMatch?.[1]);
+    const legacyMatch = import.meta.client ? window.location.hash.match(/^#wiki\/([^/]+)$/) : null;
+    const sharedId = routeProjectId === props.project.id
+      ? decodeHashSegment(routeMatch?.[2])
+      : decodeHashSegment(legacyMatch?.[1]);
+    selectedPageId.value = pages.value.some((page) => page.id === sharedId)
+      ? sharedId
+      : pages.value.some((page) => page.id === selectedPageId.value)
+        ? selectedPageId.value
+        : pages.value[0]?.id ?? null;
+    resetDraft();
+    syncHash(selectedPageId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    loading.value = false;
+  }
+}
+
+function resetDraft() {
+  draftTitle.value = selectedPage.value?.title ?? '';
+  draftContent.value = selectedPage.value?.content ?? '';
+}
+
+function startEditing() {
+  if (!selectedPage.value) return;
+  resetDraft();
+  editing.value = true;
+  nextTick(() => document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.focus());
+}
+
+function cancelEditing() {
+  resetDraft();
+  editing.value = false;
+  errorMessage.value = null;
+}
+
+async function savePage() {
+  if (!selectedPage.value || saving.value) return false;
+  const title = draftTitle.value.trim();
+  if (!title) {
+    errorMessage.value = props.locale === 'de' ? 'Der Seitentitel darf nicht leer sein.' : 'The page title cannot be empty.';
+    return false;
+  }
+  if (!dirty.value) {
+    editing.value = false;
+    return true;
+  }
+  saving.value = true;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ page: WikiPage }>(`/api/wiki-pages/${selectedPage.value.id}`, {
+      method: 'PATCH',
+      body: { title, content: draftContent.value },
+    });
+    pages.value = pages.value.map((page) => page.id === response.page.id ? response.page : page);
+    selectedPageId.value = response.page.id;
+    resetDraft();
+    editing.value = false;
+    return true;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    return false;
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function savePageAction() {
+  await savePage();
+}
+
+async function selectPage(pageId: string) {
+  if (pageId === selectedPageId.value) {
+    mobilePagesOpen.value = false;
+    syncHash(pageId);
+    return;
+  }
+  if (editing.value && dirty.value && !(await savePage())) return;
+  selectedPageId.value = pageId;
+  editing.value = false;
+  mobilePagesOpen.value = false;
+  resetDraft();
+  syncHash(pageId);
+}
+
+async function createFromTemplate(templateId: WikiTemplateId, parentId: string | null = null) {
+  if (saving.value) return;
+  const template = templates.value.find((item) => item.id === templateId)!;
+  saving.value = true;
+  createMenuOpen.value = false;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ page: WikiPage }>(`/api/projects/${props.project.id}/wiki/pages`, {
+      method: 'POST',
+      body: { title: template.title, content: template.content, parentId },
+    });
+    pages.value.push(response.page);
+    selectedPageId.value = response.page.id;
+    syncHash(response.page.id);
+    resetDraft();
+    editing.value = true;
+    await nextTick();
+    document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.select();
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function deleteSelectedPage() {
+  if (!selectedPage.value || saving.value || !window.confirm(copy.value.deleteConfirm)) return;
+  saving.value = true;
+  errorMessage.value = null;
+  const deleted = selectedPage.value;
+  try {
+    await $fetch(`/api/wiki-pages/${deleted.id}`, { method: 'DELETE' });
+    pages.value = pages.value.filter((page) => page.id !== deleted.id);
+    selectedPageId.value = pages.value.find((page) => page.id === deleted.parentId)?.id ?? pages.value[0]?.id ?? null;
+    editing.value = false;
+    resetDraft();
+    syncHash(selectedPageId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function copyPageLink() {
+  if (!selectedPage.value) return;
+  syncHash(selectedPage.value.id);
+  try {
+    await navigator.clipboard.writeText(window.location.href);
+    copied.value = true;
+    window.setTimeout(() => { copied.value = false; }, 1800);
+  } catch {
+    errorMessage.value = props.locale === 'de' ? 'Der Link konnte nicht kopiert werden.' : 'The link could not be copied.';
+  }
+}
+
+function syncHash(pageId: string | null) {
+  if (!import.meta.client) return;
+  const base = `${window.location.pathname}${window.location.search}`;
+  window.history.replaceState(
+    window.history.state,
+    '',
+    pageId
+      ? `${base}#wiki/${encodeURIComponent(props.project.id)}/${encodeURIComponent(pageId)}`
+      : `${base}#wiki/${encodeURIComponent(props.project.id)}`,
+  );
+}
+
+function decodeHashSegment(value: string | undefined) {
+  if (!value) return '';
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
+}
+
+function scrollToHeading(index: number) {
+  const headings = document.querySelectorAll<HTMLElement>('.ak-wiki-rendered h1, .ak-wiki-rendered h2, .ak-wiki-rendered h3');
+  headings[index]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function handleSaveShortcut(event: KeyboardEvent) {
+  if (!editing.value || !(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 's') return;
+  event.preventDefault();
+  void savePage();
+}
+
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (!dirty.value) return;
+  event.preventDefault();
+}
+
+function humanError(error: unknown) {
+  const details = error as { data?: { statusMessage?: string }; statusMessage?: string; message?: string };
+  const code = details.data?.statusMessage ?? details.statusMessage ?? details.message ?? '';
+  if (code.includes('wiki_page_not_empty')) return copy.value.childDeleteError;
+  return copy.value.genericError;
+}
+</script>
+
+<template>
+  <section class="flex min-h-0 flex-1 flex-col gap-3">
+    <div class="ak-wiki-toolbar flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <UButton
+        class="shrink-0 md:hidden"
+        data-mobile-sidebar-trigger
+        color="neutral"
+        variant="soft"
+        size="sm"
+        icon="i-lucide-menu"
+        :tabindex="props.isMobileViewport && !props.sidebarCollapsed ? -1 : undefined"
+        :aria-label="copy.pages"
+        @click="emit('openSidebar')"
+      />
+
+      <div class="hidden min-w-0 shrink-0 items-center gap-2 sm:flex sm:max-w-40 xl:max-w-52" :title="props.project.description ?? props.project.name">
+        <span class="hidden shrink-0 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[10px] font-bold tracking-wide text-zinc-600 xl:inline-flex dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">{{ props.project.key }}</span>
+        <h1 class="ak-display truncate text-base font-semibold tracking-tight text-zinc-950 dark:text-white">{{ props.project.name }}</h1>
+      </div>
+
+      <div class="ak-surface-switch" role="tablist" :aria-label="props.project.name">
+        <button type="button" role="tab" class="ak-surface-switch-button" :aria-label="copy.board" :aria-selected="false" @click="emit('showBoard')">
+          <UIcon name="i-lucide-columns-3" class="size-3.5" />
+          <span class="hidden sm:inline">{{ copy.board }}</span>
+        </button>
+        <button type="button" role="tab" class="ak-surface-switch-button is-active" :aria-label="copy.wiki" :aria-selected="true">
+          <UIcon name="i-lucide-notebook-tabs" class="size-3.5" />
+          <span class="hidden sm:inline">{{ copy.wiki }}</span>
+        </button>
+      </div>
+
+      <UInput v-model="searchQuery" class="ml-1 hidden min-w-36 flex-1 md:block lg:max-w-xs" size="sm" icon="i-lucide-search" :placeholder="copy.search" :aria-label="copy.search" />
+
+      <div class="ml-auto flex shrink-0 items-center gap-1">
+        <UPopover v-model:open="createMenuOpen" :content="{ align: 'end', side: 'bottom' }">
+          <UButton color="primary" variant="soft" size="sm" icon="i-lucide-file-plus-2" class="!bg-teal-50 !text-teal-800 dark:!bg-teal-950/60 dark:!text-teal-200" :loading="saving" :aria-label="copy.newPage" aria-controls="wiki-new-page-menu">
+            <span class="hidden lg:inline">{{ copy.newPage }}</span>
+          </UButton>
+          <template #content>
+            <div id="wiki-new-page-menu" class="w-80 p-2">
+              <p class="px-3 pb-2 pt-1 text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ copy.chooseTemplate }}</p>
+              <button v-for="template in templates" :key="template.id" type="button" class="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-zinc-100 focus-visible:outline-2 focus-visible:outline-teal-600 dark:hover:bg-zinc-800" @click="createFromTemplate(template.id)">
+                <span class="grid size-8 shrink-0 place-items-center rounded-lg bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300"><UIcon :name="template.icon" class="size-4" /></span>
+                <span><span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ template.label }}</span><span class="mt-0.5 block text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ template.hint }}</span></span>
+              </button>
+            </div>
+          </template>
+        </UPopover>
+        <UButton v-if="selectedPage && !editing" class="hidden lg:inline-flex" color="neutral" variant="ghost" size="sm" :icon="copied ? 'i-lucide-check' : 'i-lucide-share-2'" @click="copyPageLink">{{ copied ? copy.copied : copy.share }}</UButton>
+        <UButton v-if="selectedPage && !editing" color="neutral" variant="soft" size="sm" icon="i-lucide-pencil-line" :aria-label="copy.edit" @click="startEditing"><span class="hidden sm:inline">{{ copy.edit }}</span></UButton>
+        <template v-if="selectedPage && editing">
+          <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-x" :disabled="saving" :aria-label="copy.cancel" @click="cancelEditing"><span class="hidden lg:inline">{{ copy.cancel }}</span></UButton>
+          <UButton color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim()" :aria-label="copy.save" @click="savePageAction"><span class="hidden sm:inline">{{ copy.save }}</span></UButton>
+        </template>
+        <UPopover v-if="selectedPage && !editing" :content="{ align: 'end', side: 'bottom' }">
+          <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-ellipsis" :aria-label="copy.delete" aria-controls="wiki-page-actions-menu" />
+          <template #content>
+            <div id="wiki-page-actions-menu" class="grid w-56 gap-1 p-2">
+              <UButton color="neutral" variant="ghost" icon="i-lucide-copy" class="justify-start" @click="copyPageLink">{{ copied ? copy.copied : copy.share }}</UButton>
+              <UButton color="error" variant="ghost" icon="i-lucide-trash-2" class="justify-start" @click="deleteSelectedPage">{{ copy.delete }}</UButton>
+            </div>
+          </template>
+        </UPopover>
+      </div>
+    </div>
+
+    <UAlert v-if="errorMessage" color="error" variant="soft" icon="i-lucide-alert-triangle" :description="errorMessage" :actions="loading ? [{ label: copy.retry, onClick: loadPages }] : undefined" />
+
+    <div v-if="loading" class="grid min-h-0 flex-1 place-items-center rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div class="grid justify-items-center gap-3 text-sm text-zinc-500 dark:text-zinc-400"><UIcon name="i-lucide-loader-circle" class="size-6 animate-spin text-teal-600" /><span>{{ copy.loading }}</span></div>
+    </div>
+
+    <div v-else-if="!pages.length" class="grid min-h-0 flex-1 place-items-center overflow-y-auto rounded-xl border border-zinc-200 bg-white px-6 py-12 dark:border-zinc-800 dark:bg-zinc-950">
+      <div class="w-full max-w-3xl text-center">
+        <span class="mx-auto grid size-14 place-items-center rounded-2xl bg-teal-50 text-teal-700 ring-1 ring-teal-100 dark:bg-teal-950/60 dark:text-teal-300 dark:ring-teal-900"><UIcon name="i-lucide-notebook-tabs" class="size-6" /></span>
+        <h2 class="ak-display mt-5 text-2xl font-semibold tracking-tight text-zinc-950 dark:text-white">{{ copy.emptyTitle }}</h2>
+        <p class="mx-auto mt-2 max-w-xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">{{ copy.emptyBody }}</p>
+        <p class="mt-8 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ copy.chooseTemplate }}</p>
+        <div class="mt-3 grid gap-3 sm:grid-cols-3">
+          <button v-for="template in templates" :key="template.id" type="button" class="group rounded-xl border border-zinc-200 bg-zinc-50/70 p-4 text-left transition hover:-translate-y-0.5 hover:border-teal-300 hover:bg-teal-50/60 hover:shadow-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-800 dark:bg-zinc-900/60 dark:hover:border-teal-800 dark:hover:bg-teal-950/30" @click="createFromTemplate(template.id)">
+            <span class="grid size-9 place-items-center rounded-lg bg-white text-teal-700 shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-teal-300 dark:ring-zinc-700"><UIcon :name="template.icon" class="size-4" /></span>
+            <span class="mt-4 block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ template.label }}</span>
+            <span class="mt-1 block text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ template.hint }}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-else class="ak-wiki-frame min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <aside class="ak-wiki-pages hidden w-[250px] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/70 dark:border-zinc-800 dark:bg-zinc-900/55 md:flex" :aria-label="copy.pageTree">
+        <div class="border-b border-zinc-200 p-3 dark:border-zinc-800"><UInput v-model="searchQuery" class="w-full" size="sm" icon="i-lucide-search" :placeholder="copy.search" :aria-label="copy.search" /></div>
+        <nav class="min-h-0 flex-1 overflow-y-auto px-2 py-3" :aria-label="copy.pages">
+          <p class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-[0.11em] text-zinc-600 dark:text-zinc-400">{{ copy.rootPages }}</p>
+          <div v-for="row in visibleTreeRows" :key="row.page.id" class="group flex items-center gap-0.5">
+            <button type="button" class="ak-wiki-page-link min-w-0 flex-1" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.5 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)">
+              <UIcon :name="row.depth ? 'i-lucide-file-text' : 'i-lucide-book-open-text'" class="size-3.5 shrink-0" />
+              <span class="min-w-0 flex-1 truncate text-left">{{ row.page.title }}</span>
+            </button>
+            <button type="button" class="grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 opacity-0 transition hover:bg-zinc-200 hover:text-zinc-700 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200" :aria-label="`${copy.addChild}: ${row.page.title}`" @click="createFromTemplate('blank', row.page.id)"><UIcon name="i-lucide-plus" class="size-3.5" /></button>
+          </div>
+          <p v-if="searchQuery && !visibleTreeRows.length" class="px-3 py-8 text-center text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ copy.noResults }}</p>
+        </nav>
+      </aside>
+
+      <div class="ak-wiki-document min-w-0 flex-1 overflow-y-auto bg-white dark:bg-zinc-950">
+        <div class="ak-wiki-mobile-context sticky top-0 z-10 flex items-center gap-2 border-b border-zinc-200 bg-white/95 px-3 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden">
+          <UPopover v-model:open="mobilePagesOpen" :content="{ align: 'start', side: 'bottom' }">
+            <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-list-tree" aria-controls="wiki-mobile-pages-menu"><span class="max-w-44 truncate">{{ selectedPage?.title ?? copy.pages }}</span></UButton>
+            <template #content>
+              <div id="wiki-mobile-pages-menu" class="max-h-[60dvh] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto p-2">
+                <UInput v-model="searchQuery" class="mb-2 w-full" size="sm" icon="i-lucide-search" :placeholder="copy.search" />
+                <button v-for="row in visibleTreeRows" :key="row.page.id" type="button" class="ak-wiki-page-link" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.5 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)"><UIcon name="i-lucide-file-text" class="size-3.5 shrink-0" /><span class="truncate">{{ row.page.title }}</span></button>
+              </div>
+            </template>
+          </UPopover>
+          <span v-if="editing" class="ml-auto inline-flex items-center gap-1.5 text-xs text-teal-700 dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span>
+        </div>
+
+        <article v-if="selectedPage" class="ak-wiki-document-inner mx-auto w-full max-w-[820px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
+          <header class="ak-wiki-document-header border-b border-zinc-200 pb-7 dark:border-zinc-800">
+            <div class="flex items-center gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400"><span class="grid size-8 place-items-center rounded-lg bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/60 dark:text-teal-300 dark:ring-teal-900"><UIcon name="i-lucide-file-text" class="size-4" /></span><span>{{ props.project.name }}</span><UIcon name="i-lucide-chevron-right" class="size-3.5" /><span class="truncate">{{ selectedPage.title }}</span></div>
+            <textarea v-if="editing" v-model="draftTitle" class="ak-wiki-title-editor mt-5" rows="2" maxlength="200" :aria-label="copy.titleLabel" />
+            <h2 v-else class="ak-display mt-5 text-3xl font-semibold leading-tight tracking-tight text-zinc-950 text-balance sm:text-4xl dark:text-white">{{ selectedPage.title }}</h2>
+            <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ updatedInitials }}</span><span>{{ copy.editedBy }} {{ selectedPage.updatedByName ?? '—' }}</span><span aria-hidden="true">·</span><time :datetime="selectedPage.updatedAt">{{ updatedLabel }}</time><span v-if="editing" class="ml-auto hidden items-center gap-1.5 text-teal-700 sm:inline-flex dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span></div>
+          </header>
+
+          <div v-if="editing" class="ak-wiki-editor mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950">
+            <UEditor v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :image="false" :mention="false" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+              <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="ak-wiki-editor-toolbar sticky top-12 z-[5] border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0" />
+            </UEditor>
+          </div>
+          <UEditor v-else-if="selectedPage.content" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="false" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+          <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
+        </article>
+      </div>
+
+      <aside class="ak-wiki-outline hidden w-[210px] shrink-0 flex-col border-l border-zinc-200 bg-white px-4 py-5 dark:border-zinc-800 dark:bg-zinc-950 xl:flex" :aria-label="copy.outline">
+        <p class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{{ copy.outline }}</p>
+        <nav v-if="outline.length" class="mt-3 grid gap-0.5 border-b border-zinc-200 pb-5 dark:border-zinc-800"><button v-for="heading in outline" :key="`${heading.index}-${heading.label}`" type="button" class="ak-wiki-outline-link" :style="{ paddingLeft: `${0.5 + (heading.level - 1) * 0.625}rem` }" @click="scrollToHeading(heading.index)">{{ heading.label }}</button></nav>
+        <p v-else class="mt-3 text-xs leading-5 text-zinc-600 dark:text-zinc-400">{{ copy.noOutline }}</p>
+        <div class="mt-auto rounded-lg bg-zinc-50 px-3 py-2.5 text-[11px] leading-5 text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:text-zinc-400 dark:ring-zinc-800"><span class="font-semibold text-zinc-700 dark:text-zinc-200">{{ pages.length }}</span> {{ copy.pages.toLocaleLowerCase() }}</div>
+      </aside>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.ak-wiki-rendered :deep(.tiptap) {
+  max-width: 70ch;
+}
+
+.ak-wiki-rendered :deep(h1),
+.ak-wiki-rendered :deep(h2),
+.ak-wiki-rendered :deep(h3) {
+  scroll-margin-top: 5rem;
+}
+
+.ak-wiki-rendered :deep(a) {
+  color: rgb(13 148 136);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.ak-wiki-editor :deep(.tiptap),
+.ak-wiki-rendered :deep(.tiptap) {
+  font-size: 0.9375rem;
+  line-height: 1.75rem;
+}
+
+.ak-wiki-editor :deep(ul[data-type='taskList']),
+.ak-wiki-rendered :deep(ul[data-type='taskList']) {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 0;
+  list-style: none;
+}
+
+.ak-wiki-editor :deep(li[data-type='taskItem']),
+.ak-wiki-rendered :deep(li[data-type='taskItem']) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+}
+
+.ak-wiki-editor :deep(li[data-type='taskItem'] > label),
+.ak-wiki-rendered :deep(li[data-type='taskItem'] > label) {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding-top: 0.35rem;
+}
+
+.ak-wiki-editor :deep(li[data-type='taskItem'] input),
+.ak-wiki-rendered :deep(li[data-type='taskItem'] input) {
+  width: 1rem;
+  height: 1rem;
+  accent-color: rgb(13 148 136);
+}
+
+.ak-wiki-editor :deep(li[data-type='taskItem'] > div),
+.ak-wiki-rendered :deep(li[data-type='taskItem'] > div) {
+  min-width: 0;
+  flex: 1;
+}
+</style>
