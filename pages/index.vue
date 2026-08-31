@@ -3,7 +3,7 @@ import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, Edit
 import Fuse from 'fuse.js';
 
 type Locale = 'en' | 'de';
-type View = 'board' | 'projects' | 'users';
+type View = 'board' | 'wiki' | 'projects' | 'users';
 type TaskTab = 'activity' | 'task' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
@@ -39,6 +39,21 @@ interface Project {
   agentConcurrencyLimit: number;
   agentHarnessLimits: Record<AgentHarness, number>;
   createdAt?: string;
+}
+
+interface WikiPageItem {
+  id: string;
+  title: string;
+  icon: string;
+  updated: string;
+  favorite?: boolean;
+}
+
+interface WikiPageGroup {
+  id: string;
+  label: string;
+  icon: string;
+  pages: WikiPageItem[];
 }
 
 interface BoardColumn {
@@ -1028,6 +1043,7 @@ const dictionary = {
 } as const;
 
 const locale = ref<Locale>('en');
+useHead(() => ({ htmlAttrs: { lang: locale.value } }));
 const colorMode = useColorMode();
 const activeView = ref<View>('board');
 const user = ref<User | null>(null);
@@ -1102,6 +1118,9 @@ const tagDropdownOpen = ref(false);
 const boardFilterPopoverOpen = ref(false);
 const boardSearchQuery = ref('');
 const selectedBoardAssigneeIds = ref<string[]>([]);
+const wikiSearchQuery = ref('');
+const wikiSelectedPageId = ref('weekly-sync');
+const wikiEditing = ref(false);
 const commandPaletteOpen = ref(false);
 const commandPaletteQuery = ref('');
 const commandPaletteLoading = ref(false);
@@ -1371,6 +1390,169 @@ const apiTokenExpiryItems = computed(() => [
   { label: t.value.apiTokenExpiryNever, value: 'never' },
 ]);
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
+const wikiCopy = computed(() => locale.value === 'de' ? {
+  board: 'Board',
+  wiki: 'Wiki',
+  pages: 'Seiten',
+  allPages: 'Alle Seiten',
+  searchPages: 'Seiten durchsuchen …',
+  newPage: 'Neue Seite',
+  edit: 'Bearbeiten',
+  done: 'Fertig',
+  share: 'Teilen',
+  more: 'Weitere Aktionen',
+  pageTree: 'Wiki-Seiten',
+  pageOutline: 'Auf dieser Seite',
+  meetingNotes: 'Meeting-Notiz',
+  saved: 'Gespeichert',
+  edited: 'Vor 12 Min. von Admin bearbeitet',
+  comments: '2 Kommentare',
+  templates: 'Vorlagen',
+  addPage: 'Seite in diesem Bereich anlegen',
+  linkedTask: 'Verknüpfte Aufgabe',
+  focusMode: 'Fokusmodus',
+  bold: 'Fett',
+  italic: 'Kursiv',
+  heading: 'Überschrift',
+  checklist: 'Checkliste',
+  link: 'Link',
+  mention: 'Person erwähnen',
+  insert: 'Einfügen',
+  documentTitle: 'Produkt-Sync · 31. August',
+  documentSummary: 'Arbeitsnotiz für den wöchentlichen Produkt-Sync. Entscheidungen, offene Punkte und nächste Schritte bleiben direkt beim Projekt auffindbar.',
+  focusTitle: 'Fokus heute',
+  focusBody: 'Die Wiki-Ansicht als ruhigen Wissensraum neben dem Board festlegen – mit klarer Seitenhierarchie, schnellen Notizen und einem Editor, der beim Schreiben nicht im Weg steht.',
+  agendaTitle: 'Agenda & Notizen',
+  agendaOne: 'Wechsel zwischen Board und Wiki auf Projektebene bestätigen',
+  agendaTwo: 'Struktur für Meeting-Notizen, Entscheidungen und Runbooks prüfen',
+  agendaThree: 'Berechtigungen und Versionierung im nächsten Schritt klären',
+  decisionsTitle: 'Entscheidungen',
+  decisionBody: 'Das Wiki bleibt Teil desselben Projektkontexts. Seiten können Aufgaben verlinken, aber Notizen werden nicht automatisch zu Kanban-Karten.',
+  nextTitle: 'Nächste Schritte',
+  nextOne: 'Leere Zustände und Vorlagen für neue Projekte ausarbeiten',
+  nextTwo: 'Technisches Modell für Seiten, Versionen und Kommentare skizzieren',
+  nextThree: 'Editor-Tastaturkürzel mit dem bestehenden Command-Menü abgleichen',
+  meetingGroup: 'Meetings',
+  productGroup: 'Produkt',
+  runbookGroup: 'Runbooks',
+  overview: 'Projekt-Handbuch',
+  kickoff: 'Projekt-Kickoff',
+  principles: 'Produktprinzipien',
+  roadmap: 'Roadmap Q4',
+  decisions: 'Entscheidungslog',
+  release: 'Release-Checkliste',
+  meetingTemplate: 'Meeting-Notiz',
+  updatedToday: 'Heute',
+  updatedYesterday: 'Gestern',
+  updatedWeek: 'Vor 6 Tagen',
+  editorLabel: 'Inhalt der Wiki-Seite',
+} : {
+  board: 'Board',
+  wiki: 'Wiki',
+  pages: 'Pages',
+  allPages: 'All pages',
+  searchPages: 'Search pages …',
+  newPage: 'New page',
+  edit: 'Edit',
+  done: 'Done',
+  share: 'Share',
+  more: 'More actions',
+  pageTree: 'Wiki pages',
+  pageOutline: 'On this page',
+  meetingNotes: 'Meeting notes',
+  saved: 'Saved',
+  edited: 'Edited 12 min ago by Admin',
+  comments: '2 comments',
+  templates: 'Templates',
+  addPage: 'Add a page to this section',
+  linkedTask: 'Linked task',
+  focusMode: 'Focus mode',
+  bold: 'Bold',
+  italic: 'Italic',
+  heading: 'Heading',
+  checklist: 'Checklist',
+  link: 'Link',
+  mention: 'Mention someone',
+  insert: 'Insert',
+  documentTitle: 'Product sync · August 31',
+  documentSummary: 'Working notes for the weekly product sync. Decisions, open questions, and next steps stay easy to find inside the project.',
+  focusTitle: 'Today’s focus',
+  focusBody: 'Shape the wiki as a calm knowledge space beside the board—with clear page hierarchy, fast notes, and an editor that stays out of the way.',
+  agendaTitle: 'Agenda & notes',
+  agendaOne: 'Confirm the project-level switch between Board and Wiki',
+  agendaTwo: 'Review the structure for meeting notes, decisions, and runbooks',
+  agendaThree: 'Clarify permissions and versioning in the next step',
+  decisionsTitle: 'Decisions',
+  decisionBody: 'The wiki remains part of the same project context. Pages can link to tasks, but notes do not automatically become Kanban cards.',
+  nextTitle: 'Next steps',
+  nextOne: 'Shape empty states and templates for new projects',
+  nextTwo: 'Outline the data model for pages, versions, and comments',
+  nextThree: 'Align editor shortcuts with the existing command menu',
+  meetingGroup: 'Meetings',
+  productGroup: 'Product',
+  runbookGroup: 'Runbooks',
+  overview: 'Project handbook',
+  kickoff: 'Project kickoff',
+  principles: 'Product principles',
+  roadmap: 'Q4 roadmap',
+  decisions: 'Decision log',
+  release: 'Release checklist',
+  meetingTemplate: 'Meeting notes',
+  updatedToday: 'Today',
+  updatedYesterday: 'Yesterday',
+  updatedWeek: '6 days ago',
+  editorLabel: 'Wiki page content',
+});
+const wikiHomePage = computed<WikiPageItem>(() => ({
+  id: 'overview',
+  title: wikiCopy.value.overview,
+  icon: 'i-lucide-house',
+  updated: wikiCopy.value.updatedYesterday,
+  favorite: true,
+}));
+const wikiPageGroups = computed<WikiPageGroup[]>(() => [
+  {
+    id: 'meetings',
+    label: wikiCopy.value.meetingGroup,
+    icon: 'i-lucide-calendar-days',
+    pages: [
+      { id: 'weekly-sync', title: wikiCopy.value.documentTitle, icon: 'i-lucide-file-text', updated: wikiCopy.value.updatedToday, favorite: true },
+      { id: 'kickoff', title: wikiCopy.value.kickoff, icon: 'i-lucide-file-text', updated: wikiCopy.value.updatedWeek },
+    ],
+  },
+  {
+    id: 'product',
+    label: wikiCopy.value.productGroup,
+    icon: 'i-lucide-shapes',
+    pages: [
+      { id: 'principles', title: wikiCopy.value.principles, icon: 'i-lucide-file-text', updated: wikiCopy.value.updatedYesterday },
+      { id: 'roadmap', title: wikiCopy.value.roadmap, icon: 'i-lucide-file-text', updated: wikiCopy.value.updatedWeek },
+      { id: 'decisions', title: wikiCopy.value.decisions, icon: 'i-lucide-file-text', updated: wikiCopy.value.updatedToday },
+    ],
+  },
+  {
+    id: 'runbooks',
+    label: wikiCopy.value.runbookGroup,
+    icon: 'i-lucide-book-open-check',
+    pages: [
+      { id: 'release', title: wikiCopy.value.release, icon: 'i-lucide-file-check-2', updated: wikiCopy.value.updatedWeek },
+    ],
+  },
+]);
+const filteredWikiPageGroups = computed(() => {
+  const query = wikiSearchQuery.value.trim().toLocaleLowerCase(locale.value === 'de' ? 'de-CH' : 'en');
+  if (!query) return wikiPageGroups.value;
+  return wikiPageGroups.value
+    .map((group) => ({ ...group, pages: group.pages.filter((page) => page.title.toLocaleLowerCase().includes(query)) }))
+    .filter((group) => group.pages.length);
+});
+const selectedWikiPage = computed(() => {
+  if (wikiSelectedPageId.value === wikiHomePage.value.id) return wikiHomePage.value;
+  return wikiPageGroups.value.flatMap((group) => group.pages).find((page) => page.id === wikiSelectedPageId.value)
+    ?? wikiPageGroups.value[0]?.pages[0]
+    ?? wikiHomePage.value;
+});
+const selectedWikiGroup = computed(() => wikiPageGroups.value.find((group) => group.pages.some((page) => page.id === selectedWikiPage.value.id)) ?? null);
 const selectedOberthema = computed(() => board.value?.oberthemen.find((topic) => topic.id === selectedOberthemaId.value) ?? null);
 const selectedUnterthema = computed(() => board.value?.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value) ?? null);
 const userInitials = computed(() => {
@@ -1932,8 +2114,31 @@ const closeSidebarOnMobile = () => {
   if (isMobileViewport.value) closeMobileSidebar();
 };
 
+const syncProjectSurfaceRoute = (surface: Extract<View, 'board' | 'wiki'>) => {
+  if (!import.meta.client) return;
+  const base = `${window.location.pathname}${window.location.search}`;
+  window.history.replaceState(window.history.state, '', surface === 'wiki' ? `${base}#wiki` : base);
+};
+
+const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki'>) => {
+  activeView.value = surface;
+  wikiEditing.value = false;
+  syncProjectSurfaceRoute(surface);
+  closeSidebarOnMobile();
+};
+
+const selectWikiPage = (pageId: string) => {
+  wikiSelectedPageId.value = pageId;
+  wikiEditing.value = false;
+};
+
+const createWikiPage = () => {
+  wikiEditing.value = true;
+};
+
 const selectAdminView = (view: Extract<View, 'projects' | 'users'>) => {
   activeView.value = view;
+  syncProjectSurfaceRoute('board');
   closeSidebarOnMobile();
 };
 
@@ -2057,6 +2262,7 @@ onMounted(async () => {
   window.addEventListener('blur', handleWindowBlur);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   await loadSession();
+  if (window.location.hash === '#wiki' && selectedProjectId.value) activeView.value = 'wiki';
   startBoardRefresh();
 });
 
@@ -2186,6 +2392,7 @@ const selectProject = async (projectId: string) => {
   }
   selectedProjectId.value = projectId;
   activeView.value = 'board';
+  syncProjectSurfaceRoute('board');
   closeSidebarOnMobile();
 };
 
@@ -5766,7 +5973,7 @@ const humanError = (error: unknown) => {
         </button>
 
         <nav v-if="isAdmin" class="mb-4 grid gap-1" :aria-label="t.admin">
-          <p v-if="!sidebarCollapsed" class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ t.admin }}</p>
+          <p v-if="!sidebarCollapsed" class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-600 dark:text-zinc-400">{{ t.admin }}</p>
           <UButton
             :variant="activeView === 'projects' ? 'soft' : 'ghost'"
             color="neutral"
@@ -5795,8 +6002,8 @@ const humanError = (error: unknown) => {
 
         <nav class="ak-sidebar-projects min-h-0 flex-1 overflow-y-auto overflow-x-hidden" :aria-label="t.workspace">
           <div v-if="!sidebarCollapsed" class="mb-2 flex items-center justify-between px-2">
-            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">{{ t.workspace }}</p>
-            <span class="text-[11px] tabular-nums text-zinc-400">{{ projects.length }}</span>
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-600 dark:text-zinc-400">{{ t.workspace }}</p>
+            <span class="text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">{{ projects.length }}</span>
           </div>
           <div class="grid gap-1">
             <button
@@ -5806,18 +6013,18 @@ const humanError = (error: unknown) => {
               class="ak-project-nav-item group flex w-full items-center rounded-xl text-left transition"
               :class="[
                 sidebarCollapsed ? 'h-11 justify-center px-0' : 'min-h-12 gap-3 px-2 py-1.5',
-                project.id === selectedProjectId && activeView === 'board'
+                project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki')
                   ? 'bg-teal-50 text-teal-950 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.18)] dark:bg-teal-950/45 dark:text-teal-50'
                   : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900',
               ]"
-              :aria-current="project.id === selectedProjectId && activeView === 'board' ? 'page' : undefined"
+              :aria-current="project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki') ? 'page' : undefined"
               :aria-label="project.name"
               :title="project.name"
               @click="selectProject(project.id)"
             >
               <span
                 class="grid size-9 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tracking-wide transition"
-                :class="project.id === selectedProjectId && activeView === 'board'
+                :class="project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki')
                   ? 'border-teal-200 bg-white text-teal-700 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200'
                   : 'border-zinc-200 bg-white text-zinc-500 group-hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400'"
               >
@@ -5897,7 +6104,7 @@ const humanError = (error: unknown) => {
         :aria-hidden="isMobileViewport && !sidebarCollapsed ? 'true' : undefined"
         :inert="isMobileViewport && !sidebarCollapsed"
       >
-        <header v-if="activeView !== 'board'" class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
+        <header v-if="activeView === 'projects' || activeView === 'users'" class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
           <div class="flex min-w-0 items-center gap-3">
             <UButton
               class="md:hidden"
@@ -6035,6 +6242,314 @@ const humanError = (error: unknown) => {
           </UCard>
         </section>
 
+        <section v-else-if="activeView === 'wiki' && board" class="flex min-h-0 flex-1 flex-col gap-3">
+          <div class="ak-wiki-toolbar flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <UButton
+              class="shrink-0 md:hidden"
+              data-mobile-sidebar-trigger
+              color="neutral"
+              variant="soft"
+              size="sm"
+              icon="i-lucide-menu"
+              :tabindex="isMobileViewport && !sidebarCollapsed ? -1 : undefined"
+              :aria-label="t.openSidebar"
+              @click="openMobileSidebar"
+            />
+
+            <div
+              class="hidden min-w-0 shrink-0 items-center gap-2 sm:flex sm:max-w-40 xl:max-w-52"
+              :title="selectedProject?.description ?? selectedProject?.name"
+            >
+              <span class="hidden shrink-0 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-[10px] font-bold tracking-wide text-zinc-600 xl:inline-flex dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">
+                {{ selectedProject?.key }}
+              </span>
+              <h1 class="ak-display truncate text-base font-semibold tracking-tight text-zinc-950 dark:text-white">
+                {{ selectedProject?.name }}
+              </h1>
+            </div>
+
+            <div class="ak-surface-switch" role="tablist" :aria-label="selectedProject?.name">
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button"
+                :aria-label="wikiCopy.board"
+                :aria-selected="false"
+                @click="selectProjectSurface('board')"
+              >
+                <UIcon name="i-lucide-columns-3" class="size-3.5" />
+                <span class="hidden sm:inline">{{ wikiCopy.board }}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button is-active"
+                :aria-label="wikiCopy.wiki"
+                :aria-selected="true"
+              >
+                <UIcon name="i-lucide-notebook-tabs" class="size-3.5" />
+                <span class="hidden sm:inline">{{ wikiCopy.wiki }}</span>
+              </button>
+            </div>
+
+            <UInput
+              v-model="wikiSearchQuery"
+              class="ml-1 hidden min-w-36 flex-1 md:block lg:max-w-xs"
+              size="sm"
+              icon="i-lucide-search"
+              :placeholder="wikiCopy.searchPages"
+              :aria-label="wikiCopy.searchPages"
+            />
+
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+              <UButton
+                class="hidden lg:inline-flex"
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                icon="i-lucide-share-2"
+                :aria-label="wikiCopy.share"
+              >
+                {{ wikiCopy.share }}
+              </UButton>
+              <UButton
+                :color="wikiEditing ? 'primary' : 'neutral'"
+                :variant="wikiEditing ? 'solid' : 'soft'"
+                size="sm"
+                :icon="wikiEditing ? 'i-lucide-check' : 'i-lucide-pencil-line'"
+                :aria-label="wikiEditing ? wikiCopy.done : wikiCopy.edit"
+                @click="wikiEditing = !wikiEditing"
+              >
+                <span class="hidden sm:inline">{{ wikiEditing ? wikiCopy.done : wikiCopy.edit }}</span>
+              </UButton>
+              <UButton
+                color="neutral"
+                variant="ghost"
+                size="sm"
+                icon="i-lucide-ellipsis"
+                :aria-label="wikiCopy.more"
+                :title="wikiCopy.more"
+              />
+            </div>
+          </div>
+
+          <div class="ak-wiki-frame min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+            <aside class="ak-wiki-pages hidden w-[232px] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/70 dark:border-zinc-800 dark:bg-zinc-900/55 md:flex" :aria-label="wikiCopy.pageTree">
+              <div class="border-b border-zinc-200 p-3 dark:border-zinc-800">
+                <UInput
+                  v-model="wikiSearchQuery"
+                  class="w-full"
+                  size="sm"
+                  icon="i-lucide-search"
+                  :placeholder="wikiCopy.searchPages"
+                  :aria-label="wikiCopy.searchPages"
+                />
+              </div>
+              <nav class="min-h-0 flex-1 overflow-y-auto px-2 py-3" :aria-label="wikiCopy.pages">
+                <button
+                  type="button"
+                  class="ak-wiki-page-link mb-2"
+                  :class="wikiSelectedPageId === wikiHomePage.id ? 'is-active' : ''"
+                  @click="selectWikiPage(wikiHomePage.id)"
+                >
+                  <UIcon :name="wikiHomePage.icon" class="size-4 shrink-0" />
+                  <span class="min-w-0 flex-1 truncate text-left">{{ wikiHomePage.title }}</span>
+                  <UIcon v-if="wikiHomePage.favorite" name="i-lucide-star" class="size-3.5 shrink-0 text-amber-500" />
+                </button>
+
+                <section v-for="group in filteredWikiPageGroups" :key="group.id" class="mb-4 last:mb-0">
+                  <div class="mb-1 flex items-center gap-2 px-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">
+                    <UIcon :name="group.icon" class="size-3.5" />
+                    <span class="min-w-0 flex-1 truncate">{{ group.label }}</span>
+                    <button type="button" class="grid size-6 place-items-center rounded-md hover:bg-zinc-200 dark:hover:bg-zinc-800" :aria-label="wikiCopy.addPage" @click="createWikiPage">
+                      <UIcon name="i-lucide-plus" class="size-3.5" />
+                    </button>
+                  </div>
+                  <div class="grid gap-0.5">
+                    <button
+                      v-for="page in group.pages"
+                      :key="page.id"
+                      type="button"
+                      class="ak-wiki-page-link pl-7"
+                      :class="wikiSelectedPageId === page.id ? 'is-active' : ''"
+                      @click="selectWikiPage(page.id)"
+                    >
+                      <UIcon :name="page.icon" class="size-3.5 shrink-0" />
+                      <span class="min-w-0 flex-1 truncate text-left">{{ page.title }}</span>
+                    </button>
+                  </div>
+                </section>
+
+                <p v-if="wikiSearchQuery && !filteredWikiPageGroups.length" class="px-3 py-6 text-center text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                  {{ locale === 'de' ? 'Keine passenden Seiten.' : 'No matching pages.' }}
+                </p>
+              </nav>
+              <div class="border-t border-zinc-200 p-2 dark:border-zinc-800">
+                <button type="button" class="ak-wiki-page-link" @click="createWikiPage">
+                  <UIcon name="i-lucide-layout-template" class="size-4 shrink-0" />
+                  <span class="min-w-0 flex-1 truncate text-left">{{ wikiCopy.templates }}</span>
+                  <span class="text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400">4</span>
+                </button>
+              </div>
+            </aside>
+
+            <div class="ak-wiki-document min-w-0 flex-1 overflow-y-auto bg-white dark:bg-zinc-950">
+              <div class="ak-wiki-mobile-context sticky top-0 z-10 flex items-center gap-2 border-b border-zinc-200 bg-white/95 px-3 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden">
+                <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-list-tree" :aria-label="wikiCopy.pages">
+                  {{ selectedWikiGroup?.label ?? wikiCopy.allPages }}
+                </UButton>
+                <UIcon name="i-lucide-chevron-right" class="size-3.5 text-zinc-400" />
+                <span class="min-w-0 flex-1 truncate text-xs font-medium text-zinc-600 dark:text-zinc-300">{{ selectedWikiPage.title }}</span>
+              </div>
+
+              <article class="ak-wiki-document-inner mx-auto w-full max-w-[760px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
+                <header class="ak-wiki-document-header border-b border-zinc-200 pb-7 dark:border-zinc-800">
+                  <div class="mb-5 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span class="grid size-8 place-items-center rounded-lg bg-teal-50 text-teal-700 ring-1 ring-inset ring-teal-200 dark:bg-teal-950/50 dark:text-teal-200 dark:ring-teal-900">
+                      <UIcon name="i-lucide-calendar-check-2" class="size-4" />
+                    </span>
+                    <span>{{ wikiCopy.meetingNotes }}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{{ selectedProject?.name }}</span>
+                    <UButton class="ml-auto" color="neutral" variant="ghost" size="xs" icon="i-lucide-star" :aria-label="locale === 'de' ? 'Als Favorit markieren' : 'Add to favorites'" />
+                  </div>
+
+                  <textarea
+                    v-if="wikiEditing"
+                    class="ak-wiki-title-editor"
+                    rows="2"
+                    :aria-label="locale === 'de' ? 'Seitentitel' : 'Page title'"
+                    :value="selectedWikiPage.title"
+                  />
+                  <h1 v-else class="text-[2rem] font-semibold leading-[1.16] tracking-[-0.025em] text-zinc-950 text-balance dark:text-white sm:text-[2.4rem]">
+                    {{ selectedWikiPage.title }}
+                  </h1>
+
+                  <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <span class="inline-flex items-center gap-1.5">
+                      <span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">AD</span>
+                      {{ wikiCopy.edited }}
+                    </span>
+                    <span class="inline-flex items-center gap-1.5">
+                      <UIcon name="i-lucide-message-square" class="size-3.5" />
+                      {{ wikiCopy.comments }}
+                    </span>
+                    <span v-if="wikiEditing" class="ml-auto inline-flex items-center gap-1.5 text-teal-700 dark:text-teal-300">
+                      <UIcon name="i-lucide-cloud-check" class="size-3.5" />
+                      {{ wikiCopy.saved }}
+                    </span>
+                  </div>
+                  <p class="mt-5 max-w-[66ch] text-[15px] leading-7 text-zinc-600 text-pretty dark:text-zinc-300">{{ wikiCopy.documentSummary }}</p>
+                </header>
+
+                <div v-if="wikiEditing" class="ak-wiki-editor-toolbar sticky top-12 z-[5] -mx-2 mt-5 flex flex-wrap items-center gap-1 rounded-lg bg-white p-1.5 shadow-[0_2px_8px_rgba(24,24,27,0.10)] ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-700 md:top-3">
+                  <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-heading-2" :aria-label="wikiCopy.heading" :title="wikiCopy.heading" />
+                  <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-bold" :aria-label="wikiCopy.bold" :title="wikiCopy.bold" />
+                  <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-italic" :aria-label="wikiCopy.italic" :title="wikiCopy.italic" />
+                  <span class="mx-1 h-5 w-px bg-zinc-200 dark:bg-zinc-700" />
+                  <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-list" :aria-label="locale === 'de' ? 'Liste' : 'List'" />
+                  <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-list-checks" :aria-label="wikiCopy.checklist" :title="wikiCopy.checklist" />
+                  <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-link-2" :aria-label="wikiCopy.link" :title="wikiCopy.link" />
+                  <UButton class="hidden sm:inline-flex" color="neutral" variant="ghost" size="xs" icon="i-lucide-at-sign" :aria-label="wikiCopy.mention" :title="wikiCopy.mention" />
+                  <span class="mx-1 hidden h-5 w-px bg-zinc-200 dark:bg-zinc-700 sm:block" />
+                  <UButton class="ml-auto" color="neutral" variant="ghost" size="xs" icon="i-lucide-plus" :aria-label="wikiCopy.insert">
+                    <span class="hidden sm:inline">{{ wikiCopy.insert }}</span>
+                  </UButton>
+                </div>
+
+                <div
+                  class="ak-wiki-prose pt-7 text-zinc-800 dark:text-zinc-200"
+                  :class="wikiEditing ? 'is-editing' : ''"
+                  :contenteditable="wikiEditing"
+                  :role="wikiEditing ? 'textbox' : undefined"
+                  :aria-multiline="wikiEditing ? 'true' : undefined"
+                  :aria-label="wikiEditing ? wikiCopy.editorLabel : undefined"
+                  :spellcheck="wikiEditing"
+                >
+                  <section>
+                    <h2>{{ wikiCopy.focusTitle }}</h2>
+                    <p>{{ wikiCopy.focusBody }}</p>
+                    <a href="#" class="ak-wiki-task-link" @click.prevent>
+                      <span class="rounded bg-teal-700 px-1.5 py-0.5 text-[10px] font-bold text-white">AK-18</span>
+                      <span>{{ wikiCopy.linkedTask }} · Wiki / Confluence</span>
+                      <UIcon name="i-lucide-arrow-up-right" class="size-3.5" />
+                    </a>
+                  </section>
+
+                  <section>
+                    <h2>{{ wikiCopy.agendaTitle }}</h2>
+                    <div class="ak-wiki-checklist">
+                      <label>
+                        <input type="checkbox" checked>
+                        <span>{{ wikiCopy.agendaOne }}</span>
+                      </label>
+                      <label>
+                        <input type="checkbox" checked>
+                        <span>{{ wikiCopy.agendaTwo }}</span>
+                      </label>
+                      <label>
+                        <input type="checkbox">
+                        <span>{{ wikiCopy.agendaThree }}</span>
+                      </label>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h2>{{ wikiCopy.decisionsTitle }}</h2>
+                    <div class="ak-wiki-decision">
+                      <span class="grid size-7 shrink-0 place-items-center rounded-lg bg-zinc-900 text-white dark:bg-white dark:text-zinc-950">
+                        <UIcon name="i-lucide-scale" class="size-3.5" />
+                      </span>
+                      <p>{{ wikiCopy.decisionBody }}</p>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h2>{{ wikiCopy.nextTitle }}</h2>
+                    <div class="ak-wiki-checklist">
+                      <label>
+                        <input type="checkbox">
+                        <span>{{ wikiCopy.nextOne }}</span>
+                        <span class="ak-wiki-assignee">AD</span>
+                      </label>
+                      <label>
+                        <input type="checkbox">
+                        <span>{{ wikiCopy.nextTwo }}</span>
+                        <span class="ak-wiki-assignee">MS</span>
+                      </label>
+                      <label>
+                        <input type="checkbox">
+                        <span>{{ wikiCopy.nextThree }}</span>
+                      </label>
+                    </div>
+                  </section>
+                </div>
+              </article>
+            </div>
+
+            <aside class="ak-wiki-outline hidden w-[196px] shrink-0 flex-col border-l border-zinc-200 bg-white px-4 py-5 dark:border-zinc-800 dark:bg-zinc-950 xl:flex" :aria-label="wikiCopy.pageOutline">
+              <p class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{{ wikiCopy.pageOutline }}</p>
+              <nav class="mt-3 grid gap-0.5 border-b border-zinc-200 pb-5 dark:border-zinc-800">
+                <button type="button" class="ak-wiki-outline-link is-active">{{ wikiCopy.focusTitle }}</button>
+                <button type="button" class="ak-wiki-outline-link">{{ wikiCopy.agendaTitle }}</button>
+                <button type="button" class="ak-wiki-outline-link">{{ wikiCopy.decisionsTitle }}</button>
+                <button type="button" class="ak-wiki-outline-link">{{ wikiCopy.nextTitle }}</button>
+              </nav>
+              <div class="mt-5">
+                <p class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{{ locale === 'de' ? 'Mitwirkende' : 'Contributors' }}</p>
+                <div class="mt-3 flex -space-x-1.5">
+                  <span class="grid size-7 place-items-center rounded-full border-2 border-white bg-zinc-900 text-[9px] font-bold text-white dark:border-zinc-950 dark:bg-white dark:text-zinc-950">AD</span>
+                  <span class="grid size-7 place-items-center rounded-full border-2 border-white bg-teal-700 text-[9px] font-bold text-white dark:border-zinc-950">MS</span>
+                  <span class="grid size-7 place-items-center rounded-full border-2 border-white bg-amber-700 text-[9px] font-bold text-white dark:border-zinc-950">LK</span>
+                </div>
+              </div>
+              <UButton class="mt-auto" color="neutral" variant="soft" size="sm" icon="i-lucide-clock-3">
+                {{ locale === 'de' ? 'Verlauf' : 'History' }}
+              </UButton>
+            </aside>
+          </div>
+        </section>
+
         <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
           <div class="ak-board-toolbar flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <UButton
@@ -6059,6 +6574,30 @@ const humanError = (error: unknown) => {
               <h1 class="ak-display truncate text-base font-semibold tracking-tight text-zinc-950 dark:text-white">
                 {{ selectedProject?.name }}
               </h1>
+            </div>
+
+            <div class="ak-surface-switch" role="tablist" :aria-label="selectedProject?.name">
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button is-active"
+                :aria-label="wikiCopy.board"
+                :aria-selected="true"
+              >
+                <UIcon name="i-lucide-columns-3" class="size-3.5" />
+                <span class="hidden sm:inline">{{ wikiCopy.board }}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button"
+                :aria-label="wikiCopy.wiki"
+                :aria-selected="false"
+                @click="selectProjectSurface('wiki')"
+              >
+                <UIcon name="i-lucide-notebook-tabs" class="size-3.5" />
+                <span class="hidden sm:inline">{{ wikiCopy.wiki }}</span>
+              </button>
             </div>
 
             <USelect
