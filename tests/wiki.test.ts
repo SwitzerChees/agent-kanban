@@ -102,6 +102,41 @@ describe('project wiki', () => {
     );
   });
 
+  test('atomically reorders pages, reparents complete subtrees, and rejects stale moves', () => {
+    const firstRoot = wiki.createWikiPage(projectId, { title: 'Architecture' }, admin);
+    const secondRoot = wiki.createWikiPage(projectId, { title: 'Operations' }, admin);
+    const child = wiki.createWikiPage(projectId, { title: 'Deployments', parentId: firstRoot.id }, admin);
+
+    const nested = wiki.moveWikiPage(secondRoot.id, {
+      parentId: firstRoot.id,
+      position: 0,
+      expectedUpdatedAt: secondRoot.updatedAt,
+    }, member);
+    expect(nested.page).toMatchObject({ parentId: firstRoot.id, position: 0, updatedBy: member.id });
+    expect(nested.pages.filter((page) => page.parentId === firstRoot.id).map((page) => page.id))
+      .toEqual([secondRoot.id, child.id]);
+    expectStatusMessage(
+      () => wiki.moveWikiPage(secondRoot.id, {
+        parentId: null,
+        position: 0,
+        expectedUpdatedAt: secondRoot.updatedAt,
+      }, admin),
+      'wiki_page_stale',
+    );
+
+    const promoted = wiki.moveWikiPage(child.id, {
+      parentId: null,
+      position: 0,
+      expectedUpdatedAt: child.updatedAt,
+    }, admin);
+    expect(promoted.page).toMatchObject({ parentId: null, position: 0 });
+    expect(promoted.pages.filter((page) => page.parentId === null)[0]?.id).toBe(child.id);
+
+    expect(wiki.deleteWikiPage(secondRoot.id, admin)).toEqual({ ok: true });
+    expect(wiki.deleteWikiPage(firstRoot.id, admin)).toEqual({ ok: true });
+    expect(wiki.deleteWikiPage(child.id, admin)).toEqual({ ok: true });
+  });
+
   test('enforces project access, protects non-empty trees, and records activity', () => {
     expectStatusMessage(() => wiki.listWikiPages(projectId, outsider), 'project_forbidden');
     const root = wiki.listWikiPages(projectId, member).find((page) => page.parentId === null)!;

@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Kanban Control"
-  short_description: "Control Agent Kanban securely from any session"
-  default_prompt: "Use $agent-kanban-control and its shared per-user configuration to manage projects and tasks in Agent Kanban safely."
+  short_description: "Control Agent Kanban boards and Wiki securely"
+  default_prompt: "Use $agent-kanban-control and its shared per-user configuration to manage project Wiki pages, boards, and tasks in Agent Kanban safely."

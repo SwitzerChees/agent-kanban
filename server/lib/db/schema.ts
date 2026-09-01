@@ -76,6 +76,7 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  wikiPageId: text('wiki_page_id').references(() => wikiPages.id, { onDelete: 'cascade' }),
   title: text('title').notNull().default('New chat'),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('low'),

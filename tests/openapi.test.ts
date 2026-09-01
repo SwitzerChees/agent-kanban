@@ -16,8 +16,11 @@ describe('external harness OpenAPI contract', () => {
     expect(document.paths['/api/projects/{projectId}/board']?.get?.operationId).toBe('getBoard');
     expect(document.paths['/api/projects/{projectId}/wiki/pages']?.get?.operationId).toBe('listWikiPages');
     expect(document.paths['/api/projects/{projectId}/wiki/pages']?.post?.operationId).toBe('createWikiPage');
+    expect(document.paths['/api/wiki-pages/{pageId}']?.get?.operationId).toBe('getWikiPage');
     expect(document.paths['/api/wiki-pages/{pageId}']?.patch?.operationId).toBe('updateWikiPage');
     expect(document.paths['/api/wiki-pages/{pageId}']?.delete?.operationId).toBe('deleteWikiPage');
+    expect(document.paths['/api/wiki-pages/{pageId}/move']?.post?.operationId).toBe('moveWikiPage');
+    expect(document.components.schemas.WikiPageWrite?.properties).toHaveProperty('expectedUpdatedAt');
     expect(document.paths['/api/tasks/{taskId}/agent/queue']?.post?.operationId).toBe('queueTaskAgent');
     expect(document.paths['/api/tasks/{taskId}/agent/cancel']?.post?.operationId).toBe('cancelTaskAgent');
     expect(document.paths['/api/tasks/{taskId}/agent/retry']?.post?.operationId).toBe('retryTaskAgent');

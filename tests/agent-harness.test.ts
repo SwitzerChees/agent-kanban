@@ -388,6 +388,7 @@ describe('agent harness runtime contracts', () => {
     expect(projectChatSystemPrompt('read_only')).toContain('strictly read-only conversation');
     expect(projectChatSystemPrompt('read_only')).toContain('agent-kanban-control');
     expect(projectChatSystemPrompt('read_only')).toContain("current user's permissions");
+    expect(projectChatSystemPrompt('read_only')).toContain('board and Wiki operations');
     expect(projectChatSystemPrompt('orchestrator', '# Mandatory Project Instructions\nUse DESIGN.md.'))
       .toContain('Use DESIGN.md.');
     const args = buildProjectChatArgs({
