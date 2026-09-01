@@ -2289,7 +2289,7 @@ const loadBoard = async (projectId: string) => {
 };
 
 const refreshCurrentBoard = async () => {
-  if (!user.value || activeView.value !== 'board' || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value || commandPaletteOpen.value) return;
+  if (!user.value || !['board', 'wiki'].includes(activeView.value) || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value || commandPaletteOpen.value) return;
   refreshingBoard.value = true;
   boardClock.value = Date.now();
   try {
@@ -3198,6 +3198,13 @@ const saveUserAction = async () => {
       ? await $fetch<{ users: User[] }>(`/api/users/${editingUserId.value}`, { method: 'PATCH', body })
       : await $fetch<{ users: User[] }>('/api/users', { method: 'POST', body: { ...body, password: userForm.password } });
     users.value = response.users;
+    if (board.value) {
+      const currentUsers = new Map(response.users.map((row) => [row.id, row]));
+      board.value = {
+        ...board.value,
+        members: board.value.members.map((member) => currentUsers.get(member.id) ?? member),
+      };
+    }
     const currentUser = response.users.find((row) => row.id === user.value?.id);
     if (currentUser && user.value) {
       user.value = {

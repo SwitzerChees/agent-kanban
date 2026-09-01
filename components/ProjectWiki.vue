@@ -4,6 +4,7 @@ import TaskItem from '@tiptap/extension-task-item';
 import TaskList from '@tiptap/extension-task-list';
 import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
+import { resolveWikiReference, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
 
 type Locale = 'en' | 'de';
 type WikiTemplateId = 'blank' | 'meeting' | 'checklist';
@@ -49,7 +50,7 @@ interface WikiTask {
 
 interface MentionRenderProps {
   options: { HTMLAttributes: Record<string, unknown> };
-  node: { attrs: { id?: string | null; label?: string | null; mentionSuggestionChar?: string } };
+  node: { attrs: WikiReferenceAttributes };
 }
 
 const props = defineProps<{
@@ -285,21 +286,21 @@ const taskMentionItems = computed(() => props.tasks.map((task) => ({
   icon: 'i-lucide-square-check-big',
 })));
 
+const referenceLabelVersion = computed(() => wikiReferenceRevision(props.members, props.tasks));
+
 const wikiMentionOptions = computed(() => ({
   HTMLAttributes: { class: 'ak-wiki-reference' },
   renderText: ({ node }: MentionRenderProps) => referenceText(node.attrs),
   renderHTML: ({ options, node }: MentionRenderProps): DOMOutputSpec => {
-    const char = node.attrs.mentionSuggestionChar === '#' ? '#' : '@';
-    const label = node.attrs.label ?? node.attrs.id ?? '';
-    const id = node.attrs.id ?? '';
-    const task = char === '#';
+    const reference = resolveWikiReference(node.attrs, props.members, props.tasks);
+    const task = reference.kind === 'task';
     return ['span', {
       ...options.HTMLAttributes,
       class: `ak-wiki-reference ${task ? 'is-task' : 'is-user'}`,
       ...(task
-        ? { 'data-wiki-task-id': id, role: 'link', tabindex: '0', 'aria-label': `${copy.value.openTask}: ${label}` }
-        : { 'data-wiki-user-id': id }),
-    }, `${char}${label}`];
+        ? { 'data-wiki-task-id': reference.id, role: 'link', tabindex: '0', 'aria-label': `${copy.value.openTask}: ${reference.label}` }
+        : { 'data-wiki-user-id': reference.id }),
+    }, `${reference.char}${reference.label}`];
   },
 }));
 
@@ -559,9 +560,9 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   event.preventDefault();
 }
 
-function referenceText(attrs: MentionRenderProps['node']['attrs']) {
-  const char = attrs.mentionSuggestionChar === '#' ? '#' : '@';
-  return `${char}${attrs.label ?? attrs.id ?? ''}`;
+function referenceText(attrs: WikiReferenceAttributes) {
+  const reference = resolveWikiReference(attrs, props.members, props.tasks);
+  return `${reference.char}${reference.label}`;
 }
 
 function activateTaskReference(event: Event) {
@@ -709,7 +710,7 @@ function humanError(error: unknown) {
           </header>
 
           <div v-if="editing" class="ak-wiki-editor mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950">
-            <UEditor v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
               <div class="ak-wiki-editor-toolbar sticky top-12 z-[5] flex min-w-0 items-center border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0">
                 <div class="min-w-0 flex-1 overflow-x-auto">
                   <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="w-max" />
@@ -722,7 +723,7 @@ function humanError(error: unknown) {
             <p class="border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7">{{ copy.referencesHint }}</p>
           </div>
           <div v-else-if="selectedPage.content" @click="activateTaskReference" @keydown.enter="activateTaskReference" @keydown.space.prevent="activateTaskReference">
-            <UEditor :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
           </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
         </article>
