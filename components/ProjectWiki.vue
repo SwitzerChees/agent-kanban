@@ -2,6 +2,8 @@
 import type { EditorToolbarItem } from '@nuxt/ui';
 import TaskItem from '@tiptap/extension-task-item';
 import TaskList from '@tiptap/extension-task-list';
+import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
+import type { DOMOutputSpec } from '@tiptap/pm/model';
 
 type Locale = 'en' | 'de';
 type WikiTemplateId = 'blank' | 'meeting' | 'checklist';
@@ -33,16 +35,36 @@ interface WikiTreeRow {
   depth: number;
 }
 
+interface WikiMember {
+  id: string;
+  name: string;
+  email: string;
+}
+
+interface WikiTask {
+  id: string;
+  key: string;
+  title: string;
+}
+
+interface MentionRenderProps {
+  options: { HTMLAttributes: Record<string, unknown> };
+  node: { attrs: { id?: string | null; label?: string | null; mentionSuggestionChar?: string } };
+}
+
 const props = defineProps<{
   project: WikiProject;
   locale: Locale;
   isMobileViewport: boolean;
   sidebarCollapsed: boolean;
+  members: WikiMember[];
+  tasks: WikiTask[];
 }>();
 
 const emit = defineEmits<{
   showBoard: [];
   openSidebar: [];
+  openTask: [taskId: string];
 }>();
 
 const copy = computed(() => props.locale === 'de' ? {
@@ -99,6 +121,8 @@ const copy = computed(() => props.locale === 'de' ? {
   link: 'Link',
   undo: 'Rückgängig',
   redo: 'Wiederholen',
+  referencesHint: 'Tippe @ für Projektmitglieder und # für Projekt-Tasks.',
+  openTask: 'Task öffnen',
 } : {
   board: 'Board',
   wiki: 'Wiki',
@@ -153,6 +177,8 @@ const copy = computed(() => props.locale === 'de' ? {
   link: 'Link',
   undo: 'Undo',
   redo: 'Redo',
+  referencesHint: 'Type @ for project members and # for project tasks.',
+  openTask: 'Open task',
 });
 
 const pages = ref<WikiPage[]>([]);
@@ -213,7 +239,69 @@ const editorToolbarItems = computed<EditorToolbarItem[][]>(() => [[
   { kind: 'undo', icon: 'i-lucide-undo-2', tooltip: { text: copy.value.undo }, 'aria-label': copy.value.undo },
   { kind: 'redo', icon: 'i-lucide-redo-2', tooltip: { text: copy.value.redo }, 'aria-label': copy.value.redo },
 ]]);
-const wikiEditorExtensions = [TaskList, TaskItem.configure({ nested: true })];
+
+const AccessibleTable = Table.extend({
+  renderHTML(props): DOMOutputSpec {
+    const rendered = this.parent?.(props) as DOMOutputSpec;
+
+    if (Array.isArray(rendered) && rendered[0] === 'div') {
+      const attributes = typeof rendered[1] === 'object' && !Array.isArray(rendered[1])
+        ? rendered[1]
+        : {};
+      return ['div', { ...attributes, tabindex: '0' }, ...rendered.slice(2)] as DOMOutputSpec;
+    }
+
+    return rendered;
+  },
+  addNodeView() {
+    return ({ node }) => {
+      const view = new TableView(node, this.options.cellMinWidth);
+      view.dom.tabIndex = 0;
+      return view;
+    };
+  },
+}).configure({ renderWrapper: true });
+
+const wikiEditorExtensions = [
+  TaskList,
+  TaskItem.configure({ nested: true }),
+  AccessibleTable,
+  TableRow,
+  TableHeader,
+  TableCell,
+];
+
+const userMentionItems = computed(() => props.members.map((member) => ({
+  id: member.id,
+  label: member.name,
+  description: member.email,
+  icon: 'i-lucide-user-round',
+})));
+
+const taskMentionItems = computed(() => props.tasks.map((task) => ({
+  id: task.id,
+  label: `${task.key} · ${task.title}`,
+  description: task.title,
+  icon: 'i-lucide-square-check-big',
+})));
+
+const wikiMentionOptions = computed(() => ({
+  HTMLAttributes: { class: 'ak-wiki-reference' },
+  renderText: ({ node }: MentionRenderProps) => referenceText(node.attrs),
+  renderHTML: ({ options, node }: MentionRenderProps): DOMOutputSpec => {
+    const char = node.attrs.mentionSuggestionChar === '#' ? '#' : '@';
+    const label = node.attrs.label ?? node.attrs.id ?? '';
+    const id = node.attrs.id ?? '';
+    const task = char === '#';
+    return ['span', {
+      ...options.HTMLAttributes,
+      class: `ak-wiki-reference ${task ? 'is-task' : 'is-user'}`,
+      ...(task
+        ? { 'data-wiki-task-id': id, role: 'link', tabindex: '0', 'aria-label': `${copy.value.openTask}: ${label}` }
+        : { 'data-wiki-user-id': id }),
+    }, `${char}${label}`];
+  },
+}));
 
 const selectedPage = computed(() => pages.value.find((page) => page.id === selectedPageId.value) ?? null);
 const dirty = computed(() => Boolean(selectedPage.value && (
@@ -471,6 +559,21 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
   event.preventDefault();
 }
 
+function referenceText(attrs: MentionRenderProps['node']['attrs']) {
+  const char = attrs.mentionSuggestionChar === '#' ? '#' : '@';
+  return `${char}${attrs.label ?? attrs.id ?? ''}`;
+}
+
+function activateTaskReference(event: Event) {
+  const target = event.target instanceof Element
+    ? event.target.closest<HTMLElement>('[data-wiki-task-id]')
+    : null;
+  const taskId = target?.dataset.wikiTaskId;
+  if (!taskId) return;
+  event.preventDefault();
+  emit('openTask', taskId);
+}
+
 function humanError(error: unknown) {
   const details = error as { data?: { statusMessage?: string }; statusMessage?: string; message?: string };
   const code = details.data?.statusMessage ?? details.statusMessage ?? details.message ?? '';
@@ -606,11 +709,21 @@ function humanError(error: unknown) {
           </header>
 
           <div v-if="editing" class="ak-wiki-editor mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950">
-            <UEditor v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :image="false" :mention="false" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
-              <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="ak-wiki-editor-toolbar sticky top-12 z-[5] border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0" />
+            <UEditor v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+              <div class="ak-wiki-editor-toolbar sticky top-12 z-[5] flex min-w-0 items-center border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0">
+                <div class="min-w-0 flex-1 overflow-x-auto">
+                  <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="w-max" />
+                </div>
+                <WikiEditorTools :editor="editor" :locale="props.locale" />
+              </div>
+              <UEditorMentionMenu :editor="editor" :items="userMentionItems" :filter-fields="['label', 'description']" char="@" plugin-key="wiki-user-mentions" :limit="8" />
+              <UEditorMentionMenu :editor="editor" :items="taskMentionItems" :filter-fields="['label', 'description']" char="#" plugin-key="wiki-task-links" :limit="8" />
             </UEditor>
+            <p class="border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7">{{ copy.referencesHint }}</p>
           </div>
-          <UEditor v-else-if="selectedPage.content" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="false" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+          <div v-else-if="selectedPage.content" @click="activateTaskReference" @keydown.enter="activateTaskReference" @keydown.space.prevent="activateTaskReference">
+            <UEditor :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+          </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
         </article>
       </div>
@@ -640,6 +753,136 @@ function humanError(error: unknown) {
   color: rgb(13 148 136);
   text-decoration: underline;
   text-underline-offset: 0.2em;
+}
+
+.ak-wiki-editor :deep(.tableWrapper),
+.ak-wiki-rendered :deep(.tableWrapper) {
+  margin-block: 1.5rem;
+  overflow-x: auto;
+  border-radius: 0.75rem;
+  border: 1px solid rgb(228 228 231);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.tableWrapper),
+:global(.dark) .ak-wiki-rendered :deep(.tableWrapper) {
+  border-color: rgb(63 63 70);
+}
+
+.ak-wiki-editor :deep(table),
+.ak-wiki-rendered :deep(table) {
+  width: 100%;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.ak-wiki-editor :deep(th),
+.ak-wiki-editor :deep(td),
+.ak-wiki-rendered :deep(th),
+.ak-wiki-rendered :deep(td) {
+  position: relative;
+  min-width: 8rem;
+  border-right: 1px solid rgb(228 228 231);
+  border-bottom: 1px solid rgb(228 228 231);
+  padding: 0.65rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.ak-wiki-editor :deep(th:last-child),
+.ak-wiki-editor :deep(td:last-child),
+.ak-wiki-rendered :deep(th:last-child),
+.ak-wiki-rendered :deep(td:last-child) {
+  border-right: 0;
+}
+
+.ak-wiki-editor :deep(tr:last-child td),
+.ak-wiki-rendered :deep(tr:last-child td) {
+  border-bottom: 0;
+}
+
+.ak-wiki-editor :deep(th),
+.ak-wiki-rendered :deep(th) {
+  background: rgb(244 244 245 / 0.85);
+  color: rgb(39 39 42);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+}
+
+:global(.dark) .ak-wiki-editor :deep(th),
+:global(.dark) .ak-wiki-rendered :deep(th) {
+  background: rgb(39 39 42 / 0.8);
+  color: rgb(244 244 245);
+}
+
+:global(.dark) .ak-wiki-editor :deep(th),
+:global(.dark) .ak-wiki-editor :deep(td),
+:global(.dark) .ak-wiki-rendered :deep(th),
+:global(.dark) .ak-wiki-rendered :deep(td) {
+  border-color: rgb(63 63 70);
+}
+
+.ak-wiki-editor :deep(.selectedCell::after) {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  content: '';
+  background: rgb(13 148 136 / 0.1);
+  box-shadow: inset 0 0 0 2px rgb(13 148 136);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-reference),
+.ak-wiki-rendered :deep(.ak-wiki-reference) {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 0.375rem;
+  padding-inline: 0.3rem;
+  font-weight: 650;
+  line-height: 1.45;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-reference.is-user),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-user) {
+  background: rgb(236 253 245);
+  color: rgb(4 120 87);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-reference.is-task),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-task) {
+  background: rgb(239 246 255);
+  color: rgb(29 78 216);
+}
+
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-task) {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgb(59 130 246 / 0.35);
+  text-underline-offset: 0.2em;
+}
+
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-task:hover),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-task:focus-visible) {
+  background: rgb(219 234 254);
+  outline: 2px solid transparent;
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-reference.is-user),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-reference.is-user) {
+  background: rgb(6 78 59 / 0.5);
+  color: rgb(110 231 183);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-reference.is-task),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-reference.is-task) {
+  background: rgb(30 58 138 / 0.5);
+  color: rgb(147 197 253);
 }
 
 .ak-wiki-editor :deep(.tiptap),

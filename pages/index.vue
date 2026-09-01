@@ -3042,6 +3042,14 @@ const openTaskDetail = async (task: Task) => {
   await establishTaskModalBaseline();
 };
 
+const openWikiTask = (taskId: string) => {
+  const task = board.value?.tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  void openTaskDetail(task).catch((error) => {
+    errorMessage.value = humanError(error);
+  });
+};
+
 const closeTaskEventStream = () => {
   taskEventSource?.close();
   taskEventSource = null;
@@ -6346,11 +6354,14 @@ const humanError = (error: unknown) => {
         <ProjectWiki
           v-else-if="activeView === 'wiki' && board"
           :project="board.project"
+          :members="board.members"
+          :tasks="board.tasks"
           :locale="locale"
           :is-mobile-viewport="isMobileViewport"
           :sidebar-collapsed="sidebarCollapsed"
           @show-board="selectProjectSurface('board')"
           @open-sidebar="openMobileSidebar"
+          @open-task="openWikiTask"
         />
 
         <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
