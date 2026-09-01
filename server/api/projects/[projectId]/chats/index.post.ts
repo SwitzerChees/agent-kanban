@@ -6,6 +6,7 @@ import { requireSessionUser } from '../../../../lib/security/auth';
 const bodySchema = z.object({
   harness: z.enum(['codex', 'opencode', 'prime-agent']).optional(),
   reasoningEffort: z.enum(['low', 'medium', 'xhigh']).optional(),
+  wikiPageId: z.string().uuid().nullable().optional(),
 }).default({});
 
 export default defineEventHandler(async (event) => {

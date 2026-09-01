@@ -20,6 +20,13 @@ export interface UpdateWikiPageInput {
   content?: string;
   parentId?: string | null;
   position?: number;
+  expectedUpdatedAt?: string;
+}
+
+export interface MoveWikiPageInput {
+  parentId: string | null;
+  position: number;
+  expectedUpdatedAt?: string;
 }
 
 export function listWikiPages(projectId: string, user: User) {
@@ -28,6 +35,11 @@ export function listWikiPages(projectId: string, user: User) {
     .where(eq(schema.wikiPages.projectId, projectId))
     .orderBy(asc(schema.wikiPages.position), asc(schema.wikiPages.createdAt))
     .all());
+}
+
+export function getWikiPage(pageId: string, user: User) {
+  const page = authorizeWikiPage(pageId, user);
+  return decorateWikiPages([page])[0]!;
 }
 
 export function createWikiPage(projectId: string, input: CreateWikiPageInput, user: User) {
@@ -78,6 +90,7 @@ export function createWikiPage(projectId: string, input: CreateWikiPageInput, us
 
 export function updateWikiPage(pageId: string, input: UpdateWikiPageInput, user: User) {
   const page = authorizeWikiPage(pageId, user);
+  assertWikiPageRevision(page, input.expectedUpdatedAt);
   const updates: Partial<typeof schema.wikiPages.$inferInsert> = {
     updatedBy: user.id,
     updatedAt: new Date().toISOString(),
@@ -104,11 +117,73 @@ export function updateWikiPage(pageId: string, input: UpdateWikiPageInput, user:
       taskId: null,
       userId: user.id,
       action: 'wiki_page_updated',
-      metadata: JSON.stringify({ pageId, fields: Object.keys(input) }),
+      metadata: JSON.stringify({ pageId, fields: Object.keys(input).filter((field) => field !== 'expectedUpdatedAt') }),
       createdAt: updates.updatedAt!,
     }).run();
   });
   return listWikiPages(page.projectId, user).find((item) => item.id === pageId)!;
+}
+
+export function moveWikiPage(pageId: string, input: MoveWikiPageInput, user: User) {
+  const page = authorizeWikiPage(pageId, user);
+  assertWikiPageRevision(page, input.expectedUpdatedAt);
+  const targetParentId = input.parentId ?? null;
+  if (targetParentId === pageId) {
+    throw createError({ statusCode: 400, statusMessage: 'wiki_page_cycle' });
+  }
+  if (targetParentId) {
+    authorizeParent(page.projectId, targetParentId);
+    assertNoWikiPageCycle(pageId, targetParentId);
+  }
+
+  const pages = db.select().from(schema.wikiPages)
+    .where(eq(schema.wikiPages.projectId, page.projectId))
+    .orderBy(asc(schema.wikiPages.position), asc(schema.wikiPages.createdAt))
+    .all();
+  const oldParentId = page.parentId ?? null;
+  const targetSiblings = pages.filter((candidate) => (
+    candidate.id !== pageId && (candidate.parentId ?? null) === targetParentId
+  ));
+  const targetIndex = Math.min(Math.max(input.position, 0), targetSiblings.length);
+  targetSiblings.splice(targetIndex, 0, { ...page, parentId: targetParentId });
+  const oldSiblings = oldParentId === targetParentId
+    ? []
+    : pages.filter((candidate) => candidate.id !== pageId && (candidate.parentId ?? null) === oldParentId);
+  const now = new Date().toISOString();
+
+  db.transaction((tx) => {
+    for (const [index, sibling] of targetSiblings.entries()) {
+      tx.update(schema.wikiPages).set({
+        parentId: sibling.id === pageId ? targetParentId : sibling.parentId,
+        position: index * 1000,
+        ...(sibling.id === pageId ? { updatedBy: user.id, updatedAt: now } : {}),
+      }).where(eq(schema.wikiPages.id, sibling.id)).run();
+    }
+    for (const [index, sibling] of oldSiblings.entries()) {
+      tx.update(schema.wikiPages).set({ position: index * 1000 })
+        .where(eq(schema.wikiPages.id, sibling.id)).run();
+    }
+    tx.insert(schema.activity).values({
+      id: randomUUID(),
+      projectId: page.projectId,
+      taskId: null,
+      userId: user.id,
+      action: 'wiki_page_moved',
+      metadata: JSON.stringify({
+        pageId,
+        fromParentId: oldParentId,
+        parentId: targetParentId,
+        position: targetIndex,
+      }),
+      createdAt: now,
+    }).run();
+  });
+
+  const result = listWikiPages(page.projectId, user);
+  return {
+    page: result.find((item) => item.id === pageId)!,
+    pages: result,
+  };
 }
 
 export function deleteWikiPage(pageId: string, user: User) {
@@ -155,6 +230,12 @@ function assertNoWikiPageCycle(pageId: string, parentId: string) {
     visited.add(cursor);
     cursor = db.select({ parentId: schema.wikiPages.parentId }).from(schema.wikiPages)
       .where(eq(schema.wikiPages.id, cursor)).get()?.parentId ?? null;
+  }
+}
+
+function assertWikiPageRevision(page: WikiPage, expectedUpdatedAt: string | undefined) {
+  if (expectedUpdatedAt !== undefined && expectedUpdatedAt !== page.updatedAt) {
+    throw createError({ statusCode: 409, statusMessage: 'wiki_page_stale' });
   }
 }
 

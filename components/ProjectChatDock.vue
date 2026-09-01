@@ -6,6 +6,7 @@ type ReasoningEffort = 'low' | 'medium' | 'xhigh';
 interface ProjectChat {
   id: string;
   projectId: string;
+  wikiPageId: string | null;
   title: string;
   harness: AgentHarness;
   reasoningEffort: ReasoningEffort;
@@ -71,6 +72,12 @@ const props = defineProps<{
   projectId: string;
   projectName: string;
   locale: Locale;
+  wikiPageId?: string | null;
+  wikiPageTitle?: string | null;
+}>();
+
+const emit = defineEmits<{
+  turnCompleted: [];
 }>();
 
 const copy = {
@@ -163,6 +170,32 @@ const copy = {
 } as const;
 
 const t = computed(() => copy[props.locale]);
+const wikiContext = computed(() => Boolean(props.wikiPageId));
+const contextTitle = computed(() => wikiContext.value
+  ? (props.locale === 'de' ? 'Wiki-Chat' : 'Wiki chat')
+  : t.value.title);
+const contextSubtitle = computed(() => wikiContext.value
+  ? `${props.locale === 'de' ? 'Gebunden an' : 'Bound to'} · ${props.wikiPageTitle ?? ''}`
+  : t.value.private);
+const contextEmptyTitle = computed(() => wikiContext.value
+  ? (props.locale === 'de' ? 'Frag etwas zu dieser Seite' : 'Ask about this page')
+  : t.value.emptyTitle);
+const contextEmptyCopy = computed(() => wikiContext.value
+  ? (props.locale === 'de'
+      ? 'Lass die Seite lesen, neu strukturieren oder formatieren und erstelle daraus auf Wunsch Tasks im Kanban.'
+      : 'Read, restructure, or format this page and create Kanban tasks from it when requested.')
+  : t.value.emptyCopy);
+const contextPrompts = computed(() => wikiContext.value
+  ? (props.locale === 'de'
+      ? ['Fasse diese Seite prägnant zusammen.', 'Strukturiere und formatiere diese Notizen besser.', 'Erstelle aus den nächsten Schritten passende Kanban-Tasks.']
+      : ['Summarize this page concisely.', 'Restructure and format these notes.', 'Create suitable Kanban tasks from the next steps.'])
+  : [t.value.promptArchitecture, t.value.promptFlow, t.value.promptRisk]);
+const contextPlaceholder = computed(() => wikiContext.value
+  ? (props.locale === 'de' ? 'Diese Wiki-Seite bearbeiten oder daraus Tasks erstellen …' : 'Edit this Wiki page or create tasks from it…')
+  : t.value.placeholder);
+const contextSourceScope = computed(() => wikiContext.value
+  ? (props.locale === 'de' ? 'Aktive Wiki-Seite · Wiki & Kanban mit deinen Rechten' : 'Active Wiki page · Wiki & Kanban with your permissions')
+  : t.value.sourceScope);
 const isOpen = ref(false);
 const view = ref<'chat' | 'history'>('chat');
 const loading = ref(false);
@@ -269,7 +302,7 @@ onBeforeUnmount(() => {
   clearPendingFiles();
 });
 
-watch(() => props.projectId, async () => {
+watch(() => [props.projectId, props.wikiPageId] as const, async () => {
   closeStream();
   chat.value = null;
   messages.value = [];
@@ -303,12 +336,14 @@ async function ensureCurrentChat() {
   loading.value = true;
   errorMessage.value = '';
   try {
-    let payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chat`);
+    let payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chat`, {
+      query: props.wikiPageId ? { wikiPageId: props.wikiPageId } : undefined,
+    });
     capabilities.value = payload.capabilities ?? capabilities.value;
     if (!payload.chat) {
       payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chats`, {
         method: 'POST',
-        body: { harness: 'prime-agent', reasoningEffort: 'low' },
+        body: { harness: 'prime-agent', reasoningEffort: 'low', wikiPageId: props.wikiPageId ?? null },
       });
     }
     applyPayload(payload);
@@ -342,7 +377,7 @@ async function createNewChat() {
   try {
     const payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chats`, {
       method: 'POST',
-      body: { harness: 'prime-agent', reasoningEffort: 'low' },
+      body: { harness: 'prime-agent', reasoningEffort: 'low', wikiPageId: props.wikiPageId ?? null },
     });
     view.value = 'chat';
     composer.value = '';
@@ -517,7 +552,9 @@ async function showHistory() {
   view.value = 'history';
   errorMessage.value = '';
   try {
-    const payload = await $fetch<{ chats: ProjectChatHistoryItem[] }>(`/api/projects/${props.projectId}/chats`);
+    const payload = await $fetch<{ chats: ProjectChatHistoryItem[] }>(`/api/projects/${props.projectId}/chats`, {
+      query: props.wikiPageId ? { wikiPageId: props.wikiPageId } : undefined,
+    });
     history.value = payload.chats;
   } catch (error) {
     errorMessage.value = friendlyError(error);
@@ -578,10 +615,12 @@ function connectStream() {
     applyMessageEvent(event, 'complete');
     if (chat.value) chat.value.status = 'ready';
     currentActivity.value = null;
+    emit('turnCompleted');
   });
   stream.addEventListener('voice_turn_completed', (event) => {
     updateEventCursor(event, eventPayload(event as MessageEvent));
     void reloadChat();
+    emit('turnCompleted');
   });
   stream.addEventListener('voice_job_update', (event) => {
     const payload = eventPayload(event as MessageEvent);
@@ -941,7 +980,7 @@ function friendlyError(error: unknown) {
           :style="dockStyle"
           role="dialog"
           aria-modal="false"
-          :aria-label="t.title"
+          :aria-label="contextTitle"
           data-testid="project-chat-dock"
         >
           <button
@@ -976,7 +1015,7 @@ function friendlyError(error: unknown) {
               </p>
               <p class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
                 <UIcon name="i-lucide-lock-keyhole" class="size-3 shrink-0" />
-                <span class="truncate">{{ view === 'history' ? projectName : t.private }}</span>
+                <span class="truncate">{{ view === 'history' ? (wikiPageTitle || projectName) : contextSubtitle }}</span>
               </p>
             </div>
             <div class="flex shrink-0 items-center gap-0.5">
@@ -1027,7 +1066,7 @@ function friendlyError(error: unknown) {
                     <span class="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">{{ item.title || t.newChat }}</span>
                     <span v-if="item.id === chat?.id" class="size-1.5 shrink-0 rounded-full bg-teal-500" />
                   </span>
-                  <span class="mt-0.5 line-clamp-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ item.preview || t.emptyCopy }}</span>
+                  <span class="mt-0.5 line-clamp-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ item.preview || contextEmptyCopy }}</span>
                   <span class="mt-1.5 flex items-center gap-2 text-[10px] text-zinc-400 dark:text-zinc-500">
                     <span>{{ formatTime(item.updatedAt) }}</span>
                     <span>·</span>
@@ -1050,12 +1089,12 @@ function friendlyError(error: unknown) {
                   <UIcon name="i-lucide-braces" class="size-5" />
                 </div>
                 <div>
-                  <h2 class="text-base font-semibold text-zinc-950 dark:text-white">{{ t.emptyTitle }}</h2>
-                  <p class="mx-auto mt-2 max-w-[34ch] text-sm leading-6 text-zinc-600 dark:text-zinc-300">{{ t.emptyCopy }}</p>
+                  <h2 class="text-base font-semibold text-zinc-950 dark:text-white">{{ contextEmptyTitle }}</h2>
+                  <p class="mx-auto mt-2 max-w-[34ch] text-sm leading-6 text-zinc-600 dark:text-zinc-300">{{ contextEmptyCopy }}</p>
                 </div>
                 <div class="grid gap-2 text-left">
                   <button
-                    v-for="prompt in [t.promptArchitecture, t.promptFlow, t.promptRisk]"
+                    v-for="prompt in contextPrompts"
                     :key="prompt"
                     type="button"
                     class="flex min-h-11 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-teal-950 transition-colors hover:border-teal-300 hover:bg-teal-50/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-teal-100 dark:hover:border-teal-800 dark:hover:bg-teal-950/35"
@@ -1259,7 +1298,7 @@ function friendlyError(error: unknown) {
                   :maxrows="7"
                   variant="none"
                   class="w-full"
-                  :placeholder="t.placeholder"
+                  :placeholder="contextPlaceholder"
                   :disabled="running"
                   data-testid="project-chat-composer"
                   :ui="{ base: 'min-h-16 resize-none pb-11 text-sm placeholder:text-zinc-500 dark:placeholder:text-zinc-400' }"
@@ -1269,7 +1308,7 @@ function friendlyError(error: unknown) {
                 <div class="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2">
                   <span class="inline-flex min-w-0 items-center gap-1.5 truncate px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
                     <UIcon name="i-lucide-shield-check" class="size-3 shrink-0" />
-                    <span class="truncate">{{ t.sourceScope }} · {{ projectName }}</span>
+                    <span class="truncate">{{ contextSourceScope }} · {{ wikiPageTitle || projectName }}</span>
                   </span>
                   <span class="flex shrink-0 items-center gap-1">
                     <input ref="fileInput" type="file" multiple class="sr-only" tabindex="-1" aria-hidden="true" @change="handleFileChange">

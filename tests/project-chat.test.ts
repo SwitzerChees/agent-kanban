@@ -13,6 +13,7 @@ process.env.KANBAN_ADMIN_PASSWORD = 'project-chat-password';
 let dbModule: typeof import('../server/lib/db');
 let chatModule: typeof import('../server/lib/project-chat');
 let runtimeModule: typeof import('../server/lib/project-chat-runtime');
+let wikiModule: typeof import('../server/lib/wiki');
 let owner: User;
 let other: User;
 let projectId: string;
@@ -21,6 +22,7 @@ beforeAll(async () => {
   dbModule = await import('../server/lib/db');
   chatModule = await import('../server/lib/project-chat');
   runtimeModule = await import('../server/lib/project-chat-runtime');
+  wikiModule = await import('../server/lib/wiki');
   const now = new Date().toISOString();
   owner = dbModule.db.select().from(dbModule.schema.users).get()!;
   other = {
@@ -102,6 +104,34 @@ describe('private project chats', () => {
     const owned = chatModule.getCurrentProjectChat(projectId, owner).chat!;
     expect(() => chatModule.authorizeProjectChat(owned.id, other)).toThrow(/chat_not_found/);
     expect(chatModule.getCurrentProjectChat(projectId, other).chat).toBeNull();
+  });
+
+  test('keeps a separate current conversation and full context for each Wiki page', () => {
+    const page = wikiModule.createWikiPage(projectId, {
+      title: 'Release notes',
+      content: '## Decisions\n\nShip after the acceptance checks.',
+    }, owner);
+    const boardChatId = chatModule.getCurrentProjectChat(projectId, owner).chat!.id;
+    const first = chatModule.createProjectChat(projectId, { wikiPageId: page.id }, owner).chat;
+    const second = chatModule.createProjectChat(projectId, { wikiPageId: page.id }, owner).chat;
+
+    expect(first.wikiPageId).toBe(page.id);
+    expect(chatModule.getCurrentProjectChat(projectId, owner, page.id).chat?.id).toBe(second.id);
+    expect(chatModule.getCurrentProjectChat(projectId, owner).chat?.id).toBe(boardChatId);
+    expect(new Set(chatModule.listProjectChats(projectId, owner, page.id).map((thread) => thread.id)))
+      .toEqual(new Set([second.id, first.id]));
+    expect(chatModule.listProjectChats(projectId, owner).every((thread) => thread.wikiPageId === null)).toBe(true);
+
+    const instructions = runtimeModule.buildWikiPageChatInstructions(
+      { id: projectId, key: 'CHAT', name: 'Chat project' },
+      page,
+      [page],
+    );
+    expect(instructions).toContain('Ship after the acceptance checks.');
+    expect(instructions).toContain(`/api/wiki-pages/${page.id}`);
+    expect(instructions).toContain(`/api/projects/${projectId}/wiki/pages`);
+    expect(instructions).toContain('clientRequestId');
+    expect(instructions).toContain('untrusted');
   });
 
   test('locks harness configuration after the conversation starts and streams ordered events', () => {

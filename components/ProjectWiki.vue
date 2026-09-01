@@ -8,6 +8,7 @@ import { resolveWikiReference, wikiReferenceRevision, type WikiReferenceAttribut
 
 type Locale = 'en' | 'de';
 type WikiTemplateId = 'blank' | 'meeting' | 'checklist';
+type WikiDropPlacement = 'before' | 'inside' | 'after';
 
 interface WikiProject {
   id: string;
@@ -66,6 +67,7 @@ const emit = defineEmits<{
   showBoard: [];
   openSidebar: [];
   openTask: [taskId: string];
+  pageChange: [page: { id: string; title: string } | null];
 }>();
 
 const copy = computed(() => props.locale === 'de' ? {
@@ -124,6 +126,12 @@ const copy = computed(() => props.locale === 'de' ? {
   redo: 'Wiederholen',
   referencesHint: 'Tippe @ für Projektmitglieder und # für Projekt-Tasks.',
   openTask: 'Task öffnen',
+  dragPage: 'Seite verschieben',
+  dropBefore: 'Davor einfügen',
+  dropInside: 'Als Unterseite einfügen',
+  dropAfter: 'Danach einfügen',
+  dropRoot: 'Auf oberster Ebene ablegen',
+  stalePage: 'Die Seite wurde inzwischen geändert. Deine Änderung wurde nicht gespeichert; bitte lade die Seite neu und prüfe sie erneut.',
 } : {
   board: 'Board',
   wiki: 'Wiki',
@@ -180,6 +188,12 @@ const copy = computed(() => props.locale === 'de' ? {
   redo: 'Redo',
   referencesHint: 'Type @ for project members and # for project tasks.',
   openTask: 'Open task',
+  dragPage: 'Move page',
+  dropBefore: 'Insert before',
+  dropInside: 'Insert as child page',
+  dropAfter: 'Insert after',
+  dropRoot: 'Drop at the top level',
+  stalePage: 'This page changed in the meantime. Your change was not saved; reload the page and review it again.',
 });
 
 const pages = ref<WikiPage[]>([]);
@@ -194,6 +208,8 @@ const copied = ref(false);
 const errorMessage = ref<string | null>(null);
 const draftTitle = ref('');
 const draftContent = ref('');
+const draggedPageId = ref<string | null>(null);
+const dropTarget = ref<{ pageId: string | null; placement: WikiDropPlacement | 'root' } | null>(null);
 
 const templates = computed(() => [{
   id: 'blank' as const,
@@ -358,6 +374,10 @@ const updatedLabel = computed(() => {
 const updatedInitials = computed(() => (selectedPage.value?.updatedByName ?? 'AK')
   .split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join(''));
 
+watch(selectedPage, (page) => {
+  emit('pageChange', page ? { id: page.id, title: page.title } : null);
+}, { immediate: true });
+
 watch(() => props.project.id, () => void loadPages());
 
 onMounted(() => {
@@ -434,7 +454,7 @@ async function savePage() {
   try {
     const response = await $fetch<{ page: WikiPage }>(`/api/wiki-pages/${selectedPage.value.id}`, {
       method: 'PATCH',
-      body: { title, content: draftContent.value },
+      body: { title, content: draftContent.value, expectedUpdatedAt: selectedPage.value.updatedAt },
     });
     pages.value = pages.value.map((page) => page.id === response.page.id ? response.page : page);
     selectedPageId.value = response.page.id;
@@ -448,6 +468,23 @@ async function savePage() {
     saving.value = false;
   }
 }
+
+async function refreshPages() {
+  if (editing.value && dirty.value) return;
+  try {
+    const response = await $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`);
+    pages.value = response.pages;
+    selectedPageId.value = pages.value.some((page) => page.id === selectedPageId.value)
+      ? selectedPageId.value
+      : pages.value[0]?.id ?? null;
+    resetDraft();
+    syncHash(selectedPageId.value);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  }
+}
+
+defineExpose({ refreshPages });
 
 async function savePageAction() {
   await savePage();
@@ -575,10 +612,133 @@ function activateTaskReference(event: Event) {
   emit('openTask', taskId);
 }
 
+function canDragPage(pageId: string) {
+  return !searchQuery.value && !saving.value && !(pageId === selectedPageId.value && editing.value && dirty.value);
+}
+
+function startPageDrag(event: DragEvent, pageId: string) {
+  if (!canDragPage(pageId)) {
+    event.preventDefault();
+    return;
+  }
+  draggedPageId.value = pageId;
+  dropTarget.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', pageId);
+  }
+}
+
+function updatePageDrop(event: DragEvent, pageId: string) {
+  const draggedId = draggedPageId.value;
+  if (!draggedId || draggedId === pageId || isWikiDescendant(pageId, draggedId)) {
+    dropTarget.value = null;
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  const element = event.currentTarget as HTMLElement;
+  const bounds = element.getBoundingClientRect();
+  const ratio = bounds.height ? (event.clientY - bounds.top) / bounds.height : 0.5;
+  const placement: WikiDropPlacement = ratio < 0.28 ? 'before' : ratio > 0.72 ? 'after' : 'inside';
+  dropTarget.value = { pageId, placement };
+}
+
+function updateRootDrop(event: DragEvent) {
+  if (!draggedPageId.value) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropTarget.value = { pageId: null, placement: 'root' };
+}
+
+async function finishPageDrop(event: DragEvent, pageId: string | null) {
+  event.preventDefault();
+  const draggedId = draggedPageId.value;
+  const target = dropTarget.value;
+  if (!draggedId || !target || target.pageId !== pageId) {
+    clearPageDrag();
+    return;
+  }
+  const dragged = pages.value.find((page) => page.id === draggedId);
+  if (!dragged) {
+    clearPageDrag();
+    return;
+  }
+
+  let parentId: string | null;
+  let position: number;
+  if (target.placement === 'root') {
+    parentId = null;
+    position = siblingPages(null, draggedId).length;
+  } else {
+    const targetPage = pages.value.find((page) => page.id === target.pageId);
+    if (!targetPage) {
+      clearPageDrag();
+      return;
+    }
+    if (target.placement === 'inside') {
+      parentId = targetPage.id;
+      position = siblingPages(parentId, draggedId).length;
+    } else {
+      parentId = targetPage.parentId ?? null;
+      const siblings = siblingPages(parentId, draggedId);
+      const targetIndex = siblings.findIndex((page) => page.id === targetPage.id);
+      position = Math.max(0, targetIndex + (target.placement === 'after' ? 1 : 0));
+    }
+  }
+
+  clearPageDrag();
+  saving.value = true;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ page: WikiPage; pages: WikiPage[] }>(`/api/wiki-pages/${draggedId}/move`, {
+      method: 'POST',
+      body: { parentId, position, expectedUpdatedAt: dragged.updatedAt },
+    });
+    pages.value = response.pages;
+    if (!editing.value) resetDraft();
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    await refreshPages();
+  } finally {
+    saving.value = false;
+  }
+}
+
+function siblingPages(parentId: string | null, excludeId: string) {
+  return pages.value
+    .filter((page) => page.id !== excludeId && (page.parentId ?? null) === parentId)
+    .sort((left, right) => left.position - right.position || left.createdAt.localeCompare(right.createdAt));
+}
+
+function isWikiDescendant(candidateId: string, ancestorId: string) {
+  let cursor = pages.value.find((page) => page.id === candidateId)?.parentId ?? null;
+  const visited = new Set<string>();
+  while (cursor && !visited.has(cursor)) {
+    if (cursor === ancestorId) return true;
+    visited.add(cursor);
+    cursor = pages.value.find((page) => page.id === cursor)?.parentId ?? null;
+  }
+  return false;
+}
+
+function clearPageDrag() {
+  draggedPageId.value = null;
+  dropTarget.value = null;
+}
+
+function dropLabel(placement: WikiDropPlacement | 'root') {
+  if (placement === 'before') return copy.value.dropBefore;
+  if (placement === 'inside') return copy.value.dropInside;
+  if (placement === 'after') return copy.value.dropAfter;
+  return copy.value.dropRoot;
+}
+
 function humanError(error: unknown) {
   const details = error as { data?: { statusMessage?: string }; statusMessage?: string; message?: string };
   const code = details.data?.statusMessage ?? details.statusMessage ?? details.message ?? '';
   if (code.includes('wiki_page_not_empty')) return copy.value.childDeleteError;
+  if (code.includes('wiki_page_stale')) return copy.value.stalePage;
   return copy.value.genericError;
 }
 </script>
@@ -675,13 +835,36 @@ function humanError(error: unknown) {
       <aside class="ak-wiki-pages hidden w-[250px] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/70 dark:border-zinc-800 dark:bg-zinc-900/55 md:flex" :aria-label="copy.pageTree">
         <div class="border-b border-zinc-200 p-3 dark:border-zinc-800"><UInput v-model="searchQuery" class="w-full" size="sm" icon="i-lucide-search" :placeholder="copy.search" :aria-label="copy.search" /></div>
         <nav class="min-h-0 flex-1 overflow-y-auto px-2 py-3" :aria-label="copy.pages">
-          <p class="mb-2 px-2 text-[11px] font-semibold uppercase tracking-[0.11em] text-zinc-600 dark:text-zinc-400">{{ copy.rootPages }}</p>
-          <div v-for="row in visibleTreeRows" :key="row.page.id" class="group flex items-center gap-0.5">
-            <button type="button" class="ak-wiki-page-link min-w-0 flex-1" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.5 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)">
+          <div
+            class="ak-wiki-root-drop mb-2 flex min-h-7 items-center rounded-md px-2"
+            :class="dropTarget?.placement === 'root' ? 'is-drop-target' : ''"
+            @dragover="updateRootDrop"
+            @drop="finishPageDrop($event, null)"
+          >
+            <p class="text-[11px] font-semibold uppercase tracking-[0.11em] text-zinc-600 dark:text-zinc-400">{{ copy.rootPages }}</p>
+            <span v-if="dropTarget?.placement === 'root'" class="ml-auto text-[10px] font-semibold normal-case tracking-normal text-teal-700 dark:text-teal-300">{{ dropLabel('root') }}</span>
+          </div>
+          <div
+            v-for="row in visibleTreeRows"
+            :key="row.page.id"
+            class="ak-wiki-tree-row group relative flex items-center gap-0.5 rounded-lg"
+            :class="[
+              draggedPageId === row.page.id ? 'is-dragging' : '',
+              dropTarget?.pageId === row.page.id ? `is-drop-${dropTarget.placement}` : '',
+            ]"
+            :draggable="canDragPage(row.page.id)"
+            @dragstart="startPageDrag($event, row.page.id)"
+            @dragover="updatePageDrop($event, row.page.id)"
+            @drop="finishPageDrop($event, row.page.id)"
+            @dragend="clearPageDrag"
+          >
+            <span class="ak-wiki-drag-handle grid size-5 shrink-0 place-items-center text-zinc-400 opacity-0 transition group-hover:opacity-100" :title="copy.dragPage" aria-hidden="true"><UIcon name="i-lucide-grip-vertical" class="size-3.5" /></span>
+            <button type="button" class="ak-wiki-page-link min-w-0 flex-1" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.25 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)">
               <UIcon :name="row.depth ? 'i-lucide-file-text' : 'i-lucide-book-open-text'" class="size-3.5 shrink-0" />
               <span class="min-w-0 flex-1 truncate text-left">{{ row.page.title }}</span>
             </button>
             <button type="button" class="grid size-7 shrink-0 place-items-center rounded-md text-zinc-400 opacity-0 transition hover:bg-zinc-200 hover:text-zinc-700 focus:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200" :aria-label="`${copy.addChild}: ${row.page.title}`" @click="createFromTemplate('blank', row.page.id)"><UIcon name="i-lucide-plus" class="size-3.5" /></button>
+            <span v-if="dropTarget?.pageId === row.page.id" class="ak-wiki-drop-label pointer-events-none absolute right-8 z-10 rounded bg-teal-700 px-1.5 py-0.5 text-[9px] font-semibold text-white shadow-sm">{{ dropLabel(dropTarget.placement) }}</span>
           </div>
           <p v-if="searchQuery && !visibleTreeRows.length" class="px-3 py-8 text-center text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ copy.noResults }}</p>
         </nav>
@@ -723,7 +906,7 @@ function humanError(error: unknown) {
             <p class="border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7">{{ copy.referencesHint }}</p>
           </div>
           <div v-else-if="selectedPage.content" @click="activateTaskReference" @keydown.enter="activateTaskReference" @keydown.space.prevent="activateTaskReference">
-            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
           </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
         </article>
@@ -740,8 +923,67 @@ function humanError(error: unknown) {
 </template>
 
 <style scoped>
+.ak-wiki-tree-row {
+  isolation: isolate;
+}
+
+.ak-wiki-tree-row.is-dragging {
+  opacity: 0.42;
+}
+
+.ak-wiki-tree-row.is-drop-before::before,
+.ak-wiki-tree-row.is-drop-after::after {
+  position: absolute;
+  z-index: 20;
+  right: 0.25rem;
+  left: 0.25rem;
+  height: 2px;
+  border-radius: 999px;
+  background: rgb(13 148 136);
+  content: '';
+  box-shadow: 0 0 0 2px rgb(204 251 241 / 0.9);
+}
+
+.ak-wiki-tree-row.is-drop-before::before {
+  top: -1px;
+}
+
+.ak-wiki-tree-row.is-drop-after::after {
+  bottom: -1px;
+}
+
+.ak-wiki-tree-row.is-drop-inside {
+  background: rgb(204 251 241 / 0.72);
+  box-shadow: inset 0 0 0 1px rgb(20 184 166);
+}
+
+.ak-wiki-root-drop.is-drop-target {
+  background: rgb(204 251 241 / 0.78);
+  box-shadow: inset 0 0 0 1px rgb(20 184 166);
+}
+
+.ak-wiki-drop-label {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+:global(.dark) .ak-wiki-tree-row.is-drop-inside,
+:global(.dark) .ak-wiki-root-drop.is-drop-target {
+  background: rgb(19 78 74 / 0.55);
+}
+
 .ak-wiki-rendered :deep(.tiptap) {
   max-width: 70ch;
+}
+
+.ak-wiki-rendered,
+.ak-wiki-rendered :deep([data-slot='root']),
+.ak-wiki-rendered :deep([data-slot='content']),
+.ak-wiki-rendered :deep([data-slot='base']),
+.ak-wiki-rendered :deep(.ProseMirror),
+.ak-wiki-rendered :deep(.tiptap) {
+  margin-inline: 0 !important;
+  padding-inline: 0 !important;
 }
 
 .ak-wiki-rendered :deep(h1),

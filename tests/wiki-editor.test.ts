@@ -5,6 +5,7 @@ import { TableKit } from '@tiptap/extension-table';
 import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
 import { resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
+import { readFileSync } from 'node:fs';
 
 const content = [
   '| Topic | Owner |',
@@ -15,6 +16,14 @@ const content = [
 ].join('\n');
 
 describe('wiki editor document extensions', () => {
+  test('keeps rendered content flush with the document header and exposes page-tree drop zones', () => {
+    const component = readFileSync(new URL('../components/ProjectWiki.vue', import.meta.url), 'utf8');
+    expect(component).toContain(".ak-wiki-rendered :deep([data-slot='content'])");
+    expect(component).toContain('padding-inline: 0 !important');
+    expect(component).toContain('@dragstart="startPageDrag');
+    expect(component).toContain("dropLabel(dropTarget.placement)");
+    expect(component).toContain('/move`');
+  });
   test('resolves stored reference IDs to current user names and task titles', () => {
     const members = [{ id: 'user-1', name: 'Alice Updated' }];
     const tasks = [{ id: 'task-18', key: 'AK-18', title: 'Current project wiki title' }];

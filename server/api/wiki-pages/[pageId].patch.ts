@@ -8,7 +8,8 @@ const bodySchema = z.object({
   content: z.string().max(1_000_000).optional(),
   parentId: z.string().uuid().nullable().optional(),
   position: z.number().int().min(0).max(1_000_000_000).optional(),
-}).refine((value) => Object.keys(value).length > 0);
+  expectedUpdatedAt: z.string().datetime().optional(),
+}).refine((value) => Object.keys(value).some((field) => field !== 'expectedUpdatedAt'));
 
 export default defineEventHandler(async (event) => {
   const user = requireUser(event);

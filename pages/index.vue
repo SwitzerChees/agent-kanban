@@ -1072,6 +1072,8 @@ const locale = ref<Locale>('en');
 useHead(() => ({ htmlAttrs: { lang: locale.value } }));
 const colorMode = useColorMode();
 const activeView = ref<View>('board');
+const activeWikiPage = ref<{ id: string; title: string } | null>(null);
+const projectWikiRef = ref<{ refreshPages: () => Promise<void> } | null>(null);
 const user = ref<User | null>(null);
 const users = ref<User[]>([]);
 const projects = ref<Project[]>([]);
@@ -2297,6 +2299,11 @@ const refreshCurrentBoard = async () => {
   } finally {
     refreshingBoard.value = false;
   }
+};
+
+const refreshAfterProjectChatTurn = async () => {
+  await refreshCurrentBoard();
+  if (activeView.value === 'wiki') await projectWikiRef.value?.refreshPages();
 };
 
 const startBoardRefresh = () => {
@@ -6360,6 +6367,7 @@ const humanError = (error: unknown) => {
 
         <ProjectWiki
           v-else-if="activeView === 'wiki' && board"
+          ref="projectWikiRef"
           :project="board.project"
           :members="board.members"
           :tasks="board.tasks"
@@ -6369,6 +6377,7 @@ const humanError = (error: unknown) => {
           @show-board="selectProjectSurface('board')"
           @open-sidebar="openMobileSidebar"
           @open-task="openWikiTask"
+          @page-change="activeWikiPage = $event"
         />
 
         <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
@@ -8536,11 +8545,14 @@ const humanError = (error: unknown) => {
       </UModal>
 
       <ProjectChatDock
-        v-if="activeView === 'board' && selectedProject"
-        :key="selectedProject.id"
+        v-if="selectedProject && (activeView === 'board' || (activeView === 'wiki' && activeWikiPage))"
+        :key="`${selectedProject.id}:${activeView === 'wiki' ? activeWikiPage?.id : 'board'}`"
         :project-id="selectedProject.id"
         :project-name="selectedProject.name"
         :locale="locale"
+        :wiki-page-id="activeView === 'wiki' ? activeWikiPage?.id : null"
+        :wiki-page-title="activeView === 'wiki' ? activeWikiPage?.title : null"
+        @turn-completed="refreshAfterProjectChatTurn"
       />
     </div>
 

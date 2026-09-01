@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, gt, max } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, max } from 'drizzle-orm';
 import { createError } from 'h3';
 import { db, schema } from './db';
 import type { User } from './db/schema';
@@ -29,6 +29,7 @@ export interface ProjectChatMessageAttachment {
 export interface CreateProjectChatInput {
   harness?: unknown;
   reasoningEffort?: unknown;
+  wikiPageId?: string | null;
 }
 
 export interface UpdateProjectChatInput {
@@ -36,12 +37,14 @@ export interface UpdateProjectChatInput {
   reasoningEffort?: unknown;
 }
 
-export function getCurrentProjectChat(projectId: string, user: User) {
+export function getCurrentProjectChat(projectId: string, user: User, wikiPageId: string | null = null) {
   getProject(projectId, user);
+  authorizeWikiChatContext(projectId, wikiPageId);
   const thread = db.select().from(schema.projectChatThreads)
     .where(and(
       eq(schema.projectChatThreads.projectId, projectId),
       eq(schema.projectChatThreads.userId, user.id),
+      wikiChatContextCondition(wikiPageId),
       eq(schema.projectChatThreads.isCurrent, true),
     ))
     .get();
@@ -53,12 +56,14 @@ export function getCurrentProjectChat(projectId: string, user: User) {
   };
 }
 
-export function listProjectChats(projectId: string, user: User) {
+export function listProjectChats(projectId: string, user: User, wikiPageId: string | null = null) {
   getProject(projectId, user);
+  authorizeWikiChatContext(projectId, wikiPageId);
   const threads = db.select().from(schema.projectChatThreads)
     .where(and(
       eq(schema.projectChatThreads.projectId, projectId),
       eq(schema.projectChatThreads.userId, user.id),
+      wikiChatContextCondition(wikiPageId),
     ))
     .orderBy(desc(schema.projectChatThreads.updatedAt))
     .limit(MAX_HISTORY)
@@ -76,6 +81,8 @@ export function listProjectChats(projectId: string, user: User) {
 
 export function createProjectChat(projectId: string, input: CreateProjectChatInput, user: User) {
   getProject(projectId, user);
+  const wikiPageId = input.wikiPageId ?? null;
+  authorizeWikiChatContext(projectId, wikiPageId);
   const harness = input.harness === undefined
     ? DEFAULT_CHAT_HARNESS
     : requireHarness(input.harness);
@@ -87,6 +94,7 @@ export function createProjectChat(projectId: string, input: CreateProjectChatInp
     id: randomUUID(),
     projectId,
     userId: user.id,
+    wikiPageId,
     title: '',
     harness,
     reasoningEffort,
@@ -104,6 +112,7 @@ export function createProjectChat(projectId: string, input: CreateProjectChatInp
       .where(and(
         eq(schema.projectChatThreads.projectId, projectId),
         eq(schema.projectChatThreads.userId, user.id),
+        wikiChatContextCondition(wikiPageId),
       ))
       .run();
     tx.insert(schema.projectChatThreads).values(thread).run();
@@ -119,6 +128,7 @@ export function activateProjectChat(threadId: string, user: User) {
       .where(and(
         eq(schema.projectChatThreads.projectId, thread.projectId),
         eq(schema.projectChatThreads.userId, user.id),
+        wikiChatContextCondition(thread.wikiPageId),
       ))
       .run();
     tx.update(schema.projectChatThreads).set({ isCurrent: true, updatedAt: now })
@@ -289,6 +299,7 @@ function publicProjectChat(thread: typeof schema.projectChatThreads.$inferSelect
   return {
     id: thread.id,
     projectId: thread.projectId,
+    wikiPageId: thread.wikiPageId,
     title: thread.title,
     harness: thread.harness,
     reasoningEffort: thread.reasoningEffort,
@@ -299,6 +310,21 @@ function publicProjectChat(thread: typeof schema.projectChatThreads.$inferSelect
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
   };
+}
+
+function authorizeWikiChatContext(projectId: string, wikiPageId: string | null) {
+  if (!wikiPageId) return;
+  const page = db.select({ projectId: schema.wikiPages.projectId }).from(schema.wikiPages)
+    .where(eq(schema.wikiPages.id, wikiPageId)).get();
+  if (!page || page.projectId !== projectId) {
+    throw createError({ statusCode: 404, statusMessage: 'wiki_page_not_found' });
+  }
+}
+
+function wikiChatContextCondition(wikiPageId: string | null) {
+  return wikiPageId
+    ? eq(schema.projectChatThreads.wikiPageId, wikiPageId)
+    : isNull(schema.projectChatThreads.wikiPageId);
 }
 
 function isHarnessAvailable(harness: AgentHarness) {

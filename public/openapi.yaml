@@ -87,6 +87,14 @@ paths:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/wiki-pages/{pageId}:
+    get:
+      tags: [Wiki]
+      operationId: getWikiPage
+      summary: Get one complete Wiki page including its Markdown content and revision
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
     patch:
       tags: [Wiki]
       operationId: updateWikiPage
@@ -108,13 +116,29 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-pages/{pageId}/move:
+    post:
+      tags: [Wiki]
+      operationId: moveWikiPage
+      summary: Atomically reorder a Wiki page or move it below another page
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiPageMove' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/projects/{projectId}/chat:
     get:
       tags: [Project chat]
       operationId: getCurrentProjectChat
       summary: Get the current private project chat for the signed-in user
       security: [{ cookieAuth: [] }]
-      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - { $ref: '#/components/parameters/WikiPageContext' }
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
@@ -124,7 +148,9 @@ paths:
       operationId: listPrivateProjectChats
       summary: List private chat history for the signed-in user
       security: [{ cookieAuth: [] }]
-      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      parameters:
+        - { $ref: '#/components/parameters/ProjectId' }
+        - { $ref: '#/components/parameters/WikiPageContext' }
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
@@ -177,7 +203,7 @@ paths:
     post:
       tags: [Project chat]
       operationId: sendPrivateProjectChatMessage
-      summary: Start a streaming, read-only chat turn
+      summary: Start a source-read-only chat turn with explicitly requested Kanban and Wiki actions
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ChatId' }]
       requestBody:
@@ -623,6 +649,7 @@ components:
   parameters:
     ProjectId: { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiPageId: { name: pageId, in: path, required: true, schema: { type: string, format: uuid } }
+    WikiPageContext: { name: wikiPageId, in: query, required: false, schema: { type: string, format: uuid }, description: Bind chat selection and history to one Wiki page }
     ChatId: { name: chatId, in: path, required: true, schema: { type: string, format: uuid } }
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
     OberthemaId: { name: oberthemaId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -668,6 +695,14 @@ components:
         content: { type: string, maxLength: 1000000, description: Markdown content }
         parentId: { type: [string, 'null'], format: uuid }
         position: { type: integer, minimum: 0, maximum: 1000000000 }
+        expectedUpdatedAt: { type: string, format: date-time, description: Reject the write with wiki_page_stale if the page changed since it was read }
+    WikiPageMove:
+      type: object
+      required: [parentId, position]
+      properties:
+        parentId: { type: [string, 'null'], format: uuid, description: Parent page or null for the project Wiki root }
+        position: { type: integer, minimum: 0, maximum: 500, description: Zero-based position among the target parent's children }
+        expectedUpdatedAt: { type: string, format: date-time }
     TaskCreate:
       type: object
       required: [title]
@@ -726,6 +761,7 @@ components:
           allOf: [{ $ref: '#/components/schemas/AgentHarness' }]
           default: prime-agent
         reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' }
+        wikiPageId: { type: [string, 'null'], format: uuid, description: Create a conversation bound to this Wiki page }
     ReasoningEffort:
       type: string
       enum: [low, medium, xhigh]

@@ -39,6 +39,31 @@ For multipart attachment uploads, use a harness HTTP client that reads the same 
 
 Create a project with `name`, `key`, and `folderPath`. Optional fields are `description`, `userIds`, and `tags`. A project update accepts the same fields as a partial object; when supplied, `userIds` and `tags` replace the corresponding complete sets.
 
+## Project Wiki
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/projects/{projectId}/wiki/pages` | Read the complete page tree with full Markdown content. |
+| `POST` | `/api/projects/{projectId}/wiki/pages` | Create a root page or child page. |
+| `GET` | `/api/wiki-pages/{pageId}` | Read one complete page and its current revision. |
+| `PATCH` | `/api/wiki-pages/{pageId}` | Update title, Markdown content, parent, or raw position. |
+| `POST` | `/api/wiki-pages/{pageId}/move` | Atomically reorder or reparent a page by zero-based sibling position. |
+| `DELETE` | `/api/wiki-pages/{pageId}` | Delete a page only when it has no children. |
+
+Create with `title`, optional `content`, and optional `parentId`. Update only requested fields and pass the latest `updatedAt` as `expectedUpdatedAt`; a concurrent edit returns `409 wiki_page_stale`. For structural changes prefer the move endpoint:
+
+```json
+{
+  "parentId": "<parent-page-uuid-or-null>",
+  "position": 2,
+  "expectedUpdatedAt": "2026-09-01T10:15:30.000Z"
+}
+```
+
+`position` is zero-based among the target parent's children. The move is cycle-safe and returns both the moved `page` and the normalized complete `pages` tree. Preserve Markdown tables and task lists. Stored member references have the form `[@ id="<user-id>" label="<fallback-name>"]`; stored task references use `[@ id="<task-id>" label="<KEY · fallback-title>" char="#"]`. IDs are stable and the UI resolves their current labels.
+
+To generate tasks from a page, read that page and the board first, create each task with a unique stable `clientRequestId`, verify returned task keys, and update the source page only when explicitly requested.
+
 ## Task operations
 
 | Method | Path | Purpose |
@@ -134,5 +159,7 @@ The HTTP status and `statusMessage` form the stable error signal:
 - `403 admin_required` or `project_forbidden`: authorization boundary.
 - `404`: referenced resource no longer exists.
 - `409`: task lifecycle, stale state, duplicate name, or non-empty hierarchy conflict.
+
+Wiki-specific conflicts include `409 wiki_page_stale` and `409 wiki_page_not_empty`; invalid parents or cycles return `400 invalid_wiki_parent` or `400 wiki_page_cycle`.
 
 On `409`, fetch the task or board again before deciding whether a retry still represents the user's intent.

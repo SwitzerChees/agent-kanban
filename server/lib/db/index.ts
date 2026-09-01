@@ -100,6 +100,7 @@ export function ensureDatabase() {
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      wiki_page_id TEXT REFERENCES wiki_pages(id) ON DELETE CASCADE,
       title TEXT NOT NULL DEFAULT 'New chat',
       harness TEXT NOT NULL DEFAULT 'prime-agent',
       reasoning_effort TEXT NOT NULL DEFAULT 'low',
@@ -468,6 +469,19 @@ export function ensureDatabase() {
     UPDATE project_harness_limits
     SET max_concurrent_tasks = 1
     WHERE max_concurrent_tasks < 0 OR max_concurrent_tasks IS NULL;
+  `);
+
+  const projectChatThreadColumns = sqlite.prepare('PRAGMA table_info(project_chat_threads)').all() as Array<{ name: string }>;
+  if (!projectChatThreadColumns.some((column) => column.name === 'wiki_page_id')) {
+    sqlite.exec('ALTER TABLE project_chat_threads ADD COLUMN wiki_page_id TEXT REFERENCES wiki_pages(id) ON DELETE CASCADE;');
+  }
+  sqlite.exec(`
+    DROP INDEX IF EXISTS idx_project_chat_current;
+    CREATE UNIQUE INDEX idx_project_chat_current
+      ON project_chat_threads(project_id, user_id, COALESCE(wiki_page_id, ''))
+      WHERE is_current = 1;
+    CREATE INDEX IF NOT EXISTS idx_project_chat_wiki_page
+      ON project_chat_threads(wiki_page_id, user_id, updated_at DESC);
   `);
 
   const projectChatMessageColumns = sqlite.prepare('PRAGMA table_info(project_chat_messages)').all() as Array<{ name: string }>;
