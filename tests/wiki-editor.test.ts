@@ -4,6 +4,7 @@ import Mention from '@tiptap/extension-mention';
 import { TableKit } from '@tiptap/extension-table';
 import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
+import { resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
 
 const content = [
   '| Topic | Owner |',
@@ -14,6 +15,37 @@ const content = [
 ].join('\n');
 
 describe('wiki editor document extensions', () => {
+  test('resolves stored reference IDs to current user names and task titles', () => {
+    const members = [{ id: 'user-1', name: 'Alice Updated' }];
+    const tasks = [{ id: 'task-18', key: 'AK-18', title: 'Current project wiki title' }];
+
+    expect(resolveWikiReference(
+      { id: 'user-1', label: 'Alice Old' },
+      members,
+      tasks,
+    )).toMatchObject({ char: '@', kind: 'user', label: 'Alice Updated' });
+    expect(resolveWikiReference(
+      { id: 'task-18', label: 'AK-18 · Old title', mentionSuggestionChar: '#' },
+      members,
+      tasks,
+    )).toMatchObject({ char: '#', kind: 'task', label: 'AK-18 · Current project wiki title' });
+  });
+
+  test('keeps stored labels as a fallback and invalidates rendering when current labels change', () => {
+    const originalMembers = [{ id: 'user-1', name: 'Alice' }];
+    const originalTasks = [{ id: 'task-18', key: 'AK-18', title: 'Old title' }];
+
+    expect(resolveWikiReference(
+      { id: 'missing-user', label: 'Former member' },
+      originalMembers,
+      originalTasks,
+    ).label).toBe('Former member');
+    expect(wikiReferenceRevision(originalMembers, originalTasks)).not.toBe(wikiReferenceRevision(
+      [{ id: 'user-1', name: 'Alice Renamed' }],
+      [{ id: 'task-18', key: 'AK-18', title: 'New title' }],
+    ));
+  });
+
   test('round-trips GFM tables and stable user/task references through markdown', () => {
     const editor = createEditor();
 
