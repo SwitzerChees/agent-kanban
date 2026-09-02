@@ -4,7 +4,7 @@ import Mention from '@tiptap/extension-mention';
 import { TableKit } from '@tiptap/extension-table';
 import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
-import { resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
+import { canonicalizeWikiReferences, resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
 import { readFileSync } from 'node:fs';
 
 const content = [
@@ -23,6 +23,41 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain('@dragstart="startPageDrag');
     expect(component).toContain("dropLabel(dropTarget.placement)");
     expect(component).toContain('/move`');
+    expect(component).toContain("ul[data-type='taskList'] > li");
+    expect(component).toContain('flex-direction: row');
+  });
+
+  test('canonicalizes unambiguous plain Wiki references without touching code or links', () => {
+    const markdown = [
+      '- @Bastian please clarify this',
+      '- [ ] **Bastian:** Prepare the release',
+      '- Review #MATE-42',
+      '- `@Bastian #MATE-42` stays code',
+      '- https://example.test/@Bastian stays a URL',
+      '- [@ id="user-1" label="Bastian Old"] stays canonical',
+    ].join('\n');
+    const normalized = canonicalizeWikiReferences(
+      markdown,
+      [{ id: 'user-1', name: 'Bastian Hofacker' }],
+      [{ id: 'task-42', key: 'MATE-42', title: 'Press release' }],
+    );
+
+    expect(normalized).toContain('- [@ id="user-1" label="Bastian Hofacker"] please clarify this');
+    expect(normalized).toContain('- [ ] [@ id="user-1" label="Bastian Hofacker"]: Prepare the release');
+    expect(normalized).toContain('[@ id="task-42" label="MATE-42 · Press release" char="#"]');
+    expect(normalized).toContain('`@Bastian #MATE-42` stays code');
+    expect(normalized).toContain('https://example.test/@Bastian stays a URL');
+    expect(normalized).toContain('[@ id="user-1" label="Bastian Old"] stays canonical');
+  });
+
+  test('does not guess when a short member name is ambiguous', () => {
+    const normalized = canonicalizeWikiReferences('@Bastian and @Bastian Hofacker', [
+      { id: 'user-1', name: 'Bastian Hofacker' },
+      { id: 'user-2', name: 'Bastian Müller' },
+    ], []);
+
+    expect(normalized).toContain('@Bastian and');
+    expect(normalized).toContain('[@ id="user-1" label="Bastian Hofacker"]');
   });
   test('resolves stored reference IDs to current user names and task titles', () => {
     const members = [{ id: 'user-1', name: 'Alice Updated' }];

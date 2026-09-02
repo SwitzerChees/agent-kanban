@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, count, eq, inArray, isNull, max } from 'drizzle-orm';
 import { createError } from 'h3';
+import { canonicalizeWikiReferences } from '../../utils/wiki-references';
 import { db, schema } from './db';
 import { getProject } from './kanban';
 import type { User, WikiPage } from './db/schema';
@@ -51,7 +52,7 @@ export function createWikiPage(projectId: string, input: CreateWikiPageInput, us
   }
 
   const title = normalizeTitle(input.title);
-  const content = normalizeContent(input.content ?? '');
+  const content = normalizeProjectWikiContent(projectId, input.content ?? '');
   const parentId = input.parentId ?? null;
   if (parentId) authorizeParent(projectId, parentId);
 
@@ -96,7 +97,7 @@ export function updateWikiPage(pageId: string, input: UpdateWikiPageInput, user:
     updatedAt: new Date().toISOString(),
   };
   if (input.title !== undefined) updates.title = normalizeTitle(input.title);
-  if (input.content !== undefined) updates.content = normalizeContent(input.content);
+  if (input.content !== undefined) updates.content = normalizeProjectWikiContent(page.projectId, input.content);
   if (input.position !== undefined) updates.position = input.position;
   if (input.parentId !== undefined) {
     if (input.parentId === pageId) {
@@ -253,6 +254,20 @@ function normalizeContent(value: string) {
     throw createError({ statusCode: 413, statusMessage: 'wiki_content_too_large' });
   }
   return value;
+}
+
+function normalizeProjectWikiContent(projectId: string, value: string) {
+  normalizeContent(value);
+  const members = db.select({ id: schema.users.id, name: schema.users.name })
+    .from(schema.projectUsers)
+    .innerJoin(schema.users, eq(schema.projectUsers.userId, schema.users.id))
+    .where(eq(schema.projectUsers.projectId, projectId))
+    .all();
+  const tasks = db.select({ id: schema.tasks.id, key: schema.tasks.key, title: schema.tasks.title })
+    .from(schema.tasks)
+    .where(eq(schema.tasks.projectId, projectId))
+    .all();
+  return normalizeContent(canonicalizeWikiReferences(value, members, tasks));
 }
 
 function decorateWikiPages(pages: WikiPage[]) {
