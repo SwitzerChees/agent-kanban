@@ -1,11 +1,22 @@
 import { describe, expect, test } from 'vitest';
-import { Editor } from '@tiptap/core';
+import { Editor, type JSONContent } from '@tiptap/core';
 import Mention from '@tiptap/extension-mention';
-import { TableKit } from '@tiptap/extension-table';
+import TaskItem from '@tiptap/extension-task-item';
+import TaskList from '@tiptap/extension-task-list';
+import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
 import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
+import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '../utils/wiki-editor';
 import { canonicalizeWikiReferences, resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
 import { readFileSync } from 'node:fs';
+
+const WikiTestTable = Table.extend({
+  parseMarkdown: parseWikiTableMarkdown,
+  renderMarkdown: renderWikiTableMarkdown,
+  addKeyboardShortcuts() {
+    return wikiTableKeyboardShortcuts(this.editor, this.parent?.() ?? {});
+  },
+});
 
 const content = [
   '| Topic | Owner |',
@@ -120,12 +131,141 @@ describe('wiki editor document extensions', () => {
     expect(editor.getMarkdown()).toMatch(/\| Topic\s+\|\s+\| Owner/);
     editor.destroy();
   });
+
+  test('turns only the active visual line in a table cell into a list', () => {
+    const editor = createEditor({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [{
+          type: 'tableRow',
+          content: [{
+            type: 'tableCell',
+            content: [{
+              type: 'paragraph',
+              content: [
+                { type: 'text', text: 'Previous line' },
+                { type: 'hardBreak' },
+                { type: 'text', text: 'Active line' },
+                { type: 'hardBreak' },
+                { type: 'text', text: 'Following line' },
+              ],
+            }],
+          }],
+        }],
+      }],
+    }, 'json');
+    const activePosition = textPosition(editor, 'Active line');
+    editor.commands.setTextSelection(activePosition + 3);
+
+    wikiEditorHandlers.bulletList.execute(editor).run();
+
+    const cell = (editor.getJSON() as JSONContent).content?.[0]?.content?.[0]?.content?.[0];
+    expect(cell?.content?.map((node) => node.type)).toEqual(['paragraph', 'bulletList', 'paragraph']);
+    expect(cell?.content?.[0]?.content?.[0]?.text).toBe('Previous line');
+    expect(cell?.content?.[1]?.content?.[0]?.content?.[0]?.content?.[0]?.text).toBe('Active line');
+    expect(cell?.content?.[2]?.content?.[0]?.text).toBe('Following line');
+    editor.destroy();
+  });
+
+  test('uses Tab to indent a table list item instead of moving to another cell', () => {
+    const editor = createEditor({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [{
+          type: 'tableRow',
+          content: [{
+            type: 'tableCell',
+            content: [{
+              type: 'bulletList',
+              content: [
+                { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Parent item' }] }] },
+                { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Child item' }] }] },
+              ],
+            }],
+          }, {
+            type: 'tableCell',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Next cell' }] }],
+          }],
+        }],
+      }],
+    }, 'json');
+    editor.commands.setTextSelection(textPosition(editor, 'Child item') + 2);
+
+    const shortcuts = wikiTableKeyboardShortcuts(editor, {});
+    expect(shortcuts.Tab()).toBe(true);
+
+    const firstCell = (editor.getJSON() as JSONContent).content?.[0]?.content?.[0]?.content?.[0];
+    const nestedList = firstCell?.content?.[0]?.content?.[0]?.content?.[1];
+    expect(nestedList).toMatchObject({
+      type: 'bulletList',
+      content: [{ type: 'listItem' }],
+    });
+    expect(editor.state.selection.$from.parent.textContent).toBe('Child item');
+    expect(Array.from({ length: editor.state.selection.$from.depth + 1 }, (_, depth) => (
+      editor.state.selection.$from.node(depth).type.name
+    ))).toContain('tableCell');
+    editor.destroy();
+  });
+
+  test('round-trips nested lists inside Markdown table cells', () => {
+    const editor = createEditor({
+      type: 'doc',
+      content: [{
+        type: 'table',
+        content: [{
+          type: 'tableRow',
+          content: [{ type: 'tableHeader', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Notes' }] }] }],
+        }, {
+          type: 'tableRow',
+          content: [{
+            type: 'tableCell',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Context' }] }, {
+              type: 'bulletList',
+              content: [{
+                type: 'listItem',
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Parent' }] }, {
+                  type: 'bulletList',
+                  content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Child' }] }] }],
+                }],
+              }, {
+                type: 'listItem',
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Sibling' }] }],
+              }],
+            }],
+          }],
+        }],
+      }],
+    }, 'json');
+
+    const markdown = editor.getMarkdown();
+    expect(markdown).toContain('Context<br>- Parent<br>&nbsp;&nbsp;- Child<br>- Sibling');
+    const roundTrip = createEditor(markdown);
+    const content = (roundTrip.getJSON() as JSONContent).content?.[0]?.content?.[1]?.content?.[0]?.content;
+    expect(content?.map((node) => node.type)).toEqual(['paragraph', 'bulletList']);
+    expect(content?.[1]?.content?.[0]?.content?.[1]).toMatchObject({
+      type: 'bulletList',
+      content: [{ type: 'listItem' }],
+    });
+    editor.destroy();
+    roundTrip.destroy();
+  });
 });
 
-function createEditor() {
+function createEditor(editorContent: string | Record<string, unknown> = content, contentType: 'markdown' | 'json' = 'markdown') {
   return new Editor({
-    extensions: [StarterKit, Markdown, Mention, TableKit],
-    content,
-    contentType: 'markdown',
+    extensions: [StarterKit, Markdown, Mention, TaskList, TaskItem.configure({ nested: true }), WikiTestTable, TableRow, TableHeader, TableCell],
+    content: editorContent,
+    contentType,
   });
+}
+
+function textPosition(editor: Editor, text: string) {
+  let position = -1;
+  editor.state.doc.descendants((node, nodePosition) => {
+    if (position < 0 && node.isText && node.text === text) position = nodePosition;
+  });
+  expect(position).toBeGreaterThanOrEqual(0);
+  return position;
 }

@@ -93,7 +93,11 @@ describe('private project chats', () => {
     }, owner).chat;
     expect(second.id).not.toBe(first.id);
     expect(chatModule.getCurrentProjectChat(projectId, owner).chat?.id).toBe(second.id);
-    expect(chatModule.listProjectChats(projectId, owner)).toHaveLength(2);
+    chatModule.updateProjectChat(second.id, { reasoningEffort: 'xhigh' }, owner);
+
+    const inherited = chatModule.createProjectChat(projectId, {}, owner).chat;
+    expect(inherited).toMatchObject({ harness: 'codex', reasoningEffort: 'xhigh' });
+    expect(chatModule.listProjectChats(projectId, owner)).toHaveLength(3);
 
     const reactivated = chatModule.activateProjectChat(first.id, owner);
     expect(reactivated.chat?.id).toBe(first.id);

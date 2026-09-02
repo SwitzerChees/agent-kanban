@@ -4,6 +4,7 @@ import TaskItem from '@tiptap/extension-task-item';
 import TaskList from '@tiptap/extension-task-list';
 import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
+import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '~/utils/wiki-editor';
 import { resolveWikiReference, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
 
 type Locale = 'en' | 'de';
@@ -258,6 +259,8 @@ const editorToolbarItems = computed<EditorToolbarItem[][]>(() => [[
 ]]);
 
 const AccessibleTable = Table.extend({
+  parseMarkdown: parseWikiTableMarkdown,
+  renderMarkdown: renderWikiTableMarkdown,
   renderHTML(props): DOMOutputSpec {
     const rendered = this.parent?.(props) as DOMOutputSpec;
 
@@ -276,6 +279,9 @@ const AccessibleTable = Table.extend({
       view.dom.tabIndex = 0;
       return view;
     };
+  },
+  addKeyboardShortcuts() {
+    return wikiTableKeyboardShortcuts(this.editor, this.parent?.() ?? {});
   },
 }).configure({ renderWrapper: true });
 
@@ -884,7 +890,7 @@ function humanError(error: unknown) {
           <span v-if="editing" class="ml-auto inline-flex items-center gap-1.5 text-xs text-teal-700 dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span>
         </div>
 
-        <article v-if="selectedPage" class="ak-wiki-document-inner mx-auto w-full max-w-[820px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
+        <article v-if="selectedPage" class="ak-wiki-document-inner mx-auto w-full max-w-[1180px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
           <header class="ak-wiki-document-header border-b border-zinc-200 pb-7 dark:border-zinc-800">
             <div class="flex items-center gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400"><span class="grid size-8 place-items-center rounded-lg bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/60 dark:text-teal-300 dark:ring-teal-900"><UIcon name="i-lucide-file-text" class="size-4" /></span><span>{{ props.project.name }}</span><UIcon name="i-lucide-chevron-right" class="size-3.5" /><span class="truncate">{{ selectedPage.title }}</span></div>
             <textarea v-if="editing" v-model="draftTitle" class="ak-wiki-title-editor mt-5" rows="2" maxlength="200" :aria-label="copy.titleLabel" />
@@ -892,8 +898,8 @@ function humanError(error: unknown) {
             <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ updatedInitials }}</span><span>{{ copy.editedBy }} {{ selectedPage.updatedByName ?? '—' }}</span><span aria-hidden="true">·</span><time :datetime="selectedPage.updatedAt">{{ updatedLabel }}</time><span v-if="editing" class="ml-auto hidden items-center gap-1.5 text-teal-700 sm:inline-flex dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span></div>
           </header>
 
-          <div v-if="editing" class="ak-wiki-editor mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950">
-            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+          <div v-if="editing" class="ak-wiki-editor mt-6 rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950">
+            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
               <div class="ak-wiki-editor-toolbar sticky top-12 z-[5] flex min-w-0 items-center border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0">
                 <div class="min-w-0 flex-1 overflow-x-auto">
                   <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="w-max" />
@@ -972,8 +978,8 @@ function humanError(error: unknown) {
   background: rgb(19 78 74 / 0.55);
 }
 
-.ak-wiki-rendered :deep(.tiptap) {
-  max-width: 70ch;
+.ak-wiki-rendered :deep(.tiptap > :not(.tableWrapper)) {
+  max-width: 72ch;
 }
 
 .ak-wiki-rendered,
@@ -1006,6 +1012,11 @@ function humanError(error: unknown) {
   border: 1px solid rgb(228 228 231);
 }
 
+.ak-wiki-editor-toolbar {
+  border-top-left-radius: calc(0.75rem - 1px);
+  border-top-right-radius: calc(0.75rem - 1px);
+}
+
 :global(.dark) .ak-wiki-editor :deep(.tableWrapper),
 :global(.dark) .ak-wiki-rendered :deep(.tableWrapper) {
   border-color: rgb(63 63 70);
@@ -1032,6 +1043,21 @@ function humanError(error: unknown) {
   vertical-align: top;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.ak-wiki-editor :deep(td ul:not([data-type='taskList'])),
+.ak-wiki-editor :deep(td ol),
+.ak-wiki-rendered :deep(td ul:not([data-type='taskList'])),
+.ak-wiki-rendered :deep(td ol) {
+  margin-block: 0.2rem;
+  padding-left: 1.25rem;
+}
+
+.ak-wiki-editor :deep(td li > ul),
+.ak-wiki-editor :deep(td li > ol),
+.ak-wiki-rendered :deep(td li > ul),
+.ak-wiki-rendered :deep(td li > ol) {
+  margin-block: 0.1rem 0;
 }
 
 .ak-wiki-editor :deep(th:last-child),

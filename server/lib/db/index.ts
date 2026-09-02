@@ -113,6 +113,13 @@ export function ensureDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS project_chat_preferences (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      harness TEXT NOT NULL DEFAULT 'prime-agent',
+      reasoning_effort TEXT NOT NULL DEFAULT 'low',
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS project_chat_messages (
       id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,

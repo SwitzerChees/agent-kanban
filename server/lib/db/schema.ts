@@ -89,6 +89,13 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const projectChatPreferences = sqliteTable('project_chat_preferences', {
+  userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('low'),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const projectChatMessages = sqliteTable('project_chat_messages', {
   id: text('id').primaryKey(),
   threadId: text('thread_id').notNull().references(() => projectChatThreads.id, { onDelete: 'cascade' }),
