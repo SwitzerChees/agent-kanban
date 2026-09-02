@@ -34,6 +34,10 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain(".ak-wiki-rendered :deep([data-slot='content'])");
     expect(component).toContain('padding-inline: 0 !important');
     expect(component).toContain('@dragstart="startPageDrag');
+    expect(component).toContain('row.ancestorIds.every((id) => expandedPageIds.value.has(id))');
+    expect(component).toContain(':aria-expanded="pageIsExpanded(row.page.id)"');
+    expect(component).toContain('@click.stop="togglePageExpanded(row.page.id)"');
+    expect(component).toContain("'i-lucide-chevron-down' : 'i-lucide-chevron-right'");
     expect(component).toContain("dropLabel(dropTarget.placement)");
     expect(component).toContain('/move`');
     expect(component).toContain("ul[data-type='taskList'] > li");

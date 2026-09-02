@@ -43,6 +43,7 @@ interface WikiPage {
 interface WikiTreeRow {
   page: WikiPage;
   depth: number;
+  ancestorIds: string[];
 }
 
 interface WikiMember {
@@ -85,6 +86,8 @@ const copy = computed(() => props.locale === 'de' ? {
   search: 'Seiten durchsuchen …',
   newPage: 'Neue Seite',
   addChild: 'Unterseite anlegen',
+  expandPage: 'Unterseiten aufklappen',
+  collapsePage: 'Unterseiten einklappen',
   edit: 'Bearbeiten',
   save: 'Speichern',
   cancel: 'Abbrechen',
@@ -155,6 +158,8 @@ const copy = computed(() => props.locale === 'de' ? {
   search: 'Search pages …',
   newPage: 'New page',
   addChild: 'Add child page',
+  expandPage: 'Expand child pages',
+  collapsePage: 'Collapse child pages',
   edit: 'Edit',
   save: 'Save',
   cancel: 'Cancel',
@@ -225,6 +230,7 @@ const todoLists = ref<WikiTodoListRecord[]>([]);
 const wikiImages = ref<WikiImageRecord[]>([]);
 const selectedPageId = ref<string | null>(null);
 const searchQuery = ref('');
+const expandedPageIds = ref(new Set<string>());
 const loading = ref(true);
 const saving = ref(false);
 const editing = ref(false);
@@ -415,23 +421,57 @@ const treeRows = computed<WikiTreeRow[]>(() => {
     byParent.set(parentId, siblings);
   }
   const rows: WikiTreeRow[] = [];
-  const append = (parentId: string | null, depth: number, visited: Set<string>) => {
+  const append = (parentId: string | null, depth: number, ancestorIds: string[], visited: Set<string>) => {
     for (const page of byParent.get(parentId) ?? []) {
       if (visited.has(page.id)) continue;
       const nextVisited = new Set(visited).add(page.id);
-      rows.push({ page, depth });
-      append(page.id, Math.min(depth + 1, 5), nextVisited);
+      rows.push({ page, depth, ancestorIds });
+      append(page.id, Math.min(depth + 1, 5), [...ancestorIds, page.id], nextVisited);
     }
   };
-  append(null, 0, new Set());
+  append(null, 0, [], new Set());
   return rows;
 });
 
+const pageIdsWithChildren = computed(() => new Set(
+  treeRows.value
+    .filter((row) => row.depth > 0)
+    .map((row) => row.ancestorIds.at(-1))
+    .filter((id): id is string => Boolean(id)),
+));
+
 const visibleTreeRows = computed(() => {
   const query = searchQuery.value.trim().toLocaleLowerCase(props.locale === 'de' ? 'de-CH' : 'en');
-  if (!query) return treeRows.value;
+  if (!query) {
+    return treeRows.value.filter((row) => row.ancestorIds.every((id) => expandedPageIds.value.has(id)));
+  }
   return treeRows.value.filter(({ page }) => `${page.title}\n${page.content}`.toLocaleLowerCase().includes(query));
 });
+
+function pageHasChildren(pageId: string) {
+  return pageIdsWithChildren.value.has(pageId);
+}
+
+function pageIsExpanded(pageId: string) {
+  return expandedPageIds.value.has(pageId);
+}
+
+function setPageExpanded(pageId: string, expanded: boolean) {
+  const next = new Set(expandedPageIds.value);
+  if (expanded) next.add(pageId);
+  else next.delete(pageId);
+  expandedPageIds.value = next;
+}
+
+function togglePageExpanded(pageId: string) {
+  setPageExpanded(pageId, !pageIsExpanded(pageId));
+}
+
+function revealPageInTree(pageId: string) {
+  const row = treeRows.value.find((candidate) => candidate.page.id === pageId);
+  if (!row?.ancestorIds.length) return;
+  expandedPageIds.value = new Set([...expandedPageIds.value, ...row.ancestorIds]);
+}
 
 const outline = computed(() => {
   const source = editing.value ? draftContent.value : selectedPage.value?.content ?? '';
@@ -460,6 +500,7 @@ watch(selectedPage, (page) => {
 
 watch(() => props.project.id, () => {
   stopWikiPolling();
+  expandedPageIds.value = new Set();
   void loadPages();
 });
 
@@ -585,6 +626,7 @@ async function loadPages() {
       : pages.value.some((page) => page.id === selectedPageId.value)
         ? selectedPageId.value
         : pages.value[0]?.id ?? null;
+    if (sharedId && selectedPageId.value === sharedId) revealPageInTree(sharedId);
     resetDraft();
     syncHash(selectedPageId.value);
   } catch (error) {
@@ -669,6 +711,7 @@ async function savePageAction() {
 }
 
 async function selectPage(pageId: string) {
+  revealPageInTree(pageId);
   if (pageId === selectedPageId.value) {
     mobilePagesOpen.value = false;
     syncHash(pageId);
@@ -694,6 +737,7 @@ async function createFromTemplate(templateId: WikiTemplateId, parentId: string |
       body: { title: template.title, content: template.content, parentId },
     });
     pages.value.push(response.page);
+    if (parentId) setPageExpanded(parentId, true);
     selectedPageId.value = response.page.id;
     syncHash(response.page.id);
     resetDraft();
@@ -715,6 +759,7 @@ async function deleteSelectedPage() {
   try {
     await $fetch(`/api/wiki-pages/${deleted.id}`, { method: 'DELETE' });
     pages.value = pages.value.filter((page) => page.id !== deleted.id);
+    setPageExpanded(deleted.id, false);
     selectedPageId.value = pages.value.find((page) => page.id === deleted.parentId)?.id ?? pages.value[0]?.id ?? null;
     editing.value = false;
     resetDraft();
@@ -1097,6 +1142,7 @@ async function finishPageDrop(event: DragEvent, pageId: string | null) {
       body: { parentId, position, expectedUpdatedAt: dragged.updatedAt },
     });
     pages.value = response.pages;
+    if (parentId) setPageExpanded(parentId, true);
     if (!editing.value) resetDraft();
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -1268,6 +1314,17 @@ function humanErrorCode(error: unknown) {
             @dragend="clearPageDrag"
           >
             <span class="ak-wiki-drag-handle grid size-5 shrink-0 place-items-center text-zinc-400 opacity-0 transition group-hover:opacity-100" :title="copy.dragPage" aria-hidden="true"><UIcon name="i-lucide-grip-vertical" class="size-3.5" /></span>
+            <button
+              v-if="pageHasChildren(row.page.id)"
+              type="button"
+              class="ak-wiki-tree-toggle"
+              :aria-expanded="pageIsExpanded(row.page.id)"
+              :aria-label="`${pageIsExpanded(row.page.id) ? copy.collapsePage : copy.expandPage}: ${row.page.title}`"
+              :title="pageIsExpanded(row.page.id) ? copy.collapsePage : copy.expandPage"
+              @mousedown.stop
+              @click.stop="togglePageExpanded(row.page.id)"
+            ><UIcon :name="pageIsExpanded(row.page.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="size-3.5" /></button>
+            <span v-else class="size-7 shrink-0" aria-hidden="true" />
             <button type="button" class="ak-wiki-page-link min-w-0 flex-1" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.25 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)">
               <UIcon :name="row.depth ? 'i-lucide-file-text' : 'i-lucide-book-open-text'" class="size-3.5 shrink-0" />
               <span class="min-w-0 flex-1 truncate text-left">{{ row.page.title }}</span>
@@ -1286,7 +1343,18 @@ function humanErrorCode(error: unknown) {
             <template #content>
               <div id="wiki-mobile-pages-menu" class="max-h-[60dvh] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto p-2">
                 <UInput v-model="searchQuery" class="mb-2 w-full" size="sm" icon="i-lucide-search" :placeholder="copy.search" />
-                <button v-for="row in visibleTreeRows" :key="row.page.id" type="button" class="ak-wiki-page-link" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.5 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)"><UIcon name="i-lucide-file-text" class="size-3.5 shrink-0" /><span class="truncate">{{ row.page.title }}</span></button>
+                <div v-for="row in visibleTreeRows" :key="row.page.id" class="flex items-center gap-0.5">
+                  <button
+                    v-if="pageHasChildren(row.page.id)"
+                    type="button"
+                    class="ak-wiki-tree-toggle"
+                    :aria-expanded="pageIsExpanded(row.page.id)"
+                    :aria-label="`${pageIsExpanded(row.page.id) ? copy.collapsePage : copy.expandPage}: ${row.page.title}`"
+                    @click.stop="togglePageExpanded(row.page.id)"
+                  ><UIcon :name="pageIsExpanded(row.page.id) ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" class="size-3.5" /></button>
+                  <span v-else class="size-7 shrink-0" aria-hidden="true" />
+                  <button type="button" class="ak-wiki-page-link min-w-0 flex-1" :class="selectedPageId === row.page.id ? 'is-active' : ''" :style="{ paddingLeft: `${0.5 + row.depth * 0.875}rem` }" @click="selectPage(row.page.id)"><UIcon :name="row.depth ? 'i-lucide-file-text' : 'i-lucide-book-open-text'" class="size-3.5 shrink-0" /><span class="truncate">{{ row.page.title }}</span></button>
+                </div>
               </div>
             </template>
           </UPopover>
@@ -1378,6 +1446,31 @@ function humanErrorCode(error: unknown) {
 .ak-wiki-drop-label {
   top: 50%;
   transform: translateY(-50%);
+}
+
+.ak-wiki-tree-toggle {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  place-items: center;
+  border-radius: 0.375rem;
+  color: rgb(113 113 122);
+}
+
+.ak-wiki-tree-toggle:hover {
+  background: rgb(228 228 231);
+  color: rgb(39 39 42);
+}
+
+.ak-wiki-tree-toggle:focus-visible {
+  outline: 2px solid rgb(13 148 136);
+  outline-offset: 1px;
+}
+
+:global(.dark) .ak-wiki-tree-toggle:hover {
+  background: rgb(39 39 42);
+  color: rgb(228 228 231);
 }
 
 :global(.dark) .ak-wiki-tree-row.is-drop-inside,
