@@ -7,7 +7,7 @@ import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table
 import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '../utils/wiki-editor';
-import { canonicalizeWikiReferences, resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
+import { canonicalizeWikiReferences, filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision } from '../utils/wiki-references';
 import { createWikiTodoListExtension, filterWikiTodoItems, type WikiTodoItemRecord } from '../utils/wiki-todos';
 import { readFileSync } from 'node:fs';
 
@@ -37,6 +37,11 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain('/move`');
     expect(component).toContain("ul[data-type='taskList'] > li");
     expect(component).toContain('flex-direction: row');
+    expect(component).toContain('char="seite:"');
+    expect(component).toContain('char="page:"');
+    expect(component).toContain(':items="filteredPageMentionItemsDe"');
+    expect(component).toContain(':items="filteredPageMentionItemsEn"');
+    expect(component).toContain("'[data-wiki-page-id]'");
   });
 
   test('canonicalizes unambiguous plain Wiki references without touching code or links', () => {
@@ -122,6 +127,62 @@ describe('wiki editor document extensions', () => {
       [{ id: 'user-1', name: 'Alice Renamed' }],
       [{ id: 'task-18', key: 'AK-18', title: 'New title' }],
     ));
+  });
+
+  test('builds project-page suggestions with hierarchy context and case-insensitive title filtering', () => {
+    const pages = [
+      { id: 'root-1', parentId: null, title: 'Product' },
+      { id: 'child-1', parentId: 'root-1', title: 'Release Plan' },
+      { id: 'root-2', parentId: null, title: 'Operations' },
+      { id: 'child-2', parentId: 'root-2', title: 'Release Plan' },
+      { id: 'duplicate-1', parentId: null, title: 'Notes' },
+      { id: 'duplicate-2', parentId: null, title: 'Notes' },
+    ];
+    const items = wikiPageReferenceItems(pages, 'en');
+
+    expect(items.find((item) => item.id === 'child-1')?.description).toBe('Page · Product › Release Plan');
+    expect(items.find((item) => item.id === 'child-2')?.description).toBe('Page · Operations › Release Plan');
+    expect(items.filter((item) => item.label === 'Notes').map((item) => item.description))
+      .toEqual(['Page · Notes · licate-1', 'Page · Notes · licate-2']);
+    expect(filterWikiPageReferenceItems(items, '', 'en')).toHaveLength(pages.length);
+    expect(filterWikiPageReferenceItems(items, 'RELEASE', 'en').map((item) => item.id)).toEqual(['child-1', 'child-2']);
+    expect(filterWikiPageReferenceItems(items, 'does not exist', 'en')).toEqual([]);
+  });
+
+  test('resolves renamed page IDs and marks deleted page targets invalid', () => {
+    const pages = [{ id: 'page-1', parentId: null, title: 'Current title' }];
+    expect(resolveWikiReference(
+      { id: 'page-1', label: 'Old title', mentionSuggestionChar: 'seite:' },
+      [],
+      [],
+      pages,
+    )).toMatchObject({ kind: 'page', char: 'seite:', label: 'Current title', valid: true });
+    expect(resolveWikiReference(
+      { id: 'deleted', label: 'Former page', mentionSuggestionChar: 'page:' },
+      [],
+      [],
+      pages,
+    )).toMatchObject({ kind: 'page', label: 'Former page', valid: false });
+    expect(wikiReferenceRevision([], [], pages)).not.toBe(wikiReferenceRevision([], [], [
+      { ...pages[0]!, title: 'Renamed again' },
+    ]));
+  });
+
+  test('round-trips both stable page-reference prefixes through Markdown', () => {
+    const editor = createEditor([
+      'Deutsch [@ id="page-1" label="Plan alt" char="seite:"]',
+      '',
+      'English [@ id="page-1" label="Old plan" char="page:"]',
+    ].join('\n'));
+    const markdown = editor.getMarkdown();
+
+    expect(markdown).toContain('[@ id="page-1" label="Plan alt" char="seite:"]');
+    expect(markdown).toContain('[@ id="page-1" label="Old plan" char="page:"]');
+    expect(editor.getJSON().content?.[0]?.content?.[1]).toMatchObject({
+      type: 'mention',
+      attrs: { id: 'page-1', mentionSuggestionChar: 'seite:' },
+    });
+    editor.destroy();
   });
 
   test('round-trips GFM tables and stable user/task references through markdown', () => {

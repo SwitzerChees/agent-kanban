@@ -5,7 +5,7 @@ import TaskList from '@tiptap/extension-task-list';
 import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '~/utils/wiki-editor';
-import { resolveWikiReference, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
+import { filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
 import { createWikiTodoListExtension, type WikiTodoFilter, type WikiTodoListRecord } from '~/utils/wiki-todos';
 
 type Locale = 'en' | 'de';
@@ -126,8 +126,11 @@ const copy = computed(() => props.locale === 'de' ? {
   link: 'Link',
   undo: 'Rückgängig',
   redo: 'Wiederholen',
-  referencesHint: 'Tippe @ für Projektmitglieder und # für Projekt-Tasks.',
+  referencesHint: 'Tippe @ für Projektmitglieder, # für Projekt-Tasks und seite: für Wiki-Seiten.',
   openTask: 'Task öffnen',
+  openPage: 'Wiki-Seite öffnen',
+  pageReference: 'Seite',
+  missingPage: 'Gelöschte oder nicht zugängliche Wiki-Seite',
   dragPage: 'Seite verschieben',
   dropBefore: 'Davor einfügen',
   dropInside: 'Als Unterseite einfügen',
@@ -190,8 +193,11 @@ const copy = computed(() => props.locale === 'de' ? {
   link: 'Link',
   undo: 'Undo',
   redo: 'Redo',
-  referencesHint: 'Type @ for project members and # for project tasks.',
+  referencesHint: 'Type @ for project members, # for project tasks, and page: for Wiki pages.',
   openTask: 'Open task',
+  openPage: 'Open Wiki page',
+  pageReference: 'Page',
+  missingPage: 'Deleted or inaccessible Wiki page',
   dragPage: 'Move page',
   dropBefore: 'Insert before',
   dropInside: 'Insert as child page',
@@ -214,6 +220,8 @@ const createMenuOpen = ref(false);
 const mobilePagesOpen = ref(false);
 const copied = ref(false);
 const errorMessage = ref<string | null>(null);
+const pageSearchDe = ref('');
+const pageSearchEn = ref('');
 const draftTitle = ref('');
 const draftContent = ref('');
 const draggedPageId = ref<string | null>(null);
@@ -322,7 +330,11 @@ const taskMentionItems = computed(() => props.tasks.map((task) => ({
   icon: 'i-lucide-square-check-big',
 })));
 
-const referenceLabelVersion = computed(() => wikiReferenceRevision(props.members, props.tasks));
+const pageMentionItems = computed(() => wikiPageReferenceItems(pages.value, props.locale));
+const filteredPageMentionItemsDe = computed(() => filterWikiPageReferenceItems(pageMentionItems.value, pageSearchDe.value, props.locale));
+const filteredPageMentionItemsEn = computed(() => filterWikiPageReferenceItems(pageMentionItems.value, pageSearchEn.value, props.locale));
+
+const referenceLabelVersion = computed(() => wikiReferenceRevision(props.members, props.tasks, pages.value));
 const todoListRevision = computed(() => JSON.stringify([
   todoLists.value.map((list) => [list.id, list.name, list.updatedAt, list.items.map((item) => [item.id, item.updatedAt])]),
   todoFilters,
@@ -332,15 +344,21 @@ const wikiMentionOptions = computed(() => ({
   HTMLAttributes: { class: 'ak-wiki-reference' },
   renderText: ({ node }: MentionRenderProps) => referenceText(node.attrs),
   renderHTML: ({ options, node }: MentionRenderProps): DOMOutputSpec => {
-    const reference = resolveWikiReference(node.attrs, props.members, props.tasks);
+    const reference = resolveWikiReference(node.attrs, props.members, props.tasks, pages.value);
     const task = reference.kind === 'task';
+    const page = reference.kind === 'page';
+    const label = page ? `${copy.value.pageReference} · ${reference.label}` : `${reference.char}${reference.label}`;
     return ['span', {
       ...options.HTMLAttributes,
-      class: `ak-wiki-reference ${task ? 'is-task' : 'is-user'}`,
+      class: `ak-wiki-reference ${task ? 'is-task' : page ? 'is-page' : 'is-user'}${reference.valid ? '' : ' is-invalid'}`,
       ...(task
         ? { 'data-wiki-task-id': reference.id, role: 'link', tabindex: '0', 'aria-label': `${copy.value.openTask}: ${reference.label}` }
-        : { 'data-wiki-user-id': reference.id }),
-    }, `${reference.char}${reference.label}`];
+        : page && reference.valid
+          ? { 'data-wiki-page-id': reference.id, role: 'link', tabindex: '0', 'aria-label': `${copy.value.openPage}: ${reference.label}` }
+          : page
+            ? { 'aria-disabled': 'true', title: copy.value.missingPage }
+            : { 'data-wiki-user-id': reference.id }),
+    }, label];
   },
 }));
 
@@ -630,8 +648,10 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 }
 
 function referenceText(attrs: WikiReferenceAttributes) {
-  const reference = resolveWikiReference(attrs, props.members, props.tasks);
-  return `${reference.char}${reference.label}`;
+  const reference = resolveWikiReference(attrs, props.members, props.tasks, pages.value);
+  return reference.kind === 'page'
+    ? `${copy.value.pageReference} · ${reference.label}`
+    : `${reference.char}${reference.label}`;
 }
 
 async function createWikiTodoList(payload: { name: string; editor: { chain: () => any } }) {
@@ -721,18 +741,22 @@ async function refreshTodoLists() {
 }
 
 function handleWikiContentClick(event: Event) {
-  activateTaskReference(event);
   void handleWikiTodoClick(event);
+  activateWikiReference(event);
 }
 
-function activateTaskReference(event: Event) {
-  const target = event.target instanceof Element
-    ? event.target.closest<HTMLElement>('[data-wiki-task-id]')
-    : null;
-  const taskId = target?.dataset.wikiTaskId;
-  if (!taskId) return;
+function activateWikiReference(event: Event) {
+  const element = event.target instanceof Element ? event.target : null;
+  const taskId = element?.closest<HTMLElement>('[data-wiki-task-id]')?.dataset.wikiTaskId;
+  if (taskId) {
+    event.preventDefault();
+    emit('openTask', taskId);
+    return;
+  }
+  const pageId = element?.closest<HTMLElement>('[data-wiki-page-id]')?.dataset.wikiPageId;
+  if (!pageId || !pages.value.some((page) => page.id === pageId)) return;
   event.preventDefault();
-  emit('openTask', taskId);
+  void selectPage(pageId);
 }
 
 function canDragPage(pageId: string) {
@@ -1027,10 +1051,12 @@ function humanError(error: unknown) {
               </div>
               <UEditorMentionMenu :editor="editor" :items="userMentionItems" :filter-fields="['label', 'description']" char="@" plugin-key="wiki-user-mentions" :limit="8" />
               <UEditorMentionMenu :editor="editor" :items="taskMentionItems" :filter-fields="['label', 'description']" char="#" plugin-key="wiki-task-links" :limit="8" />
+              <UEditorMentionMenu v-model:search-term="pageSearchDe" :editor="editor" :items="filteredPageMentionItemsDe" char="seite:" plugin-key="wiki-page-links-de" :limit="8" ignore-filter />
+              <UEditorMentionMenu v-model:search-term="pageSearchEn" :editor="editor" :items="filteredPageMentionItemsEn" char="page:" plugin-key="wiki-page-links-en" :limit="8" ignore-filter />
             </UEditor>
             <p class="border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7">{{ copy.referencesHint }}</p>
           </div>
-          <div v-else-if="selectedPage.content" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit" @keydown.enter="activateTaskReference" @keydown.space.prevent="activateTaskReference">
+          <div v-else-if="selectedPage.content" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit" @keydown.enter="activateWikiReference" @keydown.space.prevent="activateWikiReference">
             <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
           </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
@@ -1435,7 +1461,14 @@ function humanError(error: unknown) {
   color: rgb(29 78 216);
 }
 
-.ak-wiki-rendered :deep(.ak-wiki-reference.is-task) {
+.ak-wiki-editor :deep(.ak-wiki-reference.is-page),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-page) {
+  background: rgb(240 253 250);
+  color: rgb(15 118 110);
+}
+
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-task),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-page:not(.is-invalid)) {
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: rgb(59 130 246 / 0.35);
@@ -1443,9 +1476,24 @@ function humanError(error: unknown) {
 }
 
 .ak-wiki-rendered :deep(.ak-wiki-reference.is-task:hover),
-.ak-wiki-rendered :deep(.ak-wiki-reference.is-task:focus-visible) {
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-task:focus-visible),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-page:not(.is-invalid):hover),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-page:not(.is-invalid):focus-visible) {
   background: rgb(219 234 254);
   outline: 2px solid transparent;
+}
+
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-page:not(.is-invalid):hover),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-page:not(.is-invalid):focus-visible) {
+  background: rgb(204 251 241);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-reference.is-invalid),
+.ak-wiki-rendered :deep(.ak-wiki-reference.is-invalid) {
+  border: 1px dashed rgb(161 161 170);
+  background: rgb(244 244 245);
+  color: rgb(113 113 122);
+  text-decoration: line-through;
 }
 
 :global(.dark) .ak-wiki-editor :deep(.ak-wiki-reference.is-user),
@@ -1458,6 +1506,19 @@ function humanError(error: unknown) {
 :global(.dark) .ak-wiki-rendered :deep(.ak-wiki-reference.is-task) {
   background: rgb(30 58 138 / 0.5);
   color: rgb(147 197 253);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-reference.is-page),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-reference.is-page) {
+  background: rgb(19 78 74 / 0.55);
+  color: rgb(94 234 212);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-reference.is-invalid),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-reference.is-invalid) {
+  border-color: rgb(82 82 91);
+  background: rgb(39 39 42);
+  color: rgb(161 161 170);
 }
 
 .ak-wiki-editor :deep(.tiptap),

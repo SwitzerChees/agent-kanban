@@ -15,20 +15,46 @@ export interface WikiReferenceTask {
   title: string;
 }
 
+export interface WikiReferencePage {
+  id: string;
+  parentId: string | null;
+  title: string;
+}
+
+export interface WikiPageReferenceItem {
+  id: string;
+  label: string;
+  description: string;
+  icon: string;
+}
+
 export interface ResolvedWikiReference {
   id: string;
-  char: '@' | '#';
-  kind: 'user' | 'task';
+  char: '@' | '#' | 'seite:' | 'page:';
+  kind: 'user' | 'task' | 'page';
   label: string;
+  valid: boolean;
 }
 
 export function resolveWikiReference(
   attrs: WikiReferenceAttributes,
   members: readonly WikiReferenceMember[],
   tasks: readonly WikiReferenceTask[],
+  pages: readonly WikiReferencePage[] = [],
 ): ResolvedWikiReference {
   const id = attrs.id ?? '';
   const fallbackLabel = attrs.label ?? id;
+
+  if (isWikiPageReferenceChar(attrs.mentionSuggestionChar)) {
+    const page = pages.find((candidate) => candidate.id === id);
+    return {
+      id,
+      char: attrs.mentionSuggestionChar,
+      kind: 'page',
+      label: page?.title ?? fallbackLabel,
+      valid: Boolean(page),
+    };
+  }
 
   if (attrs.mentionSuggestionChar === '#') {
     const task = tasks.find((candidate) => candidate.id === id);
@@ -37,6 +63,7 @@ export function resolveWikiReference(
       char: '#',
       kind: 'task',
       label: task ? `${task.key} · ${task.title}` : fallbackLabel,
+      valid: Boolean(task),
     };
   }
 
@@ -46,12 +73,14 @@ export function resolveWikiReference(
     char: '@',
     kind: 'user',
     label: member?.name ?? fallbackLabel,
+    valid: Boolean(member),
   };
 }
 
 export function wikiReferenceRevision(
   members: readonly WikiReferenceMember[],
   tasks: readonly WikiReferenceTask[],
+  pages: readonly WikiReferencePage[] = [],
 ) {
   const userLabels = members
     .map((member) => [member.id, member.name] as const)
@@ -59,8 +88,50 @@ export function wikiReferenceRevision(
   const taskLabels = tasks
     .map((task) => [task.id, task.key, task.title] as const)
     .sort(([left], [right]) => left.localeCompare(right));
+  const pageLabels = pages
+    .map((page) => [page.id, page.parentId, page.title] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
 
-  return JSON.stringify([userLabels, taskLabels]);
+  return JSON.stringify([userLabels, taskLabels, pageLabels]);
+}
+
+export function wikiPageReferenceItems(
+  pages: readonly WikiReferencePage[],
+  locale: 'en' | 'de',
+): WikiPageReferenceItem[] {
+  const byId = new Map(pages.map((page) => [page.id, page]));
+  const descriptions = pages.map((page) => pageBreadcrumb(page, byId));
+  const duplicateDescriptions = new Map<string, number>();
+  for (const description of descriptions) {
+    duplicateDescriptions.set(description, (duplicateDescriptions.get(description) ?? 0) + 1);
+  }
+
+  return pages.map((page, index) => {
+    const breadcrumb = descriptions[index]!;
+    const description = duplicateDescriptions.get(breadcrumb)! > 1
+      ? `${breadcrumb} · ${page.id.slice(-8)}`
+      : breadcrumb;
+    return {
+      id: page.id,
+      label: page.title,
+      description: `${locale === 'de' ? 'Seite' : 'Page'} · ${description}`,
+      icon: 'i-lucide-file-text',
+    };
+  });
+}
+
+export function filterWikiPageReferenceItems(
+  items: readonly WikiPageReferenceItem[],
+  query: string,
+  locale: 'en' | 'de',
+) {
+  const normalizedQuery = query.trim().toLocaleLowerCase(locale === 'de' ? 'de-CH' : 'en');
+  if (!normalizedQuery) return [...items];
+  return items.filter((item) => item.label.toLocaleLowerCase(locale === 'de' ? 'de-CH' : 'en').includes(normalizedQuery));
+}
+
+export function isWikiPageReferenceChar(value: string | undefined): value is 'seite:' | 'page:' {
+  return value === 'seite:' || value === 'page:';
 }
 
 export function canonicalizeWikiReferences(
@@ -177,6 +248,20 @@ function userReference(member: WikiReferenceMember) {
 
 function taskReference(task: WikiReferenceTask) {
   return `[@ id="${referenceAttribute(task.id)}" label="${referenceAttribute(`${task.key} · ${task.title}`)}" char="#"]`;
+}
+
+function pageBreadcrumb(page: WikiReferencePage, byId: ReadonlyMap<string, WikiReferencePage>) {
+  const titles = [page.title];
+  const visited = new Set([page.id]);
+  let parentId = page.parentId;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    titles.unshift(parent.title);
+    parentId = parent.parentId;
+  }
+  return titles.join(' › ');
 }
 
 function referenceAttribute(value: string) {
