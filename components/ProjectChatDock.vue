@@ -343,7 +343,7 @@ async function ensureCurrentChat() {
     if (!payload.chat) {
       payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chats`, {
         method: 'POST',
-        body: { harness: 'prime-agent', reasoningEffort: 'low', wikiPageId: props.wikiPageId ?? null },
+        body: { wikiPageId: props.wikiPageId ?? null },
       });
     }
     applyPayload(payload);
@@ -377,7 +377,7 @@ async function createNewChat() {
   try {
     const payload = await $fetch<ChatPayload>(`/api/projects/${props.projectId}/chats`, {
       method: 'POST',
-      body: { harness: 'prime-agent', reasoningEffort: 'low', wikiPageId: props.wikiPageId ?? null },
+      body: { wikiPageId: props.wikiPageId ?? null },
     });
     view.value = 'chat';
     composer.value = '';

@@ -83,11 +83,14 @@ export function createProjectChat(projectId: string, input: CreateProjectChatInp
   getProject(projectId, user);
   const wikiPageId = input.wikiPageId ?? null;
   authorizeWikiChatContext(projectId, wikiPageId);
+  const preference = db.select().from(schema.projectChatPreferences)
+    .where(eq(schema.projectChatPreferences.userId, user.id))
+    .get();
   const harness = input.harness === undefined
-    ? DEFAULT_CHAT_HARNESS
+    ? preferredHarness(preference?.harness)
     : requireHarness(input.harness);
   const reasoningEffort = input.reasoningEffort === undefined
-    ? DEFAULT_CHAT_EFFORT
+    ? preference?.reasoningEffort ?? DEFAULT_CHAT_EFFORT
     : requireEffort(input.reasoningEffort);
   const now = new Date().toISOString();
   const thread = {
@@ -155,11 +158,23 @@ export function updateProjectChat(threadId: string, input: UpdateProjectChatInpu
   const reasoningEffort = input.reasoningEffort === undefined
     ? thread.reasoningEffort
     : requireEffort(input.reasoningEffort);
-  db.update(schema.projectChatThreads).set({
-    harness,
-    reasoningEffort,
-    updatedAt: new Date().toISOString(),
-  }).where(eq(schema.projectChatThreads.id, threadId)).run();
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    tx.update(schema.projectChatThreads).set({
+      harness,
+      reasoningEffort,
+      updatedAt: now,
+    }).where(eq(schema.projectChatThreads.id, threadId)).run();
+    tx.insert(schema.projectChatPreferences).values({
+      userId: user.id,
+      harness,
+      reasoningEffort,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: schema.projectChatPreferences.userId,
+      set: { harness, reasoningEffort, updatedAt: now },
+    }).run();
+  });
   return getProjectChat(threadId, user);
 }
 
@@ -335,6 +350,10 @@ function isHarnessAvailable(harness: AgentHarness) {
   } catch {
     return false;
   }
+}
+
+function preferredHarness(value: AgentHarness | undefined) {
+  return value && isHarnessAvailable(value) ? value : DEFAULT_CHAT_HARNESS;
 }
 
 function requireHarness(value: unknown) {
