@@ -61,6 +61,28 @@ describe('wiki editor document extensions', () => {
     expect(normalized).toContain('[@ id="user-1" label="Bastian Old"] stays canonical');
   });
 
+  test('repairs bold text with trailing whitespace immediately before stable Wiki references', () => {
+    const markdown = [
+      '**TODO: **[@ id="user-1" label="Alice"] Termine klären',
+      '**Review ** [@ id="task-42" label="MATE-42 · Press release" char="#"]',
+      '`**Literal: **[@ id="user-1" label="Alice"]` stays code',
+      '**Unrelated: ** plain text stays unchanged',
+    ].join('\n');
+
+    const normalized = canonicalizeWikiReferences(markdown, [], []);
+
+    expect(normalized).toContain('**TODO:** [@ id="user-1" label="Alice"] Termine klären');
+    expect(normalized).toContain('**Review** [@ id="task-42" label="MATE-42 · Press release" char="#"]');
+    expect(normalized).toContain('`**Literal: **[@ id="user-1" label="Alice"]` stays code');
+    expect(normalized).toContain('**Unrelated: ** plain text stays unchanged');
+
+    const editor = createEditor(normalized);
+    const firstParagraph = editor.getJSON().content?.[0]?.content;
+    expect(firstParagraph?.[0]).toMatchObject({ text: 'TODO:', marks: [{ type: 'bold' }] });
+    expect(firstParagraph?.some((node) => node.type === 'mention')).toBe(true);
+    editor.destroy();
+  });
+
   test('does not guess when a short member name is ambiguous', () => {
     const normalized = canonicalizeWikiReferences('@Bastian and @Bastian Hofacker', [
       { id: 'user-1', name: 'Bastian Hofacker' },

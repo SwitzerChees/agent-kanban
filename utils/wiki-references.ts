@@ -70,7 +70,6 @@ export function canonicalizeWikiReferences(
 ) {
   const memberAliases = uniqueMemberAliases(members);
   const taskKeys = uniqueTaskKeys(tasks);
-  if (!memberAliases.length && !taskKeys.length) return markdown;
 
   let fence: string | null = null;
   return markdown.split('\n').map((line) => {
@@ -83,8 +82,15 @@ export function canonicalizeWikiReferences(
     }
     if (fence) return line;
 
-    return line.split(/(`+[^`]*`+|\[@[^\]]+\]|\[[^\]]*\]\([^)]*\)|https?:\/\/\S+)/g)
-      .map((segment, index) => index % 2 ? segment : canonicalizeWikiTextSegment(segment, memberAliases, taskKeys))
+    const segments = line.split(/(`+[^`]*`+|\[@[^\]]+\]|\[[^\]]*\]\([^)]*\)|https?:\/\/\S+)/g);
+    return segments
+      .map((segment, index) => {
+        if (index % 2) return segment;
+        const normalized = canonicalizeWikiTextSegment(segment, memberAliases, taskKeys);
+        return segments[index + 1]?.startsWith('[@')
+          ? normalizeTrailingBoldWhitespace(normalized)
+          : normalized;
+      })
       .join('');
   }).join('\n');
 }
@@ -151,7 +157,18 @@ function canonicalizeWikiTextSegment(
       (_, prefix: string) => `${prefix}${reference}`,
     );
   }
-  return result;
+  return normalizeBoldBeforeWikiReference(result);
+}
+
+function normalizeBoldBeforeWikiReference(value: string) {
+  return value.replace(
+    /\*\*([^*\r\n]*?\S)[ \t]+\*\*[ \t]*(?=\[@\s)/g,
+    '**$1** ',
+  );
+}
+
+function normalizeTrailingBoldWhitespace(value: string) {
+  return value.replace(/\*\*([^*\r\n]*?\S)[ \t]+\*\*[ \t]*$/, '**$1** ');
 }
 
 function userReference(member: WikiReferenceMember) {
