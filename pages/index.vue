@@ -3,6 +3,7 @@ import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, Edit
 import Fuse from 'fuse.js';
 import { commandPaletteTaskBuckets } from '~/utils/command-palette';
 import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
+import { canCompleteReviewedAgentTask } from '~/utils/task-status-transition';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'wiki' | 'projects' | 'users';
@@ -1954,6 +1955,25 @@ const columnItems = computed(() => board.value?.columns.map((column) => ({
   label: columnName(column),
   value: column.id,
 })) ?? []);
+const canMoveLockedTaskToColumn = (columnId: string) => {
+  const task = editingTask.value;
+  if (!task) return false;
+  return canCompleteReviewedAgentTask(
+    task.agentStatus,
+    board.value?.columns.find((column) => column.id === task.columnId),
+    board.value?.columns.find((column) => column.id === columnId),
+  );
+};
+const canChangeLockedTaskStatus = computed(() => Boolean(
+  hasAgentActivity.value
+  && board.value?.columns.some((column) => canMoveLockedTaskToColumn(column.id)),
+));
+const taskColumnItems = computed(() => columnItems.value.map((item) => ({
+  ...item,
+  disabled: hasAgentActivity.value
+    && item.value !== editingTask.value?.columnId
+    && !canMoveLockedTaskToColumn(item.value),
+})));
 const taskModalDescription = computed(() => {
   const task = editingTask.value;
   if (!selectedTaskId.value || !task) return t.value.taskDialog;
@@ -3351,9 +3371,14 @@ async function persistExistingTaskDetails(taskId: string) {
       },
     });
   } else {
+    const changedColumnId = taskForm.columnId !== editingTask.value?.columnId
+      && canMoveLockedTaskToColumn(taskForm.columnId)
+      ? taskForm.columnId
+      : undefined;
     await $fetch(`/api/tasks/${taskId}`, {
       method: 'PATCH',
       body: {
+        columnId: changedColumnId,
         tags,
         ...placement,
         assigneeId,
@@ -7726,10 +7751,11 @@ const humanError = (error: unknown) => {
                     <UFormField v-if="selectedTaskId" :label="t.area" required size="sm">
                       <USelect
                         v-model="taskForm.columnId"
+                        data-testid="task-status-select"
                         class="w-full"
-                        :items="columnItems"
+                        :items="taskColumnItems"
                         size="lg"
-                        :disabled="hasAgentActivity"
+                        :disabled="hasAgentActivity && !canChangeLockedTaskStatus"
                       />
                     </UFormField>
                     <div v-else>

@@ -328,6 +328,27 @@ describe('external agent task controls', () => {
       .toMatchObject({ status: 'cancelled', resumeAt: null, completedAt: expect.any(String) });
   });
 
+  test('moves a completed reviewed agent task to Done through the shared task update', async () => {
+    const project = await kanban.createProject({
+      name: 'Reviewed Agent Task Project',
+      key: 'REVIEWED',
+      folderPath: path.join(testRoot, 'reviewed-workspace'),
+    }, admin);
+    const board = kanban.getBoard(project.id, admin);
+    const review = board.columns.find((column) => column.key === 'in_review')!;
+    const done = board.columns.find((column) => column.done)!;
+    const task = await kanban.createTask(project.id, {
+      title: 'Approve completed implementation',
+      columnId: review.id,
+      agentEnabled: true,
+    }, admin);
+    dbModule.db.update(dbModule.schema.tasks).set({ agentStatus: 'done' })
+      .where(eq(dbModule.schema.tasks.id, task!.id)).run();
+
+    await expect(kanban.updateTask(task!.id, { columnId: done.id }, admin))
+      .resolves.toMatchObject({ agentStatus: 'done', columnId: done.id });
+  });
+
   test('keeps project authorization identical to the browser user', async () => {
     const project = await kanban.createProject({
       name: 'Private Harness Project',
