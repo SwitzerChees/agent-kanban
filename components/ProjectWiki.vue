@@ -46,6 +46,12 @@ interface WikiTreeRow {
   ancestorIds: string[];
 }
 
+interface WikiLayoutPreferences {
+  pageTreeWidth?: number;
+  outlineCollapsed?: boolean;
+  expandedPageIds?: string[];
+}
+
 interface WikiMember {
   id: string;
   name: string;
@@ -90,6 +96,9 @@ const copy = computed(() => props.locale === 'de' ? {
   addChild: 'Unterseite anlegen',
   expandPage: 'Unterseiten aufklappen',
   collapsePage: 'Unterseiten einklappen',
+  resizePages: 'Breite der Wiki-Seitenleiste ändern',
+  collapseOutline: 'Inhaltsverzeichnis einklappen',
+  expandOutline: 'Inhaltsverzeichnis aufklappen',
   edit: 'Bearbeiten',
   save: 'Speichern',
   cancel: 'Abbrechen',
@@ -163,6 +172,9 @@ const copy = computed(() => props.locale === 'de' ? {
   addChild: 'Add child page',
   expandPage: 'Expand child pages',
   collapsePage: 'Collapse child pages',
+  resizePages: 'Resize Wiki page sidebar',
+  collapseOutline: 'Collapse table of contents',
+  expandOutline: 'Expand table of contents',
   edit: 'Edit',
   save: 'Save',
   cancel: 'Cancel',
@@ -234,6 +246,9 @@ const wikiImages = ref<WikiImageRecord[]>([]);
 const selectedPageId = ref<string | null>(null);
 const searchQuery = ref('');
 const expandedPageIds = ref(new Set<string>());
+const pageTreeWidth = ref(250);
+const outlineCollapsed = ref(false);
+const resizingPageTree = ref(false);
 const loading = ref(true);
 const saving = ref(false);
 const editing = ref(false);
@@ -248,6 +263,13 @@ const draftContent = ref('');
 const draggedPageId = ref<string | null>(null);
 const dropTarget = ref<{ pageId: string | null; placement: WikiDropPlacement | 'root' } | null>(null);
 const wikiDocument = ref<HTMLElement | null>(null);
+
+const WIKI_PAGE_TREE_MIN_WIDTH = 200;
+const WIKI_PAGE_TREE_MAX_WIDTH = 420;
+const WIKI_PAGE_TREE_DEFAULT_WIDTH = 250;
+const WIKI_PAGE_TREE_KEYBOARD_STEP = 16;
+let pageTreeResizeStartX = 0;
+let pageTreeResizeStartWidth = WIKI_PAGE_TREE_DEFAULT_WIDTH;
 
 const WIKI_READ_REFRESH_INTERVAL_MS = 5_000;
 let wikiPollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -465,6 +487,7 @@ function setPageExpanded(pageId: string, expanded: boolean) {
   if (expanded) next.add(pageId);
   else next.delete(pageId);
   expandedPageIds.value = next;
+  saveWikiLayoutPreferences();
 }
 
 function togglePageExpanded(pageId: string) {
@@ -474,7 +497,104 @@ function togglePageExpanded(pageId: string) {
 function revealPageInTree(pageId: string) {
   const row = treeRows.value.find((candidate) => candidate.page.id === pageId);
   if (!row?.ancestorIds.length) return;
-  expandedPageIds.value = new Set([...expandedPageIds.value, ...row.ancestorIds]);
+  const next = new Set([...expandedPageIds.value, ...row.ancestorIds]);
+  if (next.size === expandedPageIds.value.size) return;
+  expandedPageIds.value = next;
+  saveWikiLayoutPreferences();
+}
+
+function wikiLayoutStorageKey() {
+  return `agent-kanban:wiki-layout:${props.project.id}`;
+}
+
+function clampPageTreeWidth(width: number) {
+  return Math.min(WIKI_PAGE_TREE_MAX_WIDTH, Math.max(WIKI_PAGE_TREE_MIN_WIDTH, Math.round(width)));
+}
+
+function loadWikiLayoutPreferences() {
+  pageTreeWidth.value = WIKI_PAGE_TREE_DEFAULT_WIDTH;
+  outlineCollapsed.value = false;
+  expandedPageIds.value = new Set();
+  if (!import.meta.client) return;
+  try {
+    const raw = window.localStorage.getItem(wikiLayoutStorageKey());
+    if (!raw) return;
+    const preferences = JSON.parse(raw) as WikiLayoutPreferences;
+    if (typeof preferences.pageTreeWidth === 'number' && Number.isFinite(preferences.pageTreeWidth)) {
+      pageTreeWidth.value = clampPageTreeWidth(preferences.pageTreeWidth);
+    }
+    if (typeof preferences.outlineCollapsed === 'boolean') {
+      outlineCollapsed.value = preferences.outlineCollapsed;
+    }
+    if (Array.isArray(preferences.expandedPageIds)) {
+      expandedPageIds.value = new Set(preferences.expandedPageIds.filter((id): id is string => typeof id === 'string'));
+    }
+  } catch {
+    // Ignore malformed or unavailable browser storage and keep safe defaults.
+  }
+}
+
+function saveWikiLayoutPreferences() {
+  if (!import.meta.client) return;
+  const preferences: WikiLayoutPreferences = {
+    pageTreeWidth: pageTreeWidth.value,
+    outlineCollapsed: outlineCollapsed.value,
+    expandedPageIds: [...expandedPageIds.value],
+  };
+  try {
+    window.localStorage.setItem(wikiLayoutStorageKey(), JSON.stringify(preferences));
+  } catch {
+    // Layout controls remain usable when browser storage is unavailable.
+  }
+}
+
+function setPageTreeWidth(width: number, persist = true) {
+  pageTreeWidth.value = clampPageTreeWidth(width);
+  if (persist) saveWikiLayoutPreferences();
+}
+
+function startPageTreeResize(event: PointerEvent) {
+  if (event.button !== 0) return;
+  resizingPageTree.value = true;
+  pageTreeResizeStartX = event.clientX;
+  pageTreeResizeStartWidth = pageTreeWidth.value;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  event.preventDefault();
+}
+
+function movePageTreeResize(event: PointerEvent) {
+  if (!resizingPageTree.value) return;
+  setPageTreeWidth(pageTreeResizeStartWidth + event.clientX - pageTreeResizeStartX, false);
+}
+
+function finishPageTreeResize(event?: PointerEvent) {
+  if (!resizingPageTree.value) return;
+  if (event && (event.currentTarget as HTMLElement).hasPointerCapture(event.pointerId)) {
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+  }
+  resizingPageTree.value = false;
+  document.body.style.removeProperty('cursor');
+  document.body.style.removeProperty('user-select');
+  saveWikiLayoutPreferences();
+}
+
+function handlePageTreeResizeKeydown(event: KeyboardEvent) {
+  const keyWidths: Record<string, number> = {
+    ArrowLeft: pageTreeWidth.value - WIKI_PAGE_TREE_KEYBOARD_STEP,
+    ArrowRight: pageTreeWidth.value + WIKI_PAGE_TREE_KEYBOARD_STEP,
+    Home: WIKI_PAGE_TREE_MIN_WIDTH,
+    End: WIKI_PAGE_TREE_MAX_WIDTH,
+  };
+  if (!(event.key in keyWidths)) return;
+  event.preventDefault();
+  setPageTreeWidth(keyWidths[event.key]!);
+}
+
+function toggleOutline() {
+  outlineCollapsed.value = !outlineCollapsed.value;
+  saveWikiLayoutPreferences();
 }
 
 const outline = computed(() => {
@@ -504,7 +624,7 @@ watch(selectedPage, (page) => {
 
 watch(() => props.project.id, () => {
   stopWikiPolling();
-  expandedPageIds.value = new Set();
+  loadWikiLayoutPreferences();
   void loadPages();
 });
 
@@ -514,6 +634,7 @@ watch(selectedPageId, (pageId) => {
 });
 
 onMounted(() => {
+  loadWikiLayoutPreferences();
   void loadPages();
   window.addEventListener('keydown', handleSaveShortcut);
   window.addEventListener('beforeunload', handleBeforeUnload);
@@ -521,6 +642,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  finishPageTreeResize();
   stopWikiPolling();
   wikiImageLoadGeneration += 1;
   activeWikiEditor = null;
@@ -1314,7 +1436,7 @@ function humanErrorCode(error: unknown) {
     </div>
 
     <div v-else class="ak-wiki-frame min-h-0 flex-1 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <aside class="ak-wiki-pages hidden w-[250px] shrink-0 flex-col border-r border-zinc-200 bg-zinc-50/70 dark:border-zinc-800 dark:bg-zinc-900/55 md:flex" :aria-label="copy.pageTree">
+      <aside class="ak-wiki-pages hidden shrink-0 flex-col bg-zinc-50/70 dark:bg-zinc-900/55 md:flex" :style="{ width: `${pageTreeWidth}px` }" :aria-label="copy.pageTree">
         <div class="border-b border-zinc-200 p-3 dark:border-zinc-800"><UInput v-model="searchQuery" class="w-full" size="sm" icon="i-lucide-search" :placeholder="copy.search" :aria-label="copy.search" /></div>
         <nav class="min-h-0 flex-1 overflow-y-auto px-2 py-3" :aria-label="copy.pages">
           <div
@@ -1362,6 +1484,23 @@ function humanErrorCode(error: unknown) {
           <p v-if="searchQuery && !visibleTreeRows.length" class="px-3 py-8 text-center text-xs leading-5 text-zinc-500 dark:text-zinc-400">{{ copy.noResults }}</p>
         </nav>
       </aside>
+
+      <div
+        class="ak-wiki-pages-resizer group hidden w-1.5 shrink-0 cursor-col-resize touch-none items-stretch justify-center bg-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-teal-600 dark:bg-zinc-800 md:flex"
+        :class="resizingPageTree ? 'is-resizing' : ''"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        :aria-label="copy.resizePages"
+        :aria-valuemin="WIKI_PAGE_TREE_MIN_WIDTH"
+        :aria-valuemax="WIKI_PAGE_TREE_MAX_WIDTH"
+        :aria-valuenow="pageTreeWidth"
+        @pointerdown="startPageTreeResize"
+        @pointermove="movePageTreeResize"
+        @pointerup="finishPageTreeResize"
+        @pointercancel="finishPageTreeResize"
+        @keydown="handlePageTreeResizeKeydown"
+      ><span class="w-px bg-zinc-300 transition-colors group-hover:bg-teal-500 group-focus-visible:bg-teal-600 group-[.is-resizing]:bg-teal-600 dark:bg-zinc-700" aria-hidden="true" /></div>
 
       <div ref="wikiDocument" class="ak-wiki-document min-w-0 flex-1 overflow-y-auto bg-white dark:bg-zinc-950">
         <div class="ak-wiki-mobile-context sticky top-0 z-10 flex items-center gap-2 border-b border-zinc-200 bg-white/95 px-3 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden">
@@ -1418,11 +1557,16 @@ function humanErrorCode(error: unknown) {
         </article>
       </div>
 
-      <aside class="ak-wiki-outline hidden w-[210px] shrink-0 flex-col border-l border-zinc-200 bg-white px-4 py-5 dark:border-zinc-800 dark:bg-zinc-950 xl:flex" :aria-label="copy.outline">
-        <p class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{{ copy.outline }}</p>
-        <nav v-if="outline.length" class="mt-3 grid gap-0.5 border-b border-zinc-200 pb-5 dark:border-zinc-800"><button v-for="heading in outline" :key="`${heading.index}-${heading.label}`" type="button" class="ak-wiki-outline-link" :style="{ paddingLeft: `${0.5 + (heading.level - 1) * 0.625}rem` }" @click="scrollToHeading(heading.index)">{{ heading.label }}</button></nav>
-        <p v-else class="mt-3 text-xs leading-5 text-zinc-600 dark:text-zinc-400">{{ copy.noOutline }}</p>
-        <div class="mt-auto rounded-lg bg-zinc-50 px-3 py-2.5 text-[11px] leading-5 text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:text-zinc-400 dark:ring-zinc-800"><span class="font-semibold text-zinc-700 dark:text-zinc-200">{{ pages.length }}</span> {{ copy.pages.toLocaleLowerCase() }}</div>
+      <aside :id="`wiki-outline-${props.project.id}`" class="ak-wiki-outline hidden shrink-0 flex-col border-l border-zinc-200 bg-white py-3 dark:border-zinc-800 dark:bg-zinc-950 xl:flex" :class="outlineCollapsed ? 'w-12 px-1.5' : 'w-[210px] px-4'" :aria-label="copy.outline">
+        <div class="flex min-h-8 items-center" :class="outlineCollapsed ? 'justify-center' : 'justify-between gap-2'">
+          <p v-if="!outlineCollapsed" class="text-xs font-semibold text-zinc-900 dark:text-zinc-100">{{ copy.outline }}</p>
+          <button type="button" class="grid size-8 shrink-0 place-items-center rounded-md text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:bg-zinc-900 dark:hover:text-zinc-100" :aria-label="outlineCollapsed ? copy.expandOutline : copy.collapseOutline" :title="outlineCollapsed ? copy.expandOutline : copy.collapseOutline" :aria-expanded="!outlineCollapsed" :aria-controls="`wiki-outline-content-${props.project.id}`" @click="toggleOutline"><UIcon :name="outlineCollapsed ? 'i-lucide-panel-right-open' : 'i-lucide-panel-right-close'" class="size-4" /></button>
+        </div>
+        <div v-show="!outlineCollapsed" :id="`wiki-outline-content-${props.project.id}`" class="min-h-0 flex-1 flex-col" :class="outlineCollapsed ? 'hidden' : 'flex'">
+          <nav v-if="outline.length" class="mt-3 grid gap-0.5 border-b border-zinc-200 pb-5 dark:border-zinc-800"><button v-for="heading in outline" :key="`${heading.index}-${heading.label}`" type="button" class="ak-wiki-outline-link" :style="{ paddingLeft: `${0.5 + (heading.level - 1) * 0.625}rem` }" @click="scrollToHeading(heading.index)">{{ heading.label }}</button></nav>
+          <p v-else class="mt-3 text-xs leading-5 text-zinc-600 dark:text-zinc-400">{{ copy.noOutline }}</p>
+          <div class="mt-auto rounded-lg bg-zinc-50 px-3 py-2.5 text-[11px] leading-5 text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:text-zinc-400 dark:ring-zinc-800"><span class="font-semibold text-zinc-700 dark:text-zinc-200">{{ pages.length }}</span> {{ copy.pages.toLocaleLowerCase() }}</div>
+        </div>
       </aside>
     </div>
 

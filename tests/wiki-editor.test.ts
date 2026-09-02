@@ -38,6 +38,12 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain(':aria-expanded="pageIsExpanded(row.page.id)"');
     expect(component).toContain('@click.stop="togglePageExpanded(row.page.id)"');
     expect(component).toContain("'i-lucide-chevron-down' : 'i-lucide-chevron-right'");
+    expect(component).toContain('agent-kanban:wiki-layout:');
+    expect(component).toContain('role="separator"');
+    expect(component).toContain('@pointerdown="startPageTreeResize"');
+    expect(component).toContain('@keydown="handlePageTreeResizeKeydown"');
+    expect(component).toContain('outlineCollapsed ? copy.expandOutline : copy.collapseOutline');
+    expect(component).toContain('expandedPageIds: [...expandedPageIds.value]');
     expect(component).toContain("dropLabel(dropTarget.placement)");
     expect(component).toContain('/move`');
     expect(component).toContain("ul[data-type='taskList'] > li");
