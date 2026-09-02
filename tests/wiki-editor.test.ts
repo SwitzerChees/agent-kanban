@@ -47,12 +47,17 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain('@drop.capture="handleWikiImageDrop"');
     expect(component).toContain('<WikiImageEditor');
     expect(component).toContain('VueNodeViewRenderer(WikiTodoListNodeView)');
+    expect(component).toContain(':not(.tableWrapper):not(.ak-wiki-todo)');
+    expect(component).toContain('.tiptap > .ak-wiki-todo');
     expect(component).not.toContain('todoListRevision');
     const todoNodeView = readFileSync(new URL('../components/WikiTodoListNodeView.vue', import.meta.url), 'utf8');
     const todoTextArea = readFileSync(new URL('../components/WikiTodoTextArea.vue', import.meta.url), 'utf8');
     expect(todoNodeView).toContain('<WikiTodoTextArea');
     expect(todoNodeView).toContain('updateItem');
     expect(todoNodeView).toContain('@click.stop="startEditing(item)"');
+    expect(todoNodeView).toContain(':aria-expanded="!collapsed"');
+    expect(todoNodeView).toContain('@click.stop="collapsed = !collapsed"');
+    expect(todoNodeView).toContain('<ul v-show="!collapsed">');
     expect(todoTextArea).toContain('rows="2"');
     expect(todoTextArea).toContain("event.metaKey || event.ctrlKey");
     expect(todoTextArea).toContain('data-wiki-todo-reference-menu');

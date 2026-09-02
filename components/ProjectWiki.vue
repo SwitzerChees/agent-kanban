@@ -1385,8 +1385,13 @@ function humanErrorCode(error: unknown) {
   background: rgb(19 78 74 / 0.55);
 }
 
-.ak-wiki-rendered :deep(.tiptap > :not(.tableWrapper)) {
+.ak-wiki-rendered :deep(.tiptap > :not(.tableWrapper):not(.ak-wiki-todo)) {
   max-width: 72ch;
+}
+
+.ak-wiki-rendered :deep(.tiptap > .ak-wiki-todo) {
+  width: 100%;
+  max-width: none;
 }
 
 .ak-wiki-rendered,

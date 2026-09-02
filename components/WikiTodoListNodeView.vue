@@ -19,6 +19,7 @@ const locale = computed(() => options.value.getLocale());
 const members = computed(() => options.value.getMembers?.() ?? []);
 const tasks = computed(() => options.value.getTasks?.() ?? []);
 const filter = ref<WikiTodoFilter>('all');
+const collapsed = ref(false);
 const newText = ref('');
 const editingItemId = ref<string | null>(null);
 const editingText = ref('');
@@ -40,6 +41,8 @@ const copy = computed(() => locale.value === 'de' ? {
   cancel: 'Abbrechen',
   empty: 'Keine Einträge in dieser Ansicht.',
   failed: 'Die Änderung konnte nicht gespeichert werden.',
+  collapse: 'TODO-Liste einklappen',
+  expand: 'TODO-Liste ausklappen',
   summary: (active: number, total: number) => `${active} offen · ${total} gesamt`,
 } : {
   missing: 'This TODO list is no longer available.',
@@ -55,6 +58,8 @@ const copy = computed(() => locale.value === 'de' ? {
   cancel: 'Cancel',
   empty: 'No items in this view.',
   failed: 'The change could not be saved.',
+  collapse: 'Collapse TODO list',
+  expand: 'Expand TODO list',
   summary: (active: number, total: number) => `${active} active · ${total} total`,
 });
 
@@ -155,7 +160,7 @@ function formatDate(value: string) {
   <NodeViewWrapper
     as="section"
     class="ak-wiki-todo"
-    :class="{ 'is-invalid': !list, 'is-selected': props.selected && props.editor.isEditable }"
+    :class="{ 'is-invalid': !list, 'is-selected': props.selected && props.editor.isEditable, 'is-collapsed': collapsed }"
     :data-wiki-todo-list-id="listId"
     contenteditable="false"
   >
@@ -165,20 +170,31 @@ function formatDate(value: string) {
           <span data-drag-handle class="ak-wiki-todo-drag" aria-hidden="true"><UIcon name="i-lucide-grip-vertical" /></span>
           <span><strong>{{ list.name }}</strong><small>{{ copy.summary(activeCount, list.items.length) }}</small></span>
         </div>
-        <div class="ak-wiki-todo-filters" role="group">
+        <div class="ak-wiki-todo-header-actions">
+          <div class="ak-wiki-todo-filters" role="group">
+            <button
+              v-for="entry in filters"
+              :key="entry.value"
+              type="button"
+              :class="{ 'is-active': filter === entry.value }"
+              :aria-pressed="filter === entry.value"
+              @mousedown.stop
+              @click.stop="filter = entry.value"
+            >{{ entry.label }}</button>
+          </div>
           <button
-            v-for="entry in filters"
-            :key="entry.value"
             type="button"
-            :class="{ 'is-active': filter === entry.value }"
-            :aria-pressed="filter === entry.value"
+            class="ak-wiki-todo-collapse"
+            :aria-expanded="!collapsed"
+            :aria-label="collapsed ? copy.expand : copy.collapse"
+            :title="collapsed ? copy.expand : copy.collapse"
             @mousedown.stop
-            @click.stop="filter = entry.value"
-          >{{ entry.label }}</button>
+            @click.stop="collapsed = !collapsed"
+          ><UIcon :name="collapsed ? 'i-lucide-chevron-down' : 'i-lucide-chevron-up'" /></button>
         </div>
       </header>
 
-      <ul>
+      <ul v-show="!collapsed">
         <li v-for="item in visibleItems" :key="item.id" :class="{ 'is-completed': item.completed, 'is-editing': editingItemId === item.id }">
           <input
             type="checkbox"
@@ -250,7 +266,7 @@ function formatDate(value: string) {
         <li v-if="!visibleItems.length" class="is-empty">{{ copy.empty }}</li>
       </ul>
 
-      <form class="ak-wiki-todo-add" @submit.prevent="createItem" @mousedown.stop @click.stop>
+      <form v-show="!collapsed" class="ak-wiki-todo-add" @submit.prevent="createItem" @mousedown.stop @click.stop>
         <WikiTodoTextArea
           v-model="newText"
           :locale="locale"
@@ -263,7 +279,7 @@ function formatDate(value: string) {
         />
         <button type="submit" class="is-primary" :disabled="!newText.trim() || creating" @mousedown.stop>{{ copy.add }}</button>
       </form>
-      <p v-if="error" class="ak-wiki-todo-error" role="alert">{{ error }}</p>
+      <p v-if="error && !collapsed" class="ak-wiki-todo-error" role="alert">{{ error }}</p>
     </template>
     <template v-else>
       <strong>{{ String(props.node.attrs.label ?? 'TODO list') }}</strong>
@@ -292,6 +308,7 @@ function formatDate(value: string) {
   padding: 0.75rem 0.875rem;
   border-bottom: 1px solid rgb(228 228 231);
 }
+.ak-wiki-todo.is-collapsed > header { border-bottom-color: transparent; }
 .ak-wiki-todo-heading { display: flex; min-width: 0; align-items: center; gap: 0.375rem; }
 .ak-wiki-todo-heading > span:last-child { display: flex; min-width: 0; align-items: baseline; gap: 0.625rem; }
 .ak-wiki-todo-heading strong { color: rgb(24 24 27); font-size: 0.875rem; }
@@ -299,7 +316,18 @@ function formatDate(value: string) {
 .ak-wiki-todo time { color: rgb(113 113 122); font-size: 0.6875rem; }
 .ak-wiki-todo-drag { display: grid; width: 1.25rem; height: 1.5rem; cursor: grab; place-items: center; color: rgb(161 161 170); }
 .ak-wiki-todo-drag svg { width: 0.875rem; height: 0.875rem; }
+.ak-wiki-todo-header-actions { display: flex; align-items: center; gap: 0.375rem; }
 .ak-wiki-todo-filters { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.ak-wiki-todo button.ak-wiki-todo-collapse {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: none;
+  padding: 0;
+  place-items: center;
+}
+.ak-wiki-todo-collapse svg { width: 1rem; height: 1rem; }
+.ak-wiki-todo-collapse:focus-visible { outline: 2px solid rgb(13 148 136); outline-offset: 2px; }
 .ak-wiki-todo button {
   border-radius: 0.375rem;
   padding: 0.25rem 0.5rem;
@@ -368,6 +396,7 @@ li:hover .ak-wiki-todo-edit-button,
 :global(.dark) .ak-wiki-todo .ak-wiki-reference.is-task { background: rgb(30 58 138 / 0.55); color: rgb(147 197 253); }
 :global(.dark) .ak-wiki-todo-error { border-color: rgb(127 29 29); background: rgb(69 10 10 / 0.45); color: rgb(254 202 202); }
 @media (max-width: 640px) {
+  .ak-wiki-todo-header-actions { width: 100%; justify-content: space-between; }
   .ak-wiki-todo-add { flex-direction: column; }
   .ak-wiki-todo-add > button { width: 100%; }
   .ak-wiki-todo > ul > li { grid-template-columns: auto minmax(0, 1fr); }
