@@ -4,7 +4,7 @@ import { requireUser } from '../../lib/security/auth';
 import { updateWikiTodoItem } from '../../lib/wiki-todos';
 
 const bodySchema = z.object({
-  text: z.string().min(1).max(500).optional(),
+  text: z.string().min(1).max(2000).optional(),
   completed: z.boolean().optional(),
   expectedUpdatedAt: z.string().datetime().optional(),
 }).refine((value) => value.text !== undefined || value.completed !== undefined);

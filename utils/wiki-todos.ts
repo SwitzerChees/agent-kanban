@@ -1,7 +1,12 @@
 import { Node, createAtomBlockMarkdownSpec, mergeAttributes } from '@tiptap/core';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
 import { parseWikiAtomBlockAttributes } from './wiki-atom-block';
-import type { ResolvedWikiReference, WikiReferenceAttributes } from './wiki-references';
+import type {
+  ResolvedWikiReference,
+  WikiReferenceAttributes,
+  WikiReferenceMember,
+  WikiReferenceTask,
+} from './wiki-references';
 
 export type WikiTodoFilter = 'all' | 'active' | 'completed' | 'week' | 'month';
 
@@ -23,15 +28,27 @@ export interface WikiTodoListRecord {
   items: WikiTodoItemRecord[];
 }
 
-interface WikiTodoExtensionOptions {
+export interface WikiTodoExtensionOptions {
   getList: (id: string) => WikiTodoListRecord | undefined;
   getFilter: (id: string) => WikiTodoFilter;
   getLocale: () => 'en' | 'de';
   resolveReference?: (attrs: WikiReferenceAttributes) => ResolvedWikiReference;
+  getMembers?: () => readonly WikiReferenceMember[];
+  getTasks?: () => readonly WikiReferenceTask[];
+  createItem?: (listId: string, text: string) => Promise<WikiTodoItemRecord>;
+  updateItem?: (item: WikiTodoItemRecord, text: string) => Promise<WikiTodoItemRecord>;
+  toggleItem?: (item: WikiTodoItemRecord, completed: boolean) => Promise<WikiTodoItemRecord>;
+  openTask?: (taskId: string) => void;
 }
 
 const stableReferencePattern = /\[@\s+id="([^"\r\n]*)"\s+label="([^"\r\n]*)"(?:\s+char="([^"\r\n]*)")?\]/g;
 type WikiTodoTextNode = string | DOMOutputSpec;
+
+export interface WikiTodoTextPart {
+  type: 'text' | 'reference';
+  text: string;
+  reference?: ResolvedWikiReference;
+}
 
 const markdownSpec = createAtomBlockMarkdownSpec({
   nodeName: 'wikiTodoList',
@@ -42,12 +59,16 @@ const markdownSpec = createAtomBlockMarkdownSpec({
 });
 
 export function createWikiTodoListExtension(options: WikiTodoExtensionOptions) {
-  return Node.create({
+  return Node.create<WikiTodoExtensionOptions>({
     name: 'wikiTodoList',
     group: 'block',
     atom: true,
     draggable: true,
     selectable: true,
+
+    addOptions() {
+      return options;
+    },
 
     addAttributes() {
       return {
@@ -63,7 +84,7 @@ export function createWikiTodoListExtension(options: WikiTodoExtensionOptions) {
     renderHTML({ node, HTMLAttributes }) {
       const id = String(node.attrs.id ?? '');
       const fallbackLabel = String(node.attrs.label ?? 'TODO list');
-      return renderTodoList(options.getList(id), id, fallbackLabel, options.getFilter(id), options.getLocale(), HTMLAttributes, options.resolveReference);
+      return renderTodoList(this.options.getList(id), id, fallbackLabel, this.options.getFilter(id), this.options.getLocale(), HTMLAttributes, this.options.resolveReference);
     },
 
     ...markdownSpec,
@@ -161,17 +182,17 @@ function renderTodoList(
     ],
     ['ul', {}, ...(itemNodes.length ? itemNodes : [['li', { class: 'is-empty' }, copy.empty] as DOMOutputSpec])],
     ['form', { 'data-wiki-todo-add-form': id },
-      ['input', {
+      ['textarea', {
         name: 'text',
-        type: 'text',
-        maxlength: '500',
+        rows: '2',
+        maxlength: '2000',
         autocomplete: 'off',
         placeholder: copy.placeholder,
         'aria-label': copy.placeholder,
         'aria-autocomplete': 'list',
         'aria-expanded': 'false',
         'data-wiki-todo-reference-input': id,
-      }],
+      }, ''],
       ['button', { type: 'submit' }, copy.add],
     ],
   ];
@@ -181,20 +202,11 @@ export function renderWikiTodoText(
   text: string,
   resolveReference?: WikiTodoExtensionOptions['resolveReference'],
 ): WikiTodoTextNode[] {
-  const content: WikiTodoTextNode[] = [];
-  let offset = 0;
-  for (const match of text.matchAll(stableReferencePattern)) {
-    const index = match.index ?? 0;
-    if (index > offset) content.push(text.slice(offset, index));
-    const attrs: WikiReferenceAttributes = {
-      id: match[1],
-      label: match[2],
-      mentionSuggestionChar: match[3],
-    };
-    const reference = resolveReference?.(attrs) ?? fallbackReference(attrs);
+  return wikiTodoTextParts(text, resolveReference).map((part) => {
+    if (part.type === 'text' || !part.reference) return part.text;
+    const reference = part.reference;
     const page = reference.kind === 'page';
-    const label = page ? `page: · ${reference.label}` : `${reference.char}${reference.label}`;
-    content.push(['span', {
+    return ['span', {
       class: `ak-wiki-reference ${reference.kind === 'task' ? 'is-task' : page ? 'is-page' : 'is-user'}${reference.valid ? '' : ' is-invalid'}`,
       ...(reference.kind === 'task'
         ? { 'data-wiki-task-id': reference.id, role: 'link', tabindex: '0' }
@@ -203,11 +215,47 @@ export function renderWikiTodoText(
           : reference.kind === 'user'
             ? { 'data-wiki-user-id': reference.id }
             : { 'aria-disabled': 'true' }),
-    }, label]);
+    }, part.text] as DOMOutputSpec;
+  });
+}
+
+export function wikiTodoTextParts(
+  text: string,
+  resolveReference?: WikiTodoExtensionOptions['resolveReference'],
+): WikiTodoTextPart[] {
+  const content: WikiTodoTextPart[] = [];
+  let offset = 0;
+  for (const match of text.matchAll(stableReferencePattern)) {
+    const index = match.index ?? 0;
+    if (index > offset) content.push({ type: 'text', text: text.slice(offset, index) });
+    const attrs: WikiReferenceAttributes = {
+      id: match[1],
+      label: match[2],
+      mentionSuggestionChar: match[3],
+    };
+    const reference = resolveReference?.(attrs) ?? fallbackReference(attrs);
+    const page = reference.kind === 'page';
+    content.push({
+      type: 'reference',
+      text: page ? `page: · ${reference.label}` : `${reference.char}${reference.label}`,
+      reference,
+    });
     offset = index + match[0].length;
   }
-  if (offset < text.length) content.push(text.slice(offset));
-  return content.length ? content : [''];
+  if (offset < text.length) content.push({ type: 'text', text: text.slice(offset) });
+  return content.length ? content : [{ type: 'text', text: '' }];
+}
+
+export function wikiTodoEditableText(
+  text: string,
+  resolveReference?: WikiTodoExtensionOptions['resolveReference'],
+) {
+  return wikiTodoTextParts(text, resolveReference).map((part) => {
+    if (part.type === 'text' || !part.reference) return part.text;
+    if (part.reference.kind === 'task') return `#${part.reference.label.split(' · ')[0]}`;
+    if (part.reference.kind === 'user') return `@${part.reference.label}`;
+    return `${part.reference.char}${part.reference.label}`;
+  }).join('');
 }
 
 function wikiTodoTextLabel(

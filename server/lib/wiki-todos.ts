@@ -9,7 +9,7 @@ import type { User, WikiTodoItem, WikiTodoList } from './db/schema';
 const MAX_LISTS_PER_PROJECT = 100;
 const MAX_ITEMS_PER_LIST = 500;
 const MAX_LIST_NAME_LENGTH = 120;
-const MAX_ITEM_TEXT_LENGTH = 500;
+const MAX_ITEM_TEXT_LENGTH = 2000;
 
 export interface CreateWikiTodoListInput {
   name: string;
@@ -172,7 +172,12 @@ function normalizeListName(value: string) {
 }
 
 function normalizeItemText(projectId: string, value: string) {
-  const text = value.trim().replace(/\s+/g, ' ');
+  const text = value
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim().replace(/[\t ]+/g, ' '))
+    .join('\n')
+    .trim();
   if (!text) throw createError({ statusCode: 400, statusMessage: 'wiki_todo_item_text_required' });
   if (text.length > MAX_ITEM_TEXT_LENGTH) throw createError({ statusCode: 400, statusMessage: 'wiki_todo_item_text_too_long' });
   const { members, tasks } = wikiTodoReferenceContext(projectId);

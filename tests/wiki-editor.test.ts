@@ -8,7 +8,7 @@ import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '../utils/wiki-editor';
 import { canonicalizeWikiReferences, filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision } from '../utils/wiki-references';
-import { createWikiTodoListExtension, filterWikiTodoItems, renderWikiTodoText, type WikiTodoItemRecord } from '../utils/wiki-todos';
+import { createWikiTodoListExtension, filterWikiTodoItems, renderWikiTodoText, wikiTodoEditableText, type WikiTodoItemRecord } from '../utils/wiki-todos';
 import { cloneWikiImageAnnotation, createWikiImageExtension, renderWikiImage, type WikiImageRecord } from '../utils/wiki-images';
 import { readFileSync } from 'node:fs';
 
@@ -46,8 +46,16 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain('@paste.capture="handleWikiImagePaste"');
     expect(component).toContain('@drop.capture="handleWikiImageDrop"');
     expect(component).toContain('<WikiImageEditor');
-    expect(component).toContain('@input="handleWikiTodoInput"');
-    expect(component).toContain('data-wiki-todo-reference-menu');
+    expect(component).toContain('VueNodeViewRenderer(WikiTodoListNodeView)');
+    expect(component).not.toContain('todoListRevision');
+    const todoNodeView = readFileSync(new URL('../components/WikiTodoListNodeView.vue', import.meta.url), 'utf8');
+    const todoTextArea = readFileSync(new URL('../components/WikiTodoTextArea.vue', import.meta.url), 'utf8');
+    expect(todoNodeView).toContain('<WikiTodoTextArea');
+    expect(todoNodeView).toContain('updateItem');
+    expect(todoNodeView).toContain('@click.stop="startEditing(item)"');
+    expect(todoTextArea).toContain('rows="2"');
+    expect(todoTextArea).toContain("event.metaKey || event.ctrlKey");
+    expect(todoTextArea).toContain('data-wiki-todo-reference-menu');
   });
 
   test('canonicalizes unambiguous plain Wiki references without touching code or links', () => {
@@ -414,6 +422,20 @@ describe('wiki editor document extensions', () => {
     expect(rendered).not.toContain('Alice Old');
     expect(todoSource).toContain("'data-wiki-todo-reference-input': id");
     expect(todoSource).toContain("'aria-autocomplete': 'list'");
+  });
+
+  test('turns stable TODO references into current, editable @ and # tokens', () => {
+    const text = [
+      'Coordinate [@ id="user-1" label="Alice Old"]',
+      'Review [@ id="task-18" label="AK-18 · Old title" char="#"]',
+    ].join('\n');
+    const editable = wikiTodoEditableText(text, (attrs) => resolveWikiReference(
+      attrs,
+      [{ id: 'user-1', name: 'Alice Updated' }],
+      [{ id: 'task-18', key: 'AK-18', title: 'Current title' }],
+    ));
+
+    expect(editable).toBe('Coordinate @Alice Updated\nReview #AK-18');
   });
 
   test('filters completed TODO items by state and completion window', () => {

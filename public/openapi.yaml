@@ -821,11 +821,11 @@ components:
       type: object
       required: [text]
       properties:
-        text: { type: string, minLength: 1, maxLength: 500 }
+        text: { type: string, minLength: 1, maxLength: 2000, description: "Multiline item text; @ people and # project tasks are stored as stable references" }
     WikiTodoItemUpdate:
       type: object
       properties:
-        text: { type: string, minLength: 1, maxLength: 500 }
+        text: { type: string, minLength: 1, maxLength: 2000, description: "Multiline item text; @ people and # project tasks are stored as stable references" }
         completed: { type: boolean }
         expectedUpdatedAt: { type: string, format: date-time, description: Reject the write with wiki_todo_item_stale if the item changed since it was read }
       anyOf:

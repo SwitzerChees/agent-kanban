@@ -78,6 +78,27 @@ describe('reusable wiki TODO lists', () => {
     expect(item.text).not.toContain(`#${task.key}`);
   });
 
+  test('preserves multiline item text and canonicalizes references on create and edit', async () => {
+    const task = await kanban.createTask(projectId, { title: 'Multiline TODO task' }, admin);
+    const list = wikiTodos.createWikiTodoList(projectId, { name: 'Multiline actions' }, admin);
+    const item = wikiTodos.addWikiTodoItem(list.id, {
+      text: `First line for @Wiki TODO Member\n  Second line for #${task.key}`,
+    }, member);
+
+    expect(item.text).toBe([
+      `First line for [@ id="${member.id}" label="Wiki TODO Member"]`,
+      `Second line for [@ id="${task.id}" label="${task.key} · Multiline TODO task" char="#"]`,
+    ].join('\n'));
+
+    const updated = wikiTodos.updateWikiTodoItem(item.id, {
+      text: `Updated @Wiki TODO Member\n\nFollow up on #${task.key}`,
+      expectedUpdatedAt: item.updatedAt,
+    }, admin);
+    expect(updated.text).toContain('\n\n');
+    expect(updated.text).toContain(`id="${member.id}"`);
+    expect(updated.text).toContain(`id="${task.id}"`);
+  });
+
   test('enforces case-insensitive project-local names, access, and optimistic updates', () => {
     expectStatusMessage(
       () => wikiTodos.createWikiTodoList(projectId, { name: 'release CHECKLIST' }, member),
