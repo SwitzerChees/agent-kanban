@@ -409,14 +409,15 @@ describe('wiki editor document extensions', () => {
   });
 
   test('round-trips stable Wiki image references and renders persisted pin comments', () => {
+    const imageId = '52c8ea75-c2ba-4931-ad01-98eb2afc76bc';
     const image: WikiImageRecord = {
-      id: 'image-1',
+      id: imageId,
       pageId: 'page-1',
       fileName: 'release.png',
       mimeType: 'image/png',
       size: 42,
-      url: '/api/wiki-images/image-1?v=2',
-      sourceUrl: '/api/wiki-images/image-1?variant=source&v=2',
+      url: `/api/wiki-images/${imageId}?v=2`,
+      sourceUrl: `/api/wiki-images/${imageId}?variant=source&v=2`,
       createdAt: '2026-09-02T10:00:00.000Z',
       updatedAt: '2026-09-02T10:01:00.000Z',
       annotation: {
@@ -428,12 +429,12 @@ describe('wiki editor document extensions', () => {
     const WikiImage = createWikiImageExtension({ getImage: (id) => id === image.id ? image : undefined, getLocale: () => 'en' });
     const editor = new Editor({
       extensions: [StarterKit, Markdown, WikiImage],
-      content: ':::wiki-image {id="image-1" alt="Release preview"} :::',
+      content: `:::wiki-image {#${imageId} alt="Release preview"} :::`,
       contentType: 'markdown',
     });
 
-    expect(editor.getJSON().content?.[0]).toMatchObject({ type: 'wikiImage', attrs: { id: 'image-1', alt: 'Release preview' } });
-    expect(editor.getMarkdown()).toBe(':::wiki-image {#image-1 alt="Release preview"} :::');
+    expect(editor.getJSON().content?.[0]).toMatchObject({ type: 'wikiImage', attrs: { id: imageId, alt: 'Release preview' } });
+    expect(editor.getMarkdown()).toBe(`:::wiki-image {#${imageId} alt="Release preview"} :::`);
     const rendered = JSON.stringify(renderWikiImage(image, image.id, 'Release preview', 'en', {}));
     expect(rendered).toContain('data-wiki-image-id');
     expect(rendered).toContain('Check this area');

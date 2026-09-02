@@ -1,5 +1,6 @@
 import { Node, createAtomBlockMarkdownSpec, mergeAttributes } from '@tiptap/core';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
+import { parseWikiAtomBlockAttributes } from './wiki-atom-block';
 
 export interface WikiImagePoint {
   x: number;
@@ -48,6 +49,7 @@ const markdownSpec = createAtomBlockMarkdownSpec({
   name: 'wiki-image',
   requiredAttributes: ['id'],
   allowedAttributes: ['id', 'alt'],
+  parseAttributes: parseWikiAtomBlockAttributes,
 });
 
 export function createWikiImageExtension(options: WikiImageExtensionOptions) {
