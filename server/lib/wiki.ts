@@ -271,6 +271,11 @@ function normalizeContent(value: string) {
 
 function normalizeProjectWikiContent(projectId: string, value: string) {
   normalizeContent(value);
+  const { members, tasks } = wikiReferenceContext(projectId);
+  return normalizeContent(canonicalizeWikiReferences(value, members, tasks));
+}
+
+function wikiReferenceContext(projectId: string) {
   const members = db.select({ id: schema.users.id, name: schema.users.name })
     .from(schema.projectUsers)
     .innerJoin(schema.users, eq(schema.projectUsers.userId, schema.users.id))
@@ -280,7 +285,7 @@ function normalizeProjectWikiContent(projectId: string, value: string) {
     .from(schema.tasks)
     .where(eq(schema.tasks.projectId, projectId))
     .all();
-  return normalizeContent(canonicalizeWikiReferences(value, members, tasks));
+  return { members, tasks };
 }
 
 function decorateWikiPages(pages: WikiPage[]) {
@@ -290,12 +295,21 @@ function decorateWikiPages(pages: WikiPage[]) {
         .where(inArray(schema.users.id, userIds)).all()
     : [];
   const names = new Map(users.map((item) => [item.id, item.name]));
-  return pages.map((page) => decorateWikiPage(page, names));
+  const references = new Map(
+    [...new Set(pages.map((page) => page.projectId))]
+      .map((projectId) => [projectId, wikiReferenceContext(projectId)] as const),
+  );
+  return pages.map((page) => decorateWikiPage(page, names, references.get(page.projectId)));
 }
 
-function decorateWikiPage(page: WikiPage, names: Map<string, string>) {
+function decorateWikiPage(
+  page: WikiPage,
+  names: Map<string, string>,
+  references = wikiReferenceContext(page.projectId),
+) {
   return {
     ...page,
+    content: normalizeContent(canonicalizeWikiReferences(page.content, references.members, references.tasks)),
     createdByName: names.get(page.createdBy) ?? null,
     updatedByName: names.get(page.updatedBy) ?? null,
   };

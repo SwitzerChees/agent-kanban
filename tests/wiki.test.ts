@@ -89,6 +89,24 @@ describe('project wiki', () => {
     expect(wiki.deleteWikiPage(page.id, admin)).toEqual({ ok: true });
   });
 
+  test('normalizes legacy bold whitespace when existing pages are read', () => {
+    const page = wiki.createWikiPage(projectId, {
+      title: 'Legacy generated note',
+      content: 'Temporary content',
+    }, admin);
+    const legacyContent = `**TODO: ** [@ id="${member.id}" label="Wiki Member"] Termine klären`;
+    dbModule.db.update(dbModule.schema.wikiPages)
+      .set({ content: legacyContent })
+      .where(eq(dbModule.schema.wikiPages.id, page.id))
+      .run();
+
+    const rendered = wiki.getWikiPage(page.id, member);
+
+    expect(rendered.content).toBe(`**TODO:** [@ id="${member.id}" label="Wiki Member"] Termine klären`);
+    expect(rendered.content).not.toContain('**TODO: **');
+    expect(wiki.deleteWikiPage(page.id, admin)).toEqual({ ok: true });
+  });
+
   test('rejects cross-project parents and cyclic trees', async () => {
     const otherProject = await kanban.createProject({
       name: 'Other Wiki Project',
