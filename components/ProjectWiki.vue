@@ -860,7 +860,11 @@ function handleWikiTodoInput(event: Event) {
   input.setAttribute('aria-expanded', todoReferenceSuggestions.value.length ? 'true' : 'false');
   const rect = input.getBoundingClientRect();
   const width = Math.min(Math.max(rect.width, 320), window.innerWidth - 16);
-  todoReferencePosition.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 340));
+  const menuHeight = Math.min(12 + todoReferenceSuggestions.value.length * 56, 288);
+  const spaceBelow = window.innerHeight - rect.bottom - 8;
+  todoReferencePosition.top = spaceBelow >= menuHeight
+    ? rect.bottom + 6
+    : Math.max(8, rect.top - menuHeight - 6);
   todoReferencePosition.left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
   todoReferencePosition.width = width;
 }
