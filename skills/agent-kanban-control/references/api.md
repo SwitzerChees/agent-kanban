@@ -53,6 +53,10 @@ Create a project with `name`, `key`, and `folderPath`. Optional fields are `desc
 | `POST` | `/api/projects/{projectId}/wiki/todo-lists` | Create a project-local list with a case-insensitively unique `name`. |
 | `POST` | `/api/wiki-todo-lists/{listId}/items` | Append an item with `text`. |
 | `PATCH` | `/api/wiki-todo-items/{itemId}` | Update `text` and/or `completed`, optionally guarded by `expectedUpdatedAt`. |
+| `GET` | `/api/wiki-pages/{pageId}/images` | List page-scoped image metadata, editable strokes, and comment pins. |
+| `POST` | `/api/wiki-pages/{pageId}/images` | Upload one JPEG/PNG/WebP as multipart field `file`. |
+| `GET` | `/api/wiki-images/{imageId}` | Stream the rendered image; add `?variant=source` for the preserved source. |
+| `PATCH` | `/api/wiki-images/{imageId}/annotation` | Replace annotation data and rendered PNG with optimistic revision checking. |
 
 Create with `title`, optional `content`, and optional `parentId`. Update only requested fields and pass the latest `updatedAt` as `expectedUpdatedAt`; a concurrent edit returns `409 wiki_page_stale`. For structural changes prefer the move endpoint:
 
@@ -69,6 +73,8 @@ Create with `title`, optional `content`, and optional `parentId`. Update only re
 Reusable TODO lists are referenced from page Markdown as `:::todo-list {#<list-uuid> label="<fallback-name>"} :::`. The page stores only this stable list ID; items remain project-level records so a change appears in every page reference. Read the collection before an item mutation, send that item's current `updatedAt` as `expectedUpdatedAt`, and re-read it afterward. A completion update controls `completedAt`, which supports all/open/completed and recent-completion filters in the Wiki UI.
 
 To generate tasks from a page, read that page and the board first, create each task with a unique stable `clientRequestId`, verify returned task keys, and update the source page only when explicitly requested.
+
+Page Markdown stores a Wiki image only as `:::wiki-image {#<image-uuid> alt="<fallback-alt-text>"} :::`. The image record owns its current rendered URL, original source, editable drawing strokes, and comment pins, so never embed binary/base64 data in page Markdown. Annotation updates require `annotationData` (`version: 1`, normalized `strokes`, and non-empty `pins`) plus a rendered PNG data URL; pass the image's current `updatedAt` as `expectedUpdatedAt`.
 
 ## Task operations
 

@@ -106,6 +106,21 @@ export function ensureDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS wiki_images (
+      id TEXT PRIMARY KEY,
+      page_id TEXT NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      storage_path TEXT NOT NULL,
+      rendered_storage_path TEXT,
+      annotation_data TEXT NOT NULL DEFAULT '{"version":1,"strokes":[],"pins":[]}',
+      created_by TEXT NOT NULL REFERENCES users(id),
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS project_harness_limits (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       harness TEXT NOT NULL,
@@ -433,6 +448,7 @@ export function ensureDatabase() {
       ON wiki_pages(project_id, parent_id, position, created_at);
     CREATE INDEX IF NOT EXISTS idx_wiki_todo_items_list
       ON wiki_todo_items(list_id, position, created_at);
+    CREATE INDEX IF NOT EXISTS idx_wiki_images_page ON wiki_images(page_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
     CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id);
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_task_user ON comment_mentions(task_id, user_id);

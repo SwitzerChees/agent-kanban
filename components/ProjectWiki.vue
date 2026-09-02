@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import type { EditorToolbarItem } from '@nuxt/ui';
+import type { Editor } from '@tiptap/core';
 import TaskItem from '@tiptap/extension-task-item';
 import TaskList from '@tiptap/extension-task-list';
 import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '~/utils/wiki-editor';
 import { captureWikiScrollAnchor, normalizeWikiAnchorText, replaceCurrentWikiPage, restoredWikiScrollTop, type WikiScrollCandidate } from '~/utils/wiki-live-refresh';
+import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
+import { createWikiImageExtension, type WikiImageAnnotation, type WikiImageRecord } from '~/utils/wiki-images';
 import { filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
 import { createWikiTodoListExtension, type WikiTodoFilter, type WikiTodoListRecord } from '~/utils/wiki-todos';
 
@@ -140,6 +143,9 @@ const copy = computed(() => props.locale === 'de' ? {
   stalePage: 'Die Seite wurde inzwischen geändert. Deine Änderung wurde nicht gespeichert; bitte lade die Seite neu und prüfe sie erneut.',
   todoError: 'Die TODO-Liste konnte nicht aktualisiert werden.',
   todoDuplicate: 'Eine TODO-Liste mit diesem Namen existiert bereits.',
+  imageUploadError: 'Das Bild konnte nicht eingefügt werden. Unterstützt werden JPEG, PNG und WebP.',
+  imageSaving: 'Bild wird verarbeitet …',
+  imageStale: 'Das Bild wurde inzwischen geändert. Die aktuelle Version wurde neu geladen.',
 } : {
   board: 'Board',
   wiki: 'Wiki',
@@ -207,11 +213,15 @@ const copy = computed(() => props.locale === 'de' ? {
   stalePage: 'This page changed in the meantime. Your change was not saved; reload the page and review it again.',
   todoError: 'The TODO list could not be updated.',
   todoDuplicate: 'A TODO list with this name already exists.',
+  imageUploadError: 'The image could not be inserted. JPEG, PNG, and WebP are supported.',
+  imageSaving: 'Processing image …',
+  imageStale: 'This image changed in the meantime. The current version was reloaded.',
 });
 
 const pages = ref<WikiPage[]>([]);
 const todoLists = ref<WikiTodoListRecord[]>([]);
 const todoFilters = reactive<Record<string, WikiTodoFilter>>({});
+const wikiImages = ref<WikiImageRecord[]>([]);
 const selectedPageId = ref<string | null>(null);
 const searchQuery = ref('');
 const loading = ref(true);
@@ -233,6 +243,12 @@ const WIKI_READ_REFRESH_INTERVAL_MS = 5_000;
 let wikiPollTimer: ReturnType<typeof setTimeout> | null = null;
 let wikiPollController: AbortController | null = null;
 let wikiPollGeneration = 0;
+const imageUploading = ref(false);
+const imageEditorOpen = ref(false);
+const imageEditorSaving = ref(false);
+const selectedWikiImage = ref<WikiImageRecord | null>(null);
+let activeWikiEditor: Editor | null = null;
+let wikiImageLoadGeneration = 0;
 
 const templates = computed(() => [{
   id: 'blank' as const,
@@ -313,6 +329,11 @@ const WikiTodoList = createWikiTodoListExtension({
   getLocale: () => props.locale,
 });
 
+const WikiImage = createWikiImageExtension({
+  getImage: (id) => wikiImages.value.find((image) => image.id === id),
+  getLocale: () => props.locale,
+});
+
 const wikiEditorExtensions = [
   TaskList,
   TaskItem.configure({ nested: true }),
@@ -321,6 +342,7 @@ const wikiEditorExtensions = [
   TableHeader,
   TableCell,
   WikiTodoList,
+  WikiImage,
 ];
 
 const userMentionItems = computed(() => props.members.map((member) => ({
@@ -346,6 +368,7 @@ const todoListRevision = computed(() => JSON.stringify([
   todoLists.value.map((list) => [list.id, list.name, list.updatedAt, list.items.map((item) => [item.id, item.updatedAt])]),
   todoFilters,
 ]));
+const wikiImageRevision = computed(() => JSON.stringify(wikiImages.value.map((image) => [image.id, image.updatedAt])));
 
 const wikiMentionOptions = computed(() => ({
   HTMLAttributes: { class: 'ak-wiki-reference' },
@@ -433,6 +456,7 @@ watch(() => props.project.id, () => {
 });
 
 watch([selectedPageId, editing, loading], () => restartWikiPolling(), { flush: 'post' });
+watch(selectedPageId, (pageId) => void loadWikiImages(pageId));
 
 onMounted(() => {
   void loadPages();
@@ -443,6 +467,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopWikiPolling();
+  wikiImageLoadGeneration += 1;
+  activeWikiEditor = null;
   window.removeEventListener('keydown', handleSaveShortcut);
   window.removeEventListener('beforeunload', handleBeforeUnload);
   document.removeEventListener('visibilitychange', restartWikiPolling);
@@ -480,6 +506,7 @@ async function pollWikiPage(pageId: string, generation: number) {
     if (nextPages !== pages.value) {
       const anchor = captureRenderedScrollAnchor();
       pages.value = [...nextPages];
+      await loadWikiImages(pageId);
       await nextTick();
       await nextBrowserPaint();
       restoreRenderedScrollAnchor(anchor);
@@ -831,9 +858,133 @@ async function refreshTodoLists() {
   }
 }
 
+async function loadWikiImages(pageId: string | null) {
+  const generation = ++wikiImageLoadGeneration;
+  wikiImages.value = [];
+  selectedWikiImage.value = null;
+  if (!pageId) return;
+  try {
+    const response = await $fetch<{ images: WikiImageRecord[] }>(`/api/wiki-pages/${pageId}/images`);
+    if (generation === wikiImageLoadGeneration && selectedPageId.value === pageId) wikiImages.value = response.images;
+  } catch (error) {
+    if (generation === wikiImageLoadGeneration) errorMessage.value = humanError(error);
+  }
+}
+
+function handleWikiEditorReady(editor: Editor | null) {
+  activeWikiEditor = editor;
+}
+
+function handleWikiImagePaste(event: ClipboardEvent) {
+  const files = [...(event.clipboardData?.items ?? [])]
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item, index) => {
+      const file = item.getAsFile();
+      if (!file) return null;
+      const extension = file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg';
+      return file.name ? file : new File([file], `clipboard-${Date.now()}-${index + 1}.${extension}`, { type: file.type });
+    })
+    .filter((file): file is File => Boolean(file));
+  if (!files.length) return;
+  event.preventDefault();
+  void insertWikiImages(files);
+}
+
+function handleWikiImageDragOver(event: DragEvent) {
+  if ([...(event.dataTransfer?.items ?? [])].some((item) => item.kind === 'file' && item.type.startsWith('image/'))) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  }
+}
+
+function handleWikiImageDrop(event: DragEvent) {
+  const files = [...(event.dataTransfer?.files ?? [])].filter(isSupportedWikiImage);
+  if (!files.length) return;
+  event.preventDefault();
+  const coordinates = activeWikiEditor?.view.posAtCoords({ left: event.clientX, top: event.clientY });
+  if (coordinates) activeWikiEditor?.commands.setTextSelection(coordinates.pos);
+  void insertWikiImages(files);
+}
+
+async function insertWikiImages(files: File[]) {
+  const pageId = selectedPageId.value;
+  if (!pageId || !editing.value || imageUploading.value || !activeWikiEditor) return;
+  const candidates = files.filter(isSupportedWikiImage);
+  if (!candidates.length) {
+    errorMessage.value = copy.value.imageUploadError;
+    return;
+  }
+  imageUploading.value = true;
+  errorMessage.value = null;
+  const uploaded: WikiImageRecord[] = [];
+  try {
+    for (const source of candidates) {
+      const compressed = await compressImageForUpload(source);
+      if (selectedPageId.value !== pageId || !editing.value) break;
+      const upload = compressed === source || compressed.name === compressedImageFileName(source.name)
+        ? compressed
+        : new File([compressed], compressedImageFileName(source.name), { type: compressed.type, lastModified: source.lastModified });
+      const form = new FormData();
+      form.append('file', upload);
+      const response = await $fetch<{ image: WikiImageRecord }>(`/api/wiki-pages/${pageId}/images`, { method: 'POST', body: form });
+      uploaded.push(response.image);
+    }
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    if (uploaded.length && selectedPageId.value === pageId && editing.value) {
+      const content = uploaded.flatMap((image) => [
+        { type: 'wikiImage', attrs: { id: image.id, alt: image.fileName } },
+        { type: 'paragraph' },
+      ]);
+      activeWikiEditor?.chain().focus().insertContent(content).run();
+      wikiImages.value = [...wikiImages.value, ...uploaded];
+    }
+    imageUploading.value = false;
+  }
+}
+
+function isSupportedWikiImage(file: Pick<File, 'type'>) {
+  return ['image/jpeg', 'image/png', 'image/webp'].includes(file.type.toLocaleLowerCase());
+}
+
 function handleWikiContentClick(event: Event) {
   void handleWikiTodoClick(event);
   activateWikiReference(event);
+  if (!editing.value) return;
+  const imageId = event.target instanceof Element
+    ? event.target.closest<HTMLElement>('[data-wiki-image-edit]')?.dataset.wikiImageEdit
+    : null;
+  const image = wikiImages.value.find((candidate) => candidate.id === imageId);
+  if (!image) return;
+  event.preventDefault();
+  selectedWikiImage.value = image;
+  imageEditorOpen.value = true;
+}
+
+async function saveWikiImageAnnotation(payload: {
+  annotationData: WikiImageAnnotation;
+  renderedImage: string;
+  expectedUpdatedAt: string;
+}) {
+  const image = selectedWikiImage.value;
+  if (!image || imageEditorSaving.value) return;
+  imageEditorSaving.value = true;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ image: WikiImageRecord }>(`/api/wiki-images/${image.id}/annotation`, {
+      method: 'PATCH',
+      body: payload,
+    });
+    wikiImages.value = wikiImages.value.map((candidate) => candidate.id === response.image.id ? response.image : candidate);
+    selectedWikiImage.value = response.image;
+    imageEditorOpen.value = false;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    if (humanErrorCode(error).includes('wiki_image_stale')) await loadWikiImages(selectedPageId.value);
+  } finally {
+    imageEditorSaving.value = false;
+  }
 }
 
 function activateWikiReference(event: Event) {
@@ -973,13 +1124,19 @@ function dropLabel(placement: WikiDropPlacement | 'root') {
 }
 
 function humanError(error: unknown) {
-  const details = error as { data?: { statusMessage?: string }; statusMessage?: string; message?: string };
-  const code = details.data?.statusMessage ?? details.statusMessage ?? details.message ?? '';
+  const code = humanErrorCode(error);
   if (code.includes('wiki_page_not_empty')) return copy.value.childDeleteError;
   if (code.includes('wiki_page_stale')) return copy.value.stalePage;
   if (code.includes('wiki_todo_list_name_exists')) return copy.value.todoDuplicate;
   if (code.includes('wiki_todo')) return copy.value.todoError;
+  if (code.includes('wiki_image_stale')) return copy.value.imageStale;
+  if (code.includes('wiki_image') || code.includes('upload_too_large')) return copy.value.imageUploadError;
   return copy.value.genericError;
+}
+
+function humanErrorCode(error: unknown) {
+  const details = error as { data?: { statusMessage?: string }; statusMessage?: string; message?: string };
+  return details.data?.statusMessage ?? details.statusMessage ?? details.message ?? '';
 }
 </script>
 
@@ -1132,23 +1289,23 @@ function humanError(error: unknown) {
             <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ updatedInitials }}</span><span>{{ copy.editedBy }} {{ selectedPage.updatedByName ?? '—' }}</span><span aria-hidden="true">·</span><time :datetime="selectedPage.updatedAt">{{ updatedLabel }}</time><span v-if="editing" class="ml-auto hidden items-center gap-1.5 text-teal-700 sm:inline-flex dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span></div>
           </header>
 
-          <div v-if="editing" class="ak-wiki-editor mt-6 rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit">
-            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+          <div v-if="editing" class="ak-wiki-editor mt-6 rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit" @paste.capture="handleWikiImagePaste" @dragover.capture="handleWikiImageDragOver" @drop.capture="handleWikiImageDrop">
+            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}:${wikiImageRevision}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
               <div class="ak-wiki-editor-toolbar sticky top-12 z-[5] flex min-w-0 items-center border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0">
                 <div class="min-w-0 flex-1 overflow-x-auto">
                   <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="w-max" />
                 </div>
-                <WikiEditorTools :editor="editor" :locale="props.locale" :todo-lists="todoLists" @create-todo-list="createWikiTodoList" />
+                <WikiEditorTools :editor="editor" :locale="props.locale" :todo-lists="todoLists" @create-todo-list="createWikiTodoList" @editor-ready="handleWikiEditorReady" @image-files="insertWikiImages" />
               </div>
               <UEditorMentionMenu :editor="editor" :items="userMentionItems" :filter-fields="['label', 'description']" char="@" plugin-key="wiki-user-mentions" :limit="8" />
               <UEditorMentionMenu :editor="editor" :items="taskMentionItems" :filter-fields="['label', 'description']" char="#" plugin-key="wiki-task-links" :limit="8" />
               <UEditorMentionMenu v-model:search-term="pageSearchDe" :editor="editor" :items="filteredPageMentionItemsDe" char="seite:" plugin-key="wiki-page-links-de" :limit="8" ignore-filter />
               <UEditorMentionMenu v-model:search-term="pageSearchEn" :editor="editor" :items="filteredPageMentionItemsEn" char="page:" plugin-key="wiki-page-links-en" :limit="8" ignore-filter />
             </UEditor>
-            <p class="border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7">{{ copy.referencesHint }}</p>
+            <p class="flex items-center gap-2 border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7"><UIcon v-if="imageUploading" name="i-lucide-loader-circle" class="size-3 animate-spin text-teal-600" /><span>{{ imageUploading ? copy.imageSaving : copy.referencesHint }}</span></p>
           </div>
           <div v-else-if="selectedPage.content" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit" @keydown.enter="activateWikiReference" @keydown.space.prevent="activateWikiReference">
-            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}:${wikiImageRevision}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
           </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
         </article>
@@ -1161,6 +1318,8 @@ function humanError(error: unknown) {
         <div class="mt-auto rounded-lg bg-zinc-50 px-3 py-2.5 text-[11px] leading-5 text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-900/60 dark:text-zinc-400 dark:ring-zinc-800"><span class="font-semibold text-zinc-700 dark:text-zinc-200">{{ pages.length }}</span> {{ copy.pages.toLocaleLowerCase() }}</div>
       </aside>
     </div>
+
+    <WikiImageEditor v-model:open="imageEditorOpen" :image="selectedWikiImage" :locale="props.locale" :saving="imageEditorSaving" @save="saveWikiImageAnnotation" />
   </section>
 </template>
 
@@ -1423,6 +1582,129 @@ function humanError(error: unknown) {
   border-color: rgb(82 82 91);
   background: rgb(24 24 27);
   color: rgb(244 244 245);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image),
+.ak-wiki-rendered :deep(.ak-wiki-image) {
+  width: 100%;
+  max-width: 100% !important;
+  margin-block: 1.5rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image-stage),
+.ak-wiki-rendered :deep(.ak-wiki-image-stage) {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  overflow: visible;
+  border-radius: 0.75rem;
+  background: rgb(244 244 245);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image img),
+.ak-wiki-rendered :deep(.ak-wiki-image img) {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  border: 1px solid rgb(228 228 231);
+  border-radius: 0.75rem;
+  object-fit: contain;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image figcaption),
+.ak-wiki-rendered :deep(.ak-wiki-image figcaption) {
+  margin-top: 0.5rem;
+  color: rgb(113 113 122);
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image-pin),
+.ak-wiki-rendered :deep(.ak-wiki-image-pin) {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  width: 1.6rem;
+  height: 1.6rem;
+  transform: translate(-50%, -50%);
+  place-items: center;
+  border: 2px solid white;
+  border-radius: 999px;
+  background: rgb(251 191 36);
+  color: rgb(69 26 3);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.3);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image-pin > span),
+.ak-wiki-rendered :deep(.ak-wiki-image-pin > span) {
+  position: absolute;
+  bottom: calc(100% + 0.45rem);
+  left: 50%;
+  width: max-content;
+  max-width: min(18rem, 70vw);
+  transform: translateX(-50%) translateY(0.25rem);
+  border-radius: 0.5rem;
+  background: rgb(24 24 27 / 0.96);
+  padding: 0.45rem 0.6rem;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image-pin:hover > span),
+.ak-wiki-editor :deep(.ak-wiki-image-pin:focus-visible > span),
+.ak-wiki-rendered :deep(.ak-wiki-image-pin:hover > span),
+.ak-wiki-rendered :deep(.ak-wiki-image-pin:focus-visible > span) {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+.ak-wiki-rendered :deep(.ak-wiki-image-edit) {
+  display: none;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image-edit) {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.65rem;
+  z-index: 3;
+  border-radius: 0.5rem;
+  background: rgb(24 24 27 / 0.88);
+  padding: 0.4rem 0.65rem;
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1rem;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image-stage:hover .ak-wiki-image-edit),
+.ak-wiki-editor :deep(.ak-wiki-image-edit:focus-visible) {
+  opacity: 1;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-image.is-invalid),
+.ak-wiki-rendered :deep(.ak-wiki-image.is-invalid) {
+  border: 1px dashed rgb(161 161 170);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  color: rgb(113 113 122);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-image img),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-image img),
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-image-stage),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-image-stage) {
+  border-color: rgb(63 63 70);
+  background: rgb(39 39 42);
 }
 
 .ak-wiki-editor :deep(.tableWrapper),

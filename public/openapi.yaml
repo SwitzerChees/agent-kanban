@@ -180,6 +180,62 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-pages/{pageId}/images:
+    get:
+      tags: [Wiki]
+      operationId: listWikiImages
+      summary: List image records embedded in one Wiki page
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [Wiki]
+      operationId: uploadWikiImage
+      summary: Upload one compressed JPEG, PNG, or WebP image to a Wiki page
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-images/{imageId}:
+    get:
+      tags: [Wiki]
+      operationId: getWikiImageContent
+      summary: Stream the rendered Wiki image or its source variant
+      parameters:
+        - { $ref: '#/components/parameters/WikiImageId' }
+        - { name: variant, in: query, required: false, schema: { type: string, enum: [source] } }
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-images/{imageId}/annotation:
+    patch:
+      tags: [Wiki]
+      operationId: updateWikiImageAnnotation
+      summary: Replace editable drawings, comment pins, and the rendered image
+      parameters: [{ $ref: '#/components/parameters/WikiImageId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiImageAnnotationUpdate' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/projects/{projectId}/chat:
     get:
       tags: [Project chat]
@@ -701,6 +757,7 @@ components:
     WikiPageId: { name: pageId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiTodoListId: { name: listId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiTodoItemId: { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
+    WikiImageId: { name: imageId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiPageContext: { name: wikiPageId, in: query, required: false, schema: { type: string, format: uuid }, description: Bind chat selection and history to one Wiki page }
     ChatId: { name: chatId, in: path, required: true, schema: { type: string, format: uuid } }
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -774,6 +831,19 @@ components:
       anyOf:
         - required: [text]
         - required: [completed]
+    WikiImageAnnotationUpdate:
+      type: object
+      required: [annotationData, renderedImage]
+      properties:
+        annotationData:
+          type: object
+          required: [version, strokes, pins]
+          properties:
+            version: { type: integer, const: 1 }
+            strokes: { type: array, items: { type: object, additionalProperties: true } }
+            pins: { type: array, items: { type: object, additionalProperties: true } }
+        renderedImage: { type: string, pattern: '^data:image/png;base64,' }
+        expectedUpdatedAt: { type: string, format: date-time }
     TaskCreate:
       type: object
       required: [title]

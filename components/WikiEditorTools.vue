@@ -13,11 +13,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   createTodoList: [payload: { name: string; editor: Editor }];
+  editorReady: [editor: Editor | null];
+  imageFiles: [files: File[]];
 }>();
 
 const tableActive = ref(false);
 const todoMenuOpen = ref(false);
 const newTodoListName = ref('');
+const imageInput = ref<HTMLInputElement | null>(null);
 
 const copy = computed(() => props.locale === 'de' ? {
   insert: 'Tabelle einfügen',
@@ -49,11 +52,13 @@ onMounted(() => {
   syncState();
   props.editor.on('selectionUpdate', syncState);
   props.editor.on('transaction', syncState);
+  emit('editorReady', props.editor);
 });
 
 onBeforeUnmount(() => {
   props.editor.off('selectionUpdate', syncState);
   props.editor.off('transaction', syncState);
+  emit('editorReady', null);
 });
 
 function syncState() {
@@ -86,6 +91,12 @@ function createTodoList() {
   newTodoListName.value = '';
   todoMenuOpen.value = false;
 }
+
+function selectImages(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (input.files?.length) emit('imageFiles', [...input.files]);
+  input.value = '';
+}
 </script>
 
 <template>
@@ -101,6 +112,10 @@ function createTodoList() {
     >
       <span class="hidden 2xl:inline">{{ copy.insert }}</span>
     </UButton>
+    <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-image-plus" :title="props.locale === 'de' ? 'Bild einfügen' : 'Insert image'" :aria-label="props.locale === 'de' ? 'Bild einfügen' : 'Insert image'" @click="imageInput?.click()">
+      <span class="hidden 2xl:inline">{{ props.locale === 'de' ? 'Bild' : 'Image' }}</span>
+    </UButton>
+    <input ref="imageInput" type="file" accept="image/jpeg,image/png,image/webp" multiple class="sr-only" tabindex="-1" @change="selectImages">
 
     <UPopover v-model:open="todoMenuOpen" :content="{ align: 'end', side: 'bottom' }">
       <UButton color="neutral" variant="ghost" size="xs" icon="i-lucide-list-todo" :title="copy.todoList" :aria-label="copy.todoList">

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { and, asc, count, eq, inArray, isNull, max } from 'drizzle-orm';
 import { createError } from 'h3';
 import { canonicalizeWikiReferences } from '../../utils/wiki-references';
@@ -192,6 +193,10 @@ export function deleteWikiPage(pageId: string, user: User) {
   const child = db.select({ id: schema.wikiPages.id }).from(schema.wikiPages)
     .where(eq(schema.wikiPages.parentId, pageId)).get();
   if (child) throw createError({ statusCode: 409, statusMessage: 'wiki_page_not_empty' });
+  const images = db.select({
+    storagePath: schema.wikiImages.storagePath,
+    renderedStoragePath: schema.wikiImages.renderedStoragePath,
+  }).from(schema.wikiImages).where(eq(schema.wikiImages.pageId, pageId)).all();
   const now = new Date().toISOString();
   db.transaction((tx) => {
     tx.delete(schema.wikiPages).where(eq(schema.wikiPages.id, pageId)).run();
@@ -205,6 +210,14 @@ export function deleteWikiPage(pageId: string, user: User) {
       createdAt: now,
     }).run();
   });
+  for (const image of images) {
+    try {
+      rmSync(image.storagePath, { force: true });
+      if (image.renderedStoragePath) rmSync(image.renderedStoragePath, { force: true });
+    } catch {
+      // The database deletion is authoritative; orphan cleanup may be retried operationally.
+    }
+  }
   return { ok: true };
 }
 

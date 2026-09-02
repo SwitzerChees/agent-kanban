@@ -81,6 +81,21 @@ export const wikiTodoItems = sqliteTable('wiki_todo_items', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const wikiImages = sqliteTable('wiki_images', {
+  id: text('id').primaryKey(),
+  pageId: text('page_id').notNull().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type').notNull(),
+  size: integer('size').notNull(),
+  storagePath: text('storage_path').notNull(),
+  renderedStoragePath: text('rendered_storage_path'),
+  annotationData: text('annotation_data').notNull().default('{"version":1,"strokes":[],"pins":[]}'),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const projectHarnessLimits = sqliteTable('project_harness_limits', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull(),
@@ -411,6 +426,7 @@ export type Project = typeof projects.$inferSelect;
 export type WikiPage = typeof wikiPages.$inferSelect;
 export type WikiTodoList = typeof wikiTodoLists.$inferSelect;
 export type WikiTodoItem = typeof wikiTodoItems.$inferSelect;
+export type WikiImage = typeof wikiImages.$inferSelect;
 export type ProjectHarnessLimit = typeof projectHarnessLimits.$inferSelect;
 export type ProjectChatThread = typeof projectChatThreads.$inferSelect;
 export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;

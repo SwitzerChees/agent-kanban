@@ -9,6 +9,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '../utils/wiki-editor';
 import { canonicalizeWikiReferences, filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision } from '../utils/wiki-references';
 import { createWikiTodoListExtension, filterWikiTodoItems, type WikiTodoItemRecord } from '../utils/wiki-todos';
+import { cloneWikiImageAnnotation, createWikiImageExtension, renderWikiImage, type WikiImageRecord } from '../utils/wiki-images';
 import { readFileSync } from 'node:fs';
 
 const WikiTestTable = Table.extend({
@@ -42,6 +43,9 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain(':items="filteredPageMentionItemsDe"');
     expect(component).toContain(':items="filteredPageMentionItemsEn"');
     expect(component).toContain("'[data-wiki-page-id]'");
+    expect(component).toContain('@paste.capture="handleWikiImagePaste"');
+    expect(component).toContain('@drop.capture="handleWikiImageDrop"');
+    expect(component).toContain('<WikiImageEditor');
   });
 
   test('canonicalizes unambiguous plain Wiki references without touching code or links', () => {
@@ -381,6 +385,64 @@ describe('wiki editor document extensions', () => {
     expect(filterWikiTodoItems(items, 'completed', now).map((item) => item.id)).toEqual(['recent', 'older', 'historic']);
     expect(filterWikiTodoItems(items, 'week', now).map((item) => item.id)).toEqual(['recent']);
     expect(filterWikiTodoItems(items, 'month', now).map((item) => item.id)).toEqual(['recent', 'older']);
+  });
+
+  test('round-trips stable Wiki image references and renders persisted pin comments', () => {
+    const image: WikiImageRecord = {
+      id: 'image-1',
+      pageId: 'page-1',
+      fileName: 'release.png',
+      mimeType: 'image/png',
+      size: 42,
+      url: '/api/wiki-images/image-1?v=2',
+      sourceUrl: '/api/wiki-images/image-1?variant=source&v=2',
+      createdAt: '2026-09-02T10:00:00.000Z',
+      updatedAt: '2026-09-02T10:01:00.000Z',
+      annotation: {
+        version: 1,
+        strokes: [],
+        pins: [{ id: 'pin-1', x: 0.25, y: 0.75, comment: 'Check this area' }],
+      },
+    };
+    const WikiImage = createWikiImageExtension({ getImage: (id) => id === image.id ? image : undefined, getLocale: () => 'en' });
+    const editor = new Editor({
+      extensions: [StarterKit, Markdown, WikiImage],
+      content: ':::wiki-image {id="image-1" alt="Release preview"} :::',
+      contentType: 'markdown',
+    });
+
+    expect(editor.getJSON().content?.[0]).toMatchObject({ type: 'wikiImage', attrs: { id: 'image-1', alt: 'Release preview' } });
+    expect(editor.getMarkdown()).toBe(':::wiki-image {#image-1 alt="Release preview"} :::');
+    const rendered = JSON.stringify(renderWikiImage(image, image.id, 'Release preview', 'en', {}));
+    expect(rendered).toContain('data-wiki-image-id');
+    expect(rendered).toContain('Check this area');
+    expect(rendered).toContain('left:25%;top:75%');
+    editor.destroy();
+  });
+
+  test('keeps image annotation edits immutable and renders missing images safely', () => {
+    const original = {
+      version: 1 as const,
+      strokes: [{ color: '#ef4444', width: 5, points: [{ x: 0.1, y: 0.2 }] }],
+      pins: [{ id: 'pin-1', x: 0.3, y: 0.4, comment: 'Original' }],
+    };
+    const cloned = cloneWikiImageAnnotation(original);
+    cloned.pins[0]!.comment = 'Changed';
+    cloned.strokes[0]!.points[0]!.x = 0.9;
+    expect(original.pins[0]!.comment).toBe('Original');
+    expect(original.strokes[0]!.points[0]!.x).toBe(0.1);
+
+    const MissingImage = createWikiImageExtension({ getImage: () => undefined, getLocale: () => 'en' });
+    const editor = new Editor({
+      extensions: [StarterKit, Markdown, MissingImage],
+      content: ':::wiki-image {#missing alt="Former image"} :::',
+      contentType: 'markdown',
+    });
+    const rendered = JSON.stringify(renderWikiImage(undefined, 'missing', 'Former image', 'en', {}));
+    expect(rendered).toContain('ak-wiki-image is-invalid');
+    expect(rendered).toContain('deleted or is no longer accessible');
+    expect(editor.getMarkdown()).toContain('#missing');
+    editor.destroy();
   });
 });
 
