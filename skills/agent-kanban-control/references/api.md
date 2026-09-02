@@ -49,6 +49,10 @@ Create a project with `name`, `key`, and `folderPath`. Optional fields are `desc
 | `PATCH` | `/api/wiki-pages/{pageId}` | Update title, Markdown content, parent, or raw position. |
 | `POST` | `/api/wiki-pages/{pageId}/move` | Atomically reorder or reparent a page by zero-based sibling position. |
 | `DELETE` | `/api/wiki-pages/{pageId}` | Delete a page only when it has no children. |
+| `GET` | `/api/projects/{projectId}/wiki/todo-lists` | List reusable TODO lists with their ordered items. |
+| `POST` | `/api/projects/{projectId}/wiki/todo-lists` | Create a project-local list with a case-insensitively unique `name`. |
+| `POST` | `/api/wiki-todo-lists/{listId}/items` | Append an item with `text`. |
+| `PATCH` | `/api/wiki-todo-items/{itemId}` | Update `text` and/or `completed`, optionally guarded by `expectedUpdatedAt`. |
 
 Create with `title`, optional `content`, and optional `parentId`. Update only requested fields and pass the latest `updatedAt` as `expectedUpdatedAt`; a concurrent edit returns `409 wiki_page_stale`. For structural changes prefer the move endpoint:
 
@@ -61,6 +65,8 @@ Create with `title`, optional `content`, and optional `parentId`. Update only re
 ```
 
 `position` is zero-based among the target parent's children. The move is cycle-safe and returns both the moved `page` and the normalized complete `pages` tree. Preserve Markdown tables and task lists. Stored member references have the form `[@ id="<user-id>" label="<fallback-name>"]`; stored task references use `[@ id="<task-id>" label="<KEY · fallback-title>" char="#"]`. IDs are stable and the UI resolves their current labels. Use this markup everywhere a person or task should be linked; raw `@Name`, `**Name:**`, `#KEY`, plain task keys, and Markdown links are not Wiki references. A linked checklist owner belongs on the same line, for example `- [ ] [@ id="<user-id>" label="<fallback-name>"]: Prepare the release`.
+
+Reusable TODO lists are referenced from page Markdown as `:::todo-list {#<list-uuid> label="<fallback-name>"} :::`. The page stores only this stable list ID; items remain project-level records so a change appears in every page reference. Read the collection before an item mutation, send that item's current `updatedAt` as `expectedUpdatedAt`, and re-read it afterward. A completion update controls `completedAt`, which supports all/open/completed and recent-completion filters in the Wiki UI.
 
 To generate tasks from a page, read that page and the board first, create each task with a unique stable `clientRequestId`, verify returned task keys, and update the source page only when explicitly requested.
 

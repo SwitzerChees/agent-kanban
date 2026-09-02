@@ -86,6 +86,56 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/projects/{projectId}/wiki/todo-lists:
+    get:
+      tags: [Wiki]
+      operationId: listWikiTodoLists
+      summary: List reusable TODO lists and their ordered items for a project
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [Wiki]
+      operationId: createWikiTodoList
+      summary: Create a uniquely named reusable TODO list
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiTodoListCreate' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-todo-lists/{listId}/items:
+    post:
+      tags: [Wiki]
+      operationId: addWikiTodoItem
+      summary: Append an item to a reusable TODO list
+      parameters: [{ $ref: '#/components/parameters/WikiTodoListId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiTodoItemCreate' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-todo-items/{itemId}:
+    patch:
+      tags: [Wiki]
+      operationId: updateWikiTodoItem
+      summary: Edit or complete an item in every reference of its reusable list
+      parameters: [{ $ref: '#/components/parameters/WikiTodoItemId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiTodoItemUpdate' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/wiki-pages/{pageId}:
     get:
       tags: [Wiki]
@@ -649,6 +699,8 @@ components:
   parameters:
     ProjectId: { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiPageId: { name: pageId, in: path, required: true, schema: { type: string, format: uuid } }
+    WikiTodoListId: { name: listId, in: path, required: true, schema: { type: string, format: uuid } }
+    WikiTodoItemId: { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiPageContext: { name: wikiPageId, in: query, required: false, schema: { type: string, format: uuid }, description: Bind chat selection and history to one Wiki page }
     ChatId: { name: chatId, in: path, required: true, schema: { type: string, format: uuid } }
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -703,6 +755,25 @@ components:
         parentId: { type: [string, 'null'], format: uuid, description: Parent page or null for the project Wiki root }
         position: { type: integer, minimum: 0, maximum: 500, description: Zero-based position among the target parent's children }
         expectedUpdatedAt: { type: string, format: date-time }
+    WikiTodoListCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+    WikiTodoItemCreate:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 500 }
+    WikiTodoItemUpdate:
+      type: object
+      properties:
+        text: { type: string, minLength: 1, maxLength: 500 }
+        completed: { type: boolean }
+        expectedUpdatedAt: { type: string, format: date-time, description: Reject the write with wiki_todo_item_stale if the item changed since it was read }
+      anyOf:
+        - required: [text]
+        - required: [completed]
     TaskCreate:
       type: object
       required: [title]

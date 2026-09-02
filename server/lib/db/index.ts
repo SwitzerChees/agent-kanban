@@ -81,6 +81,31 @@ export function ensureDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS wiki_todo_lists (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      name_key TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(project_id, name_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS wiki_todo_items (
+      id TEXT PRIMARY KEY,
+      list_id TEXT NOT NULL REFERENCES wiki_todo_lists(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      completed INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS project_harness_limits (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       harness TEXT NOT NULL,
@@ -406,6 +431,8 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_project_tags_project ON project_tags(project_id);
     CREATE INDEX IF NOT EXISTS idx_wiki_pages_project_parent
       ON wiki_pages(project_id, parent_id, position, created_at);
+    CREATE INDEX IF NOT EXISTS idx_wiki_todo_items_list
+      ON wiki_todo_items(list_id, position, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
     CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id);
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_task_user ON comment_mentions(task_id, user_id);

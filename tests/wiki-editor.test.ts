@@ -8,6 +8,7 @@ import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '../utils/wiki-editor';
 import { canonicalizeWikiReferences, resolveWikiReference, wikiReferenceRevision } from '../utils/wiki-references';
+import { createWikiTodoListExtension, filterWikiTodoItems, type WikiTodoItemRecord } from '../utils/wiki-todos';
 import { readFileSync } from 'node:fs';
 
 const WikiTestTable = Table.extend({
@@ -273,6 +274,53 @@ describe('wiki editor document extensions', () => {
     editor.destroy();
     roundTrip.destroy();
   });
+
+  test('round-trips reusable TODO list references without embedding mutable items', () => {
+    const TodoList = createWikiTodoListExtension({
+      getList: () => undefined,
+      getFilter: () => 'all',
+      getLocale: () => 'en',
+    });
+    const editor = new Editor({
+      extensions: [StarterKit, Markdown, TodoList],
+      content: ':::todo-list {id="list-1" label="Release checklist"} :::',
+      contentType: 'markdown',
+    });
+
+    expect(editor.getJSON().content?.[0]).toMatchObject({
+      type: 'wikiTodoList',
+      attrs: { id: 'list-1', label: 'Release checklist' },
+    });
+    const markdown = editor.getMarkdown();
+    expect(markdown).toBe(':::todo-list {#list-1 label="Release checklist"} :::');
+    const roundTrip = new Editor({
+      extensions: [StarterKit, Markdown, TodoList],
+      content: markdown,
+      contentType: 'markdown',
+    });
+    expect(roundTrip.getJSON().content?.[0]).toMatchObject({
+      type: 'wikiTodoList',
+      attrs: { id: 'list-1', label: 'Release checklist' },
+    });
+    editor.destroy();
+    roundTrip.destroy();
+  });
+
+  test('filters completed TODO items by state and completion window', () => {
+    const now = new Date('2026-09-02T12:00:00.000Z');
+    const items: WikiTodoItemRecord[] = [
+      todoItem('active', false, null),
+      todoItem('recent', true, '2026-08-31T12:00:00.000Z'),
+      todoItem('older', true, '2026-08-15T12:00:00.000Z'),
+      todoItem('historic', true, '2026-07-01T12:00:00.000Z'),
+    ];
+
+    expect(filterWikiTodoItems(items, 'all', now).map((item) => item.id)).toEqual(['active', 'recent', 'older', 'historic']);
+    expect(filterWikiTodoItems(items, 'active', now).map((item) => item.id)).toEqual(['active']);
+    expect(filterWikiTodoItems(items, 'completed', now).map((item) => item.id)).toEqual(['recent', 'older', 'historic']);
+    expect(filterWikiTodoItems(items, 'week', now).map((item) => item.id)).toEqual(['recent']);
+    expect(filterWikiTodoItems(items, 'month', now).map((item) => item.id)).toEqual(['recent', 'older']);
+  });
 });
 
 function createEditor(editorContent: string | Record<string, unknown> = content, contentType: 'markdown' | 'json' = 'markdown') {
@@ -290,4 +338,16 @@ function textPosition(editor: Editor, text: string) {
   });
   expect(position).toBeGreaterThanOrEqual(0);
   return position;
+}
+
+function todoItem(id: string, completed: boolean, completedAt: string | null): WikiTodoItemRecord {
+  return {
+    id,
+    listId: 'list-1',
+    text: id,
+    completed,
+    completedAt,
+    position: 0,
+    updatedAt: '2026-09-02T12:00:00.000Z',
+  };
 }

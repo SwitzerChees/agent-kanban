@@ -20,6 +20,10 @@ describe('external harness OpenAPI contract', () => {
     expect(document.paths['/api/wiki-pages/{pageId}']?.patch?.operationId).toBe('updateWikiPage');
     expect(document.paths['/api/wiki-pages/{pageId}']?.delete?.operationId).toBe('deleteWikiPage');
     expect(document.paths['/api/wiki-pages/{pageId}/move']?.post?.operationId).toBe('moveWikiPage');
+    expect(document.paths['/api/projects/{projectId}/wiki/todo-lists']?.get?.operationId).toBe('listWikiTodoLists');
+    expect(document.paths['/api/projects/{projectId}/wiki/todo-lists']?.post?.operationId).toBe('createWikiTodoList');
+    expect(document.paths['/api/wiki-todo-lists/{listId}/items']?.post?.operationId).toBe('addWikiTodoItem');
+    expect(document.paths['/api/wiki-todo-items/{itemId}']?.patch?.operationId).toBe('updateWikiTodoItem');
     expect(document.components.schemas.WikiPageWrite?.properties).toHaveProperty('expectedUpdatedAt');
     expect(document.paths['/api/tasks/{taskId}/agent/queue']?.post?.operationId).toBe('queueTaskAgent');
     expect(document.paths['/api/tasks/{taskId}/agent/cancel']?.post?.operationId).toBe('cancelTaskAgent');

@@ -6,6 +6,7 @@ import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/exte
 import type { DOMOutputSpec } from '@tiptap/pm/model';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '~/utils/wiki-editor';
 import { resolveWikiReference, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
+import { createWikiTodoListExtension, type WikiTodoFilter, type WikiTodoListRecord } from '~/utils/wiki-todos';
 
 type Locale = 'en' | 'de';
 type WikiTemplateId = 'blank' | 'meeting' | 'checklist';
@@ -133,6 +134,8 @@ const copy = computed(() => props.locale === 'de' ? {
   dropAfter: 'Danach einfügen',
   dropRoot: 'Auf oberster Ebene ablegen',
   stalePage: 'Die Seite wurde inzwischen geändert. Deine Änderung wurde nicht gespeichert; bitte lade die Seite neu und prüfe sie erneut.',
+  todoError: 'Die TODO-Liste konnte nicht aktualisiert werden.',
+  todoDuplicate: 'Eine TODO-Liste mit diesem Namen existiert bereits.',
 } : {
   board: 'Board',
   wiki: 'Wiki',
@@ -195,9 +198,13 @@ const copy = computed(() => props.locale === 'de' ? {
   dropAfter: 'Insert after',
   dropRoot: 'Drop at the top level',
   stalePage: 'This page changed in the meantime. Your change was not saved; reload the page and review it again.',
+  todoError: 'The TODO list could not be updated.',
+  todoDuplicate: 'A TODO list with this name already exists.',
 });
 
 const pages = ref<WikiPage[]>([]);
+const todoLists = ref<WikiTodoListRecord[]>([]);
+const todoFilters = reactive<Record<string, WikiTodoFilter>>({});
 const selectedPageId = ref<string | null>(null);
 const searchQuery = ref('');
 const loading = ref(true);
@@ -285,6 +292,12 @@ const AccessibleTable = Table.extend({
   },
 }).configure({ renderWrapper: true });
 
+const WikiTodoList = createWikiTodoListExtension({
+  getList: (id) => todoLists.value.find((list) => list.id === id),
+  getFilter: (id) => todoFilters[id] ?? 'all',
+  getLocale: () => props.locale,
+});
+
 const wikiEditorExtensions = [
   TaskList,
   TaskItem.configure({ nested: true }),
@@ -292,6 +305,7 @@ const wikiEditorExtensions = [
   TableRow,
   TableHeader,
   TableCell,
+  WikiTodoList,
 ];
 
 const userMentionItems = computed(() => props.members.map((member) => ({
@@ -309,6 +323,10 @@ const taskMentionItems = computed(() => props.tasks.map((task) => ({
 })));
 
 const referenceLabelVersion = computed(() => wikiReferenceRevision(props.members, props.tasks));
+const todoListRevision = computed(() => JSON.stringify([
+  todoLists.value.map((list) => [list.id, list.name, list.updatedAt, list.items.map((item) => [item.id, item.updatedAt])]),
+  todoFilters,
+]));
 
 const wikiMentionOptions = computed(() => ({
   HTMLAttributes: { class: 'ak-wiki-reference' },
@@ -402,8 +420,12 @@ async function loadPages() {
   errorMessage.value = null;
   editing.value = false;
   try {
-    const response = await $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`);
+    const [response, todoResponse] = await Promise.all([
+      $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`),
+      $fetch<{ lists: WikiTodoListRecord[] }>(`/api/projects/${props.project.id}/wiki/todo-lists`),
+    ]);
     pages.value = response.pages;
+    todoLists.value = todoResponse.lists;
     const routeMatch = import.meta.client
       ? window.location.hash.match(/^#wiki\/([^/]+)\/([^/]+)$/)
       : null;
@@ -478,8 +500,12 @@ async function savePage() {
 async function refreshPages() {
   if (editing.value && dirty.value) return;
   try {
-    const response = await $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`);
+    const [response, todoResponse] = await Promise.all([
+      $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`),
+      $fetch<{ lists: WikiTodoListRecord[] }>(`/api/projects/${props.project.id}/wiki/todo-lists`),
+    ]);
     pages.value = response.pages;
+    todoLists.value = todoResponse.lists;
     selectedPageId.value = pages.value.some((page) => page.id === selectedPageId.value)
       ? selectedPageId.value
       : pages.value[0]?.id ?? null;
@@ -606,6 +632,97 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 function referenceText(attrs: WikiReferenceAttributes) {
   const reference = resolveWikiReference(attrs, props.members, props.tasks);
   return `${reference.char}${reference.label}`;
+}
+
+async function createWikiTodoList(payload: { name: string; editor: { chain: () => any } }) {
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ list: WikiTodoListRecord }>(`/api/projects/${props.project.id}/wiki/todo-lists`, {
+      method: 'POST',
+      body: { name: payload.name },
+    });
+    todoLists.value.push(response.list);
+    payload.editor.chain().focus().insertContent([
+      { type: 'wikiTodoList', attrs: { id: response.list.id, label: response.list.name } },
+      { type: 'paragraph' },
+    ]).run();
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  }
+}
+
+async function handleWikiTodoClick(event: Event) {
+  const element = event.target instanceof Element ? event.target : null;
+  const filterButton = element?.closest<HTMLElement>('[data-wiki-todo-filter]');
+  const filterListId = filterButton?.dataset.wikiTodoListId;
+  const filter = filterButton?.dataset.wikiTodoFilter as WikiTodoFilter | undefined;
+  if (filterListId && filter) {
+    event.preventDefault();
+    todoFilters[filterListId] = filter;
+    return;
+  }
+
+  const checkbox = element?.closest<HTMLInputElement>('input[data-wiki-todo-item-id]');
+  const itemId = checkbox?.dataset.wikiTodoItemId;
+  if (!checkbox || !itemId) return;
+  const current = todoLists.value.flatMap((list) => list.items).find((item) => item.id === itemId);
+  if (!current) return;
+  try {
+    const response = await $fetch<{ item: WikiTodoListRecord['items'][number] }>(`/api/wiki-todo-items/${itemId}`, {
+      method: 'PATCH',
+      body: { completed: checkbox.checked, expectedUpdatedAt: current.updatedAt },
+    });
+    todoLists.value = todoLists.value.map((list) => list.id !== current.listId ? list : {
+      ...list,
+      updatedAt: response.item.updatedAt,
+      items: list.items.map((item) => item.id === itemId ? response.item : item),
+    });
+  } catch (error) {
+    checkbox.checked = current.completed;
+    errorMessage.value = humanError(error);
+    await refreshTodoLists();
+  }
+}
+
+async function handleWikiTodoSubmit(event: Event) {
+  const form = event.target instanceof HTMLFormElement && event.target.matches('[data-wiki-todo-add-form]')
+    ? event.target
+    : null;
+  const listId = form?.dataset.wikiTodoAddForm;
+  const input = form?.elements.namedItem('text');
+  if (!form || !listId || !(input instanceof HTMLInputElement) || !input.value.trim()) return;
+  event.preventDefault();
+  const text = input.value.trim();
+  input.disabled = true;
+  try {
+    const response = await $fetch<{ item: WikiTodoListRecord['items'][number] }>(`/api/wiki-todo-lists/${listId}/items`, {
+      method: 'POST',
+      body: { text },
+    });
+    todoLists.value = todoLists.value.map((list) => list.id !== listId ? list : {
+      ...list,
+      updatedAt: response.item.updatedAt,
+      items: [...list.items, response.item],
+    });
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    input.disabled = false;
+    input.value = text;
+  }
+}
+
+async function refreshTodoLists() {
+  try {
+    const response = await $fetch<{ lists: WikiTodoListRecord[] }>(`/api/projects/${props.project.id}/wiki/todo-lists`);
+    todoLists.value = response.lists;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  }
+}
+
+function handleWikiContentClick(event: Event) {
+  activateTaskReference(event);
+  void handleWikiTodoClick(event);
 }
 
 function activateTaskReference(event: Event) {
@@ -745,6 +862,8 @@ function humanError(error: unknown) {
   const code = details.data?.statusMessage ?? details.statusMessage ?? details.message ?? '';
   if (code.includes('wiki_page_not_empty')) return copy.value.childDeleteError;
   if (code.includes('wiki_page_stale')) return copy.value.stalePage;
+  if (code.includes('wiki_todo_list_name_exists')) return copy.value.todoDuplicate;
+  if (code.includes('wiki_todo')) return copy.value.todoError;
   return copy.value.genericError;
 }
 </script>
@@ -898,21 +1017,21 @@ function humanError(error: unknown) {
             <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ updatedInitials }}</span><span>{{ copy.editedBy }} {{ selectedPage.updatedByName ?? '—' }}</span><span aria-hidden="true">·</span><time :datetime="selectedPage.updatedAt">{{ updatedLabel }}</time><span v-if="editing" class="ml-auto hidden items-center gap-1.5 text-teal-700 sm:inline-flex dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span></div>
           </header>
 
-          <div v-if="editing" class="ak-wiki-editor mt-6 rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950">
-            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+          <div v-if="editing" class="ak-wiki-editor mt-6 rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit">
+            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
               <div class="ak-wiki-editor-toolbar sticky top-12 z-[5] flex min-w-0 items-center border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0">
                 <div class="min-w-0 flex-1 overflow-x-auto">
                   <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="w-max" />
                 </div>
-                <WikiEditorTools :editor="editor" :locale="props.locale" />
+                <WikiEditorTools :editor="editor" :locale="props.locale" :todo-lists="todoLists" @create-todo-list="createWikiTodoList" />
               </div>
               <UEditorMentionMenu :editor="editor" :items="userMentionItems" :filter-fields="['label', 'description']" char="@" plugin-key="wiki-user-mentions" :limit="8" />
               <UEditorMentionMenu :editor="editor" :items="taskMentionItems" :filter-fields="['label', 'description']" char="#" plugin-key="wiki-task-links" :limit="8" />
             </UEditor>
             <p class="border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7">{{ copy.referencesHint }}</p>
           </div>
-          <div v-else-if="selectedPage.content" @click="activateTaskReference" @keydown.enter="activateTaskReference" @keydown.space.prevent="activateTaskReference">
-            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+          <div v-else-if="selectedPage.content" @click="handleWikiContentClick" @submit.prevent="handleWikiTodoSubmit" @keydown.enter="activateTaskReference" @keydown.space.prevent="activateTaskReference">
+            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${todoListRevision}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
           </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
         </article>
@@ -1007,6 +1126,186 @@ function humanError(error: unknown) {
   color: rgb(13 148 136);
   text-decoration: underline;
   text-underline-offset: 0.2em;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo),
+.ak-wiki-rendered :deep(.ak-wiki-todo) {
+  width: 100%;
+  margin-block: 1.5rem;
+  overflow: hidden;
+  border: 1px solid rgb(212 212 216);
+  border-radius: 0.75rem;
+  background: rgb(250 250 250 / 0.7);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > header),
+.ak-wiki-rendered :deep(.ak-wiki-todo > header) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.875rem;
+  border-bottom: 1px solid rgb(228 228 231);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > header > div:first-child),
+.ak-wiki-rendered :deep(.ak-wiki-todo > header > div:first-child) {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > header strong),
+.ak-wiki-rendered :deep(.ak-wiki-todo > header strong) {
+  color: rgb(24 24 27);
+  font-size: 0.875rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > header span),
+.ak-wiki-rendered :deep(.ak-wiki-todo > header span),
+.ak-wiki-editor :deep(.ak-wiki-todo time),
+.ak-wiki-rendered :deep(.ak-wiki-todo time) {
+  color: rgb(113 113 122);
+  font-size: 0.6875rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo-filters),
+.ak-wiki-rendered :deep(.ak-wiki-todo-filters) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo button),
+.ak-wiki-rendered :deep(.ak-wiki-todo button) {
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  color: rgb(82 82 91);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 1rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo button:hover),
+.ak-wiki-rendered :deep(.ak-wiki-todo button:hover),
+.ak-wiki-editor :deep(.ak-wiki-todo button.is-active),
+.ak-wiki-rendered :deep(.ak-wiki-todo button.is-active) {
+  background: rgb(204 251 241);
+  color: rgb(15 118 110);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > ul),
+.ak-wiki-rendered :deep(.ak-wiki-todo > ul) {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > ul > li),
+.ak-wiki-rendered :deep(.ak-wiki-todo > ul > li) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0.625rem 0.875rem;
+  border-bottom: 1px solid rgb(244 244 245);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > ul > li::before),
+.ak-wiki-rendered :deep(.ak-wiki-todo > ul > li::before) {
+  display: none;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > ul > li.is-completed > span),
+.ak-wiki-rendered :deep(.ak-wiki-todo > ul > li.is-completed > span) {
+  color: rgb(113 113 122);
+  text-decoration: line-through;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > ul > li.is-empty),
+.ak-wiki-rendered :deep(.ak-wiki-todo > ul > li.is-empty) {
+  display: block;
+  color: rgb(113 113 122);
+  font-size: 0.8125rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo input[type='checkbox']),
+.ak-wiki-rendered :deep(.ak-wiki-todo input[type='checkbox']) {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.35rem;
+  accent-color: rgb(13 148 136);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > form),
+.ak-wiki-rendered :deep(.ak-wiki-todo > form) {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > form input),
+.ak-wiki-rendered :deep(.ak-wiki-todo > form input) {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid rgb(212 212 216);
+  border-radius: 0.5rem;
+  background: white;
+  padding: 0.375rem 0.625rem;
+  color: rgb(39 39 42);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo > form button),
+.ak-wiki-rendered :deep(.ak-wiki-todo > form button) {
+  background: rgb(13 148 136);
+  color: white;
+  padding-inline: 0.75rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-todo.is-invalid),
+.ak-wiki-rendered :deep(.ak-wiki-todo.is-invalid) {
+  border-style: dashed;
+  padding: 0.875rem;
+  color: rgb(113 113 122);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo) {
+  border-color: rgb(63 63 70);
+  background: rgb(24 24 27 / 0.6);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo > header),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo > header),
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo > ul > li),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo > ul > li) {
+  border-color: rgb(63 63 70);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo > header strong),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo > header strong) {
+  color: rgb(244 244 245);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo button:hover),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo button:hover),
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo button.is-active),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo button.is-active) {
+  background: rgb(19 78 74);
+  color: rgb(153 246 228);
+}
+
+:global(.dark) .ak-wiki-editor :deep(.ak-wiki-todo > form input),
+:global(.dark) .ak-wiki-rendered :deep(.ak-wiki-todo > form input) {
+  border-color: rgb(82 82 91);
+  background: rgb(24 24 27);
+  color: rgb(244 244 245);
 }
 
 .ak-wiki-editor :deep(.tableWrapper),

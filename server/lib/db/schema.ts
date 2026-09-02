@@ -55,6 +55,32 @@ export const wikiPages = sqliteTable('wiki_pages', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const wikiTodoLists = sqliteTable('wiki_todo_lists', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  nameKey: text('name_key').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  uniqueIndex('idx_wiki_todo_lists_project_name').on(table.projectId, table.nameKey),
+]);
+
+export const wikiTodoItems = sqliteTable('wiki_todo_items', {
+  id: text('id').primaryKey(),
+  listId: text('list_id').notNull().references(() => wikiTodoLists.id, { onDelete: 'cascade' }),
+  text: text('text').notNull(),
+  completed: integer('completed', { mode: 'boolean' }).notNull().default(false),
+  completedAt: text('completed_at'),
+  position: integer('position').notNull().default(0),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
 export const projectHarnessLimits = sqliteTable('project_harness_limits', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull(),
@@ -383,6 +409,8 @@ export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type WikiPage = typeof wikiPages.$inferSelect;
+export type WikiTodoList = typeof wikiTodoLists.$inferSelect;
+export type WikiTodoItem = typeof wikiTodoItems.$inferSelect;
 export type ProjectHarnessLimit = typeof projectHarnessLimits.$inferSelect;
 export type ProjectChatThread = typeof projectChatThreads.$inferSelect;
 export type ProjectChatMessage = typeof projectChatMessages.$inferSelect;
