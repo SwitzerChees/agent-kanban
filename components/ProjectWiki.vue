@@ -992,6 +992,11 @@ function humanError(error: unknown) {
   padding-inline: 0 !important;
 }
 
+.ak-wiki-rendered {
+  width: 100%;
+  max-width: none;
+}
+
 .ak-wiki-rendered :deep(h1),
 .ak-wiki-rendered :deep(h2),
 .ak-wiki-rendered :deep(h3) {
@@ -1006,6 +1011,8 @@ function humanError(error: unknown) {
 
 .ak-wiki-editor :deep(.tableWrapper),
 .ak-wiki-rendered :deep(.tableWrapper) {
+  width: 100%;
+  max-width: 100%;
   margin-block: 1.5rem;
   overflow-x: auto;
   border-radius: 0.75rem;
