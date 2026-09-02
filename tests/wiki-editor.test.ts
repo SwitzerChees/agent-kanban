@@ -371,6 +371,27 @@ describe('wiki editor document extensions', () => {
     roundTrip.destroy();
   });
 
+  test('parses reusable TODO list UUIDs that begin with a digit', () => {
+    const TodoList = createWikiTodoListExtension({
+      getList: () => undefined,
+      getFilter: () => 'all',
+      getLocale: () => 'en',
+    });
+    const listId = '12c8ea75-c2ba-4931-ad01-98eb2afc76bc';
+    const editor = new Editor({
+      extensions: [StarterKit, Markdown, TodoList],
+      content: `:::todo-list {#${listId} label="Numeric UUID"} :::`,
+      contentType: 'markdown',
+    });
+
+    expect(editor.getJSON().content?.[0]).toMatchObject({
+      type: 'wikiTodoList',
+      attrs: { id: listId, label: 'Numeric UUID' },
+    });
+    expect(editor.getMarkdown()).toBe(`:::todo-list {#${listId} label="Numeric UUID"} :::`);
+    editor.destroy();
+  });
+
   test('filters completed TODO items by state and completion window', () => {
     const now = new Date('2026-09-02T12:00:00.000Z');
     const items: WikiTodoItemRecord[] = [

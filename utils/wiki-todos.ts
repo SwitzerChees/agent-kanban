@@ -1,5 +1,6 @@
 import { Node, createAtomBlockMarkdownSpec, mergeAttributes } from '@tiptap/core';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
+import { parseWikiAtomBlockAttributes } from './wiki-atom-block';
 
 export type WikiTodoFilter = 'all' | 'active' | 'completed' | 'week' | 'month';
 
@@ -32,6 +33,7 @@ const markdownSpec = createAtomBlockMarkdownSpec({
   name: 'todo-list',
   requiredAttributes: ['id'],
   allowedAttributes: ['id', 'label'],
+  parseAttributes: parseWikiAtomBlockAttributes,
 });
 
 export function createWikiTodoListExtension(options: WikiTodoExtensionOptions) {
