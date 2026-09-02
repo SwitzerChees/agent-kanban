@@ -5,6 +5,7 @@ import TaskList from '@tiptap/extension-task-list';
 import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '~/utils/wiki-editor';
+import { captureWikiScrollAnchor, normalizeWikiAnchorText, replaceCurrentWikiPage, restoredWikiScrollTop, type WikiScrollCandidate } from '~/utils/wiki-live-refresh';
 import { filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
 import { createWikiTodoListExtension, type WikiTodoFilter, type WikiTodoListRecord } from '~/utils/wiki-todos';
 
@@ -226,6 +227,12 @@ const draftTitle = ref('');
 const draftContent = ref('');
 const draggedPageId = ref<string | null>(null);
 const dropTarget = ref<{ pageId: string | null; placement: WikiDropPlacement | 'root' } | null>(null);
+const wikiDocument = ref<HTMLElement | null>(null);
+
+const WIKI_READ_REFRESH_INTERVAL_MS = 5_000;
+let wikiPollTimer: ReturnType<typeof setTimeout> | null = null;
+let wikiPollController: AbortController | null = null;
+let wikiPollGeneration = 0;
 
 const templates = computed(() => [{
   id: 'blank' as const,
@@ -420,18 +427,102 @@ watch(selectedPage, (page) => {
   emit('pageChange', page ? { id: page.id, title: page.title } : null);
 }, { immediate: true });
 
-watch(() => props.project.id, () => void loadPages());
+watch(() => props.project.id, () => {
+  stopWikiPolling();
+  void loadPages();
+});
+
+watch([selectedPageId, editing, loading], () => restartWikiPolling(), { flush: 'post' });
 
 onMounted(() => {
   void loadPages();
   window.addEventListener('keydown', handleSaveShortcut);
   window.addEventListener('beforeunload', handleBeforeUnload);
+  document.addEventListener('visibilitychange', restartWikiPolling);
 });
 
 onBeforeUnmount(() => {
+  stopWikiPolling();
   window.removeEventListener('keydown', handleSaveShortcut);
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  document.removeEventListener('visibilitychange', restartWikiPolling);
 });
+
+function restartWikiPolling() {
+  stopWikiPolling();
+  if (!import.meta.client || loading.value || editing.value || !selectedPageId.value || document.hidden) return;
+  scheduleWikiPoll(selectedPageId.value, wikiPollGeneration);
+}
+
+function stopWikiPolling() {
+  wikiPollGeneration += 1;
+  if (wikiPollTimer) clearTimeout(wikiPollTimer);
+  wikiPollTimer = null;
+  wikiPollController?.abort();
+  wikiPollController = null;
+}
+
+function scheduleWikiPoll(pageId: string, generation: number) {
+  wikiPollTimer = setTimeout(() => {
+    wikiPollTimer = null;
+    void pollWikiPage(pageId, generation);
+  }, WIKI_READ_REFRESH_INTERVAL_MS);
+}
+
+async function pollWikiPage(pageId: string, generation: number) {
+  if (generation !== wikiPollGeneration || editing.value || selectedPageId.value !== pageId) return;
+  const controller = new AbortController();
+  wikiPollController = controller;
+  try {
+    const response = await $fetch<{ page: WikiPage }>(`/api/wiki-pages/${pageId}`, { signal: controller.signal });
+    if (generation !== wikiPollGeneration || editing.value || selectedPageId.value !== pageId) return;
+    const nextPages = replaceCurrentWikiPage(pages.value, pageId, response.page);
+    if (nextPages !== pages.value) {
+      const anchor = captureRenderedScrollAnchor();
+      pages.value = [...nextPages];
+      await nextTick();
+      await nextBrowserPaint();
+      restoreRenderedScrollAnchor(anchor);
+    }
+  } catch {
+    // Polling is best-effort. Keep the current document stable during transient failures and aborts.
+  } finally {
+    if (wikiPollController === controller) wikiPollController = null;
+    if (generation === wikiPollGeneration && !editing.value && selectedPageId.value === pageId && !document.hidden) {
+      scheduleWikiPoll(pageId, generation);
+    }
+  }
+}
+
+function captureRenderedScrollAnchor() {
+  const container = wikiDocument.value;
+  if (!container) return null;
+  return captureWikiScrollAnchor(renderedScrollCandidates(container), container.clientHeight, container.scrollTop);
+}
+
+function restoreRenderedScrollAnchor(anchor: ReturnType<typeof captureWikiScrollAnchor>) {
+  const container = wikiDocument.value;
+  if (!container || !anchor) return;
+  container.scrollTop = restoredWikiScrollTop(anchor, renderedScrollCandidates(container), container.scrollTop);
+}
+
+function renderedScrollCandidates(container: HTMLElement): WikiScrollCandidate[] {
+  const containerTop = container.getBoundingClientRect().top;
+  return [...container.querySelectorAll<HTMLElement>('.ak-wiki-rendered h1, .ak-wiki-rendered h2, .ak-wiki-rendered h3, .ak-wiki-rendered h4, .ak-wiki-rendered p, .ak-wiki-rendered li, .ak-wiki-rendered tr, .ak-wiki-rendered blockquote, .ak-wiki-rendered pre')]
+    .map((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        tag: element.tagName.toLocaleLowerCase(),
+        text: normalizeWikiAnchorText(element.textContent),
+        top: bounds.top - containerTop,
+        bottom: bounds.bottom - containerTop,
+      };
+    });
+}
+
+function nextBrowserPaint() {
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+}
 
 async function loadPages() {
   loading.value = true;
@@ -1019,7 +1110,7 @@ function humanError(error: unknown) {
         </nav>
       </aside>
 
-      <div class="ak-wiki-document min-w-0 flex-1 overflow-y-auto bg-white dark:bg-zinc-950">
+      <div ref="wikiDocument" class="ak-wiki-document min-w-0 flex-1 overflow-y-auto bg-white dark:bg-zinc-950">
         <div class="ak-wiki-mobile-context sticky top-0 z-10 flex items-center gap-2 border-b border-zinc-200 bg-white/95 px-3 py-2 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden">
           <UPopover v-model:open="mobilePagesOpen" :content="{ align: 'start', side: 'bottom' }">
             <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-list-tree" aria-controls="wiki-mobile-pages-menu"><span class="max-w-44 truncate">{{ selectedPage?.title ?? copy.pages }}</span></UButton>
