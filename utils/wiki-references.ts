@@ -157,10 +157,10 @@ export function canonicalizeWikiReferences(
     return segments
       .map((segment, index) => {
         if (index % 2) return segment;
-        const normalized = canonicalizeWikiTextSegment(segment, memberAliases, taskKeys);
-        return segments[index + 1]?.startsWith('[@')
-          ? normalizeTrailingBoldWhitespace(normalized)
-          : normalized;
+        let normalized = canonicalizeWikiTextSegment(segment, memberAliases, taskKeys);
+        if (segments[index - 1]?.startsWith('[@')) normalized = normalizeBoldAfterWikiReference(normalized);
+        if (segments[index + 1]?.startsWith('[@')) normalized = normalizeTrailingBoldWhitespace(normalized);
+        return normalized;
       })
       .join('');
   }).join('\n');
@@ -240,6 +240,12 @@ function normalizeBoldBeforeWikiReference(value: string) {
 
 function normalizeTrailingBoldWhitespace(value: string) {
   return value.replace(/\*\*([^*\r\n]*?\S)[ \t]+\*\*[ \t]*$/, '**$1** ');
+}
+
+function normalizeBoldAfterWikiReference(value: string) {
+  if (/^\*\*[ \t]+\*\*/.test(value)) return value.replace(/^\*\*[ \t]+\*\*/, ' ');
+  if (!value.startsWith('**')) return value;
+  return ` ${value.replace(/^\*\*[ \t]+/, '**')}`;
 }
 
 function userReference(member: WikiReferenceMember) {

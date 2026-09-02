@@ -75,6 +75,8 @@ describe('wiki editor document extensions', () => {
     const markdown = [
       '**TODO: **[@ id="user-1" label="Alice"] Termine klären',
       '**Review ** [@ id="task-42" label="MATE-42 · Press release" char="#"]',
+      '[@ id="user-1" label="Alice"]** Follow up**',
+      '[@ id="user-1" label="Alice"]** **[@ id="task-42" label="MATE-42 · Press release" char="#"]**Review**',
       '`**Literal: **[@ id="user-1" label="Alice"]` stays code',
       '**Unrelated: ** plain text stays unchanged',
     ].join('\n');
@@ -83,6 +85,8 @@ describe('wiki editor document extensions', () => {
 
     expect(normalized).toContain('**TODO:** [@ id="user-1" label="Alice"] Termine klären');
     expect(normalized).toContain('**Review** [@ id="task-42" label="MATE-42 · Press release" char="#"]');
+    expect(normalized).toContain('[@ id="user-1" label="Alice"] **Follow up**');
+    expect(normalized).toContain('[@ id="user-1" label="Alice"] [@ id="task-42" label="MATE-42 · Press release" char="#"] **Review**');
     expect(normalized).toContain('`**Literal: **[@ id="user-1" label="Alice"]` stays code');
     expect(normalized).toContain('**Unrelated: ** plain text stays unchanged');
 
