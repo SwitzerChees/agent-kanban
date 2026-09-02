@@ -113,6 +113,27 @@ describe('agent harness runtime contracts', () => {
       .toBe('Continue it.');
   });
 
+  test('does not leak the Agent Kanban process environment into project smoke commands', () => {
+    process.env.KANBAN_TEST_SECRET = 'must-not-leak';
+    const runner = buildTaskHarnessRunner({
+      unitName: 'agent-kanban-e2e-test-runtime',
+      executable: '/bin/bash',
+      args: ['-lc', 'true'],
+      workspacePath: '/tmp/project',
+      sessionRoot: '/tmp/e2e-runtime',
+      harness: 'codex',
+      workspaceWritable: false,
+      inheritProcessEnv: false,
+      protectAgentCredentials: true,
+      isolatedHome: true,
+    });
+    expect(runner.env.KANBAN_TEST_SECRET).toBeUndefined();
+    expect(runner.env.PATH).toBeTruthy();
+    expect(runner.env.CODEX_HOME).toBe('/tmp/e2e-runtime/codex-home');
+    expect(runner.env.HOME).toBe('/tmp/e2e-runtime/home');
+    delete process.env.KANBAN_TEST_SECRET;
+  });
+
   test('surfaces Prime context compaction without exposing its payload', () => {
     expect(primeRuntimeProgress({ type: 'compaction_start', reason: 'threshold', private: 'hidden' }))
       .toEqual({
@@ -297,6 +318,11 @@ describe('agent harness runtime contracts', () => {
     expect(first.command).toBe('sudo');
     expect(first.unitName).toBe('agent-kanban-task-task1-run1-0-a');
     expect(first.browserSession).toBe(nextTurn.browserSession);
+    expect(buildTaskHarnessRunner({
+      ...common,
+      sessionRoot: '/tmp/agent-kanban-sessions/6151e3f2-e989-4c63-b506-9c6173e0f881',
+      unitName: 'agent-kanban-task-task1-run1-0-c',
+    }).browserSession).toBe('task-9c6173e0f881');
     expect(first.env.PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR)
       .toBe('/tmp/agent-kanban-sessions/run-123/prime-supervisor');
     expect(first.args).toEqual(expect.arrayContaining([
@@ -309,6 +335,7 @@ describe('agent harness runtime contracts', () => {
       '--property=NoNewPrivileges=yes',
       '--setenv=PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR=/tmp/agent-kanban-sessions/run-123/prime-supervisor',
       '--setenv=AGENT_BROWSER_SESSION=task-run-123',
+      '--setenv=AGENT_BROWSER_NAMESPACE=task-run-123',
       '--',
       '/usr/bin/example-agent',
       'run',

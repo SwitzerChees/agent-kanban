@@ -9,6 +9,7 @@ import { hashPassword } from './security/password';
 import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSource } from './task-description';
 import type { User } from './db/schema';
 import { AGENT_HARNESSES, type AgentHarness, type ReasoningEffort } from './agent-harness';
+import { queueE2eForTaskTransition } from './e2e-tests';
 
 const DEFAULT_COLUMNS = [
   { key: 'backlog', nameEn: 'Backlog', nameDe: 'Backlog', position: 0, done: false },
@@ -26,6 +27,7 @@ export async function createProject(input: {
   userIds?: string[];
   tags?: string[];
   agentConcurrencyLimit?: number;
+  e2eConcurrencyLimit?: number;
   agentHarnessLimits?: Partial<Record<AgentHarness, number>>;
 }, admin: User) {
   const now = new Date().toISOString();
@@ -43,6 +45,7 @@ export async function createProject(input: {
       description: input.description?.trim() || null,
       folderPath,
       agentConcurrencyLimit: concurrencyLimit(input.agentConcurrencyLimit, 1),
+      e2eConcurrencyLimit: concurrencyLimit(input.e2eConcurrencyLimit, 2),
       createdBy: admin.id,
       createdAt: now,
       updatedAt: now,
@@ -134,6 +137,7 @@ export async function updateProject(projectId: string, input: {
   userIds?: string[];
   tags?: string[];
   agentConcurrencyLimit?: number;
+  e2eConcurrencyLimit?: number;
   agentHarnessLimits?: Partial<Record<AgentHarness, number>>;
 }, admin: User) {
   getProject(projectId, admin);
@@ -146,6 +150,9 @@ export async function updateProject(projectId: string, input: {
   if (input.description !== undefined) updates.description = input.description?.trim() || null;
   if (input.agentConcurrencyLimit !== undefined) {
     updates.agentConcurrencyLimit = concurrencyLimit(input.agentConcurrencyLimit, 1);
+  }
+  if (input.e2eConcurrencyLimit !== undefined) {
+    updates.e2eConcurrencyLimit = concurrencyLimit(input.e2eConcurrencyLimit, 2);
   }
   if (input.folderPath !== undefined) {
     const folderPath = path.resolve(input.folderPath);
@@ -1073,6 +1080,9 @@ export async function updateTask(taskId: string, input: {
   });
   if (nextAgentStatus === 'queued' && task.agentStatus !== 'queued') {
     logTaskActivity(task.projectId, taskId, user.id, 'codex_queued', { reason: 'moved_to_todo' });
+  }
+  if (updated && input.columnId !== undefined && currentColumn.id !== targetColumn.id) {
+    queueE2eForTaskTransition(updated, targetColumn.key, user.id);
   }
   if (!currentColumn.done && targetColumn.done && task.agentStatus === 'waiting_external') {
     const now = new Date().toISOString();

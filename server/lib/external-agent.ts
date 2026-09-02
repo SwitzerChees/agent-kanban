@@ -60,6 +60,7 @@ interface RunExternalAgentSessionOptions {
   nativeSessionId?: string | null;
   onSession?: (nativeSessionId: string) => void;
   runtime?: Omit<TaskHarnessRuntimeOptions, 'unitName'> & { unitNamePrefix: string };
+  skipImplementationGate?: boolean;
 }
 
 export interface RunExternalRefinementOptions {
@@ -125,7 +126,7 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
     const refreshedIssue = await options.refreshIssue();
     if (refreshedIssue) currentIssue = refreshedIssue;
     const completionCheck = await options.completionCheck?.(currentIssue);
-    const implementationCheck = options.harness === 'prime-agent'
+    const implementationCheck = options.harness === 'prime-agent' && !options.skipImplementationGate
       ? await checkPrimeTaskReady(options.workspacePath, options.signal)
       : null;
     const mergedPullRequestAlreadyProvesCommit = completionCheck?.ok === true
@@ -297,6 +298,10 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
       workspacePath: options.workspacePath,
       sessionRoot: options.sessionRoot,
       harness: options.harness,
+      extraEnv: options.runtime.extraEnv,
+      workspaceWritable: options.runtime.workspaceWritable,
+      isolatedHome: options.runtime.isolatedHome,
+      protectAgentCredentials: options.runtime.protectAgentCredentials,
     });
     options.runtime.onUnit?.(runner.unitName, runner.browserSession);
   }

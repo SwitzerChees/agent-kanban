@@ -13,6 +13,7 @@ security:
 tags:
   - name: Projects
   - name: Wiki
+  - name: E2E tests
   - name: Project chat
   - name: Hierarchy
   - name: Tasks
@@ -61,6 +62,79 @@ paths:
       operationId: getBoard
       summary: Get the board, columns, hierarchy, members, tags, and tasks
       parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/projects/{projectId}/e2e:
+    get:
+      tags: [E2E tests]
+      operationId: getProjectE2eCatalog
+      summary: Get the project's central E2E suites, cases, assets, and recent runs
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/projects/{projectId}/e2e/dispatch:
+    post:
+      tags: [E2E tests]
+      operationId: dispatchProjectE2eTests
+      summary: Queue a suite or selected E2E cases from a deployment or CI system
+      description: |
+        The E2E definitions and run history live in Agent Kanban while each
+        case runs either through Agent Kanban's role-aware browser harness or
+        through an existing smoke-test command in the configured project folder.
+        Send the deployed commit, image tag, or other immutable release identifier
+        as targetRevision. Active cases are not queued twice.
+      parameters: [{ $ref: '#/components/parameters/ProjectId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/E2eDispatch' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/e2e-suites/{suiteId}/runs:
+    post:
+      tags: [E2E tests]
+      operationId: runE2eSuite
+      summary: Manually queue all enabled cases in an E2E suite
+      parameters: [{ $ref: '#/components/parameters/E2eSuiteId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/E2eManualRun' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/e2e-cases/{caseId}/runs:
+    post:
+      tags: [E2E tests]
+      operationId: runE2eCase
+      summary: Manually queue one enabled E2E case
+      parameters: [{ $ref: '#/components/parameters/E2eCaseId' }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/E2eManualRun' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/e2e-runs/{runId}:
+    get:
+      tags: [E2E tests]
+      operationId: getE2eRun
+      summary: Get an E2E run including its immutable case snapshot and output
+      parameters: [{ $ref: '#/components/parameters/E2eRunId' }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/e2e-runs/{runId}/cancel:
+    post:
+      tags: [E2E tests]
+      operationId: cancelE2eRun
+      summary: Cancel a queued or running E2E run
+      parameters: [{ $ref: '#/components/parameters/E2eRunId' }]
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
@@ -771,6 +845,9 @@ components:
       name: ak_session
   parameters:
     ProjectId: { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+    E2eSuiteId: { name: suiteId, in: path, required: true, schema: { type: string, format: uuid } }
+    E2eCaseId: { name: caseId, in: path, required: true, schema: { type: string, format: uuid } }
+    E2eRunId: { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiPageId: { name: pageId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiTodoListId: { name: listId, in: path, required: true, schema: { type: string, format: uuid } }
     WikiTodoItemId: { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -807,6 +884,7 @@ components:
         userIds: { type: array, items: { type: string, format: uuid } }
         tags: { type: array, items: { type: string } }
         agentConcurrencyLimit: { type: integer, minimum: 0, maximum: 100, default: 1 }
+        e2eConcurrencyLimit: { type: integer, minimum: 0, maximum: 100, default: 2 }
         agentHarnessLimits:
           type: object
           required: [codex, opencode, prime-agent]
@@ -814,6 +892,22 @@ components:
             codex: { type: integer, minimum: 0, maximum: 100, default: 1 }
             opencode: { type: integer, minimum: 0, maximum: 100, default: 1 }
             prime-agent: { type: integer, minimum: 0, maximum: 100, default: 1 }
+    E2eDispatch:
+      type: object
+      required: [targetRevision]
+      properties:
+        suiteId: { type: string, format: uuid }
+        caseIds: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { type: string, format: uuid } }
+        targetRevision: { type: string, minLength: 1, maxLength: 200, description: Immutable deployed commit, image tag, or release identifier }
+      oneOf:
+        - required: [suiteId]
+          not: { required: [caseIds] }
+        - required: [caseIds]
+          not: { required: [suiteId] }
+    E2eManualRun:
+      type: object
+      properties:
+        targetRevision: { type: [string, 'null'], maxLength: 200 }
     WikiPageWrite:
       type: object
       properties:

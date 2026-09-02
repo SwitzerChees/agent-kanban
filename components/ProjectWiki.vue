@@ -74,6 +74,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   showBoard: [];
+  showE2e: [];
   openSidebar: [];
   openTask: [taskId: string];
   pageChange: [page: { id: string; title: string } | null];
@@ -82,6 +83,7 @@ const emit = defineEmits<{
 const copy = computed(() => props.locale === 'de' ? {
   board: 'Board',
   wiki: 'Wiki',
+  e2e: 'E2E',
   pages: 'Seiten',
   search: 'Seiten durchsuchen …',
   newPage: 'Neue Seite',
@@ -154,6 +156,7 @@ const copy = computed(() => props.locale === 'de' ? {
 } : {
   board: 'Board',
   wiki: 'Wiki',
+  e2e: 'E2E',
   pages: 'Pages',
   search: 'Search pages …',
   newPage: 'New page',
@@ -1246,6 +1249,10 @@ function humanErrorCode(error: unknown) {
         <button type="button" role="tab" class="ak-surface-switch-button is-active" :aria-label="copy.wiki" :aria-selected="true">
           <UIcon name="i-lucide-notebook-tabs" class="size-3.5" />
           <span class="hidden sm:inline">{{ copy.wiki }}</span>
+        </button>
+        <button type="button" role="tab" class="ak-surface-switch-button" :aria-label="copy.e2e" :aria-selected="false" @click="emit('showE2e')">
+          <UIcon name="i-lucide-flask-conical" class="size-3.5" />
+          <span class="hidden sm:inline">{{ copy.e2e }}</span>
         </button>
       </div>
 

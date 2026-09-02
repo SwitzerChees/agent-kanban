@@ -16,6 +16,11 @@ export interface TaskHarnessSandboxOptions {
   workspacePath: string;
   sessionRoot: string;
   harness: AgentHarness;
+  extraEnv?: Record<string, string>;
+  workspaceWritable?: boolean;
+  inheritProcessEnv?: boolean;
+  protectAgentCredentials?: boolean;
+  isolatedHome?: boolean;
 }
 
 export interface TaskHarnessRunner {
@@ -27,19 +32,9 @@ export interface TaskHarnessRunner {
 }
 
 export async function prepareTaskHarnessSession(sessionRoot: string) {
+  await prepareTaskHarnessRuntime(sessionRoot);
   const codexHome = path.join(sessionRoot, 'codex-home');
   const primeAgentHome = path.join(sessionRoot, 'prime-agent');
-  const primeSupervisorRegistry = path.join(sessionRoot, 'prime-supervisor');
-  await Promise.all([
-    mkdir(sessionRoot, { recursive: true }),
-    mkdir(path.join(sessionRoot, 'prime-sessions'), { recursive: true }),
-    mkdir(path.join(sessionRoot, 'xdg-data'), { recursive: true }),
-    mkdir(path.join(sessionRoot, 'xdg-state'), { recursive: true }),
-    mkdir(path.join(sessionRoot, 'xdg-cache'), { recursive: true }),
-    mkdir(codexHome, { recursive: true }),
-    mkdir(primeAgentHome, { recursive: true, mode: 0o700 }),
-    mkdir(primeSupervisorRegistry, { recursive: true, mode: 0o700 }),
-  ]);
 
   const sourcePrimeAgentHome = path.join(os.homedir(), '.prime', 'agent');
   for (const name of ['auth.json', 'models.json', 'settings.json']) {
@@ -84,6 +79,22 @@ export async function prepareTaskHarnessSession(sessionRoot: string) {
   }
 }
 
+// Project-owned smoke commands receive the same confined runtime directories
+// as agent harnesses, but must never inherit copied or symlinked agent tokens.
+export async function prepareTaskHarnessRuntime(sessionRoot: string) {
+  await Promise.all([
+    mkdir(sessionRoot, { recursive: true }),
+    mkdir(path.join(sessionRoot, 'prime-sessions'), { recursive: true }),
+    mkdir(path.join(sessionRoot, 'xdg-data'), { recursive: true }),
+    mkdir(path.join(sessionRoot, 'xdg-state'), { recursive: true }),
+    mkdir(path.join(sessionRoot, 'xdg-cache'), { recursive: true }),
+    mkdir(path.join(sessionRoot, 'codex-home'), { recursive: true }),
+    mkdir(path.join(sessionRoot, 'prime-agent'), { recursive: true, mode: 0o700 }),
+    mkdir(path.join(sessionRoot, 'prime-supervisor'), { recursive: true, mode: 0o700 }),
+    mkdir(path.join(sessionRoot, 'home', '.agent-browser'), { recursive: true, mode: 0o700 }),
+  ]);
+}
+
 export function primeTaskSettings(value: unknown) {
   const settings = recordValue(value);
   const compaction = recordValue(settings.compaction);
@@ -109,10 +120,12 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): TaskHarnessRunner {
   assertTaskUnitName(options.unitName);
-  const home = os.homedir();
+  const hostHome = os.homedir();
+  const home = options.isolatedHome ? path.join(options.sessionRoot, 'home') : hostHome;
   const browserSession = taskHarnessBrowserSession(options.sessionRoot);
   const env = {
-    ...process.env,
+    ...(options.inheritProcessEnv === false ? safeCommandEnvironment() : process.env),
+    HOME: home,
     NO_COLOR: '1',
     FORCE_COLOR: '0',
     CODEX_HOME: path.join(options.sessionRoot, 'codex-home'),
@@ -122,6 +135,8 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
     XDG_STATE_HOME: path.join(options.sessionRoot, 'xdg-state'),
     XDG_CACHE_HOME: path.join(options.sessionRoot, 'xdg-cache'),
     AGENT_BROWSER_SESSION: browserSession,
+    AGENT_BROWSER_NAMESPACE: browserSession,
+    ...options.extraEnv,
   };
 
   if (process.env.KANBAN_TASK_DISABLE_SYSTEMD_SANDBOX === '1') {
@@ -132,7 +147,7 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
     'ReadOnlyPaths=/',
     'ProtectHome=read-only',
     `ReadWritePaths=${options.sessionRoot}`,
-    `ReadWritePaths=${options.workspacePath}`,
+    ...(options.workspaceWritable === false ? [] : [`ReadWritePaths=${options.workspacePath}`]),
     'NoNewPrivileges=yes',
     'RestrictSUIDSGID=yes',
     'PrivateDevices=yes',
@@ -140,8 +155,13 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
     'KillMode=control-group',
     ...taskHarnessResourceProperties(),
   ];
+  if (options.protectAgentCredentials) {
+    for (const credentialPath of agentCredentialPaths(hostHome)) {
+      if (fs.existsSync(credentialPath)) properties.push(`InaccessiblePaths=${credentialPath}`);
+    }
+  }
   const gitCommonDirectory = resolveGitCommonDirectory(options.workspacePath);
-  if (gitCommonDirectory) properties.push(`ReadWritePaths=${gitCommonDirectory}`);
+  if (gitCommonDirectory && options.workspaceWritable !== false) properties.push(`ReadWritePaths=${gitCommonDirectory}`);
   const browserHome = path.join(home, '.agent-browser');
   if (fs.existsSync(browserHome)) properties.push(`ReadWritePaths=${browserHome}`);
 
@@ -172,12 +192,39 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
       `--setenv=XDG_STATE_HOME=${env.XDG_STATE_HOME}`,
       `--setenv=XDG_CACHE_HOME=${env.XDG_CACHE_HOME}`,
       `--setenv=AGENT_BROWSER_SESSION=${browserSession}`,
+      `--setenv=AGENT_BROWSER_NAMESPACE=${browserSession}`,
+      ...Object.entries(options.extraEnv ?? {}).map(([name, value]) => {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(name) || value.includes('\0') || value.includes('\n')) {
+          throw new Error('invalid_task_harness_environment');
+        }
+        return `--setenv=${name}=${value}`;
+      }),
       ...properties.map((property) => `--property=${property}`),
       '--',
       options.executable,
       ...options.args,
     ],
   };
+}
+
+function safeCommandEnvironment(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries({
+    PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    HOME: os.homedir(),
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    TZ: process.env.TZ,
+    CI: process.env.CI,
+  }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
+}
+
+function agentCredentialPaths(home: string) {
+  return [
+    path.join(home, '.codex'),
+    path.join(home, '.prime'),
+    path.join(home, '.config', 'opencode'),
+    path.join(home, '.local', 'share', 'opencode'),
+  ];
 }
 
 export function taskHarnessResourceProperties(env: NodeJS.ProcessEnv = process.env) {
@@ -220,12 +267,14 @@ export async function stopTaskHarnessUnit(unitName: string | null | undefined) {
 }
 
 export function taskHarnessBrowserSession(sessionRoot: string) {
-  return `task-${safeUnitPart(path.basename(sessionRoot)).slice(-48)}`;
+  // Keep both the session and namespace short enough for Unix-domain socket
+  // limits even when agent-browser embeds both names in its socket path.
+  return `task-${safeUnitPart(path.basename(sessionRoot)).slice(-12)}`;
 }
 
 export async function closeTaskBrowserSession(browserSession: string | null | undefined) {
   if (!browserSession || !/^task-[a-z0-9-]+$/.test(browserSession)) return;
-  await runProcess('agent-browser', ['close', '--session', browserSession], 10_000);
+  await runProcess('agent-browser', ['--namespace', browserSession, 'close', '--session', browserSession], 10_000);
 }
 
 export async function cleanupTaskHarnessSession(sessionRoot: string) {
@@ -320,7 +369,7 @@ function warnHelperFailure(command: string, failure: { code: number | null; sign
 }
 
 function assertTaskUnitName(unitName: string) {
-  if (!/^agent-kanban-task-[a-z0-9-]+$/.test(unitName)) throw new Error('invalid_task_harness_unit');
+  if (!/^agent-kanban-(?:task|e2e)-[a-z0-9-]+$/.test(unitName)) throw new Error('invalid_task_harness_unit');
 }
 
 function resolveGitCommonDirectory(workspacePath: string) {

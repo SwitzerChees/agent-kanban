@@ -43,6 +43,10 @@ export interface CodexSteeringBatch {
 export interface TaskHarnessRuntimeOptions {
   unitName: string;
   sessionRoot: string;
+  extraEnv?: Record<string, string>;
+  workspaceWritable?: boolean;
+  isolatedHome?: boolean;
+  protectAgentCredentials?: boolean;
   onUnit?: (unitName: string | null, browserSession: string | null) => void;
 }
 
@@ -95,6 +99,10 @@ export async function runCodexSession(options: RunCodexSessionOptions): Promise<
       workspacePath: options.workspacePath,
       sessionRoot: options.runtime.sessionRoot,
       harness: 'codex',
+      extraEnv: options.runtime.extraEnv,
+      workspaceWritable: options.runtime.workspaceWritable,
+      isolatedHome: options.runtime.isolatedHome,
+      protectAgentCredentials: options.runtime.protectAgentCredentials,
     });
     options.runtime.onUnit?.(runner.unitName, runner.browserSession);
   }

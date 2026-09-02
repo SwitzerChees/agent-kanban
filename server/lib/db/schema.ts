@@ -37,9 +37,93 @@ export const projects = sqliteTable('projects', {
   description: text('description'),
   folderPath: text('folder_path').notNull(),
   agentConcurrencyLimit: integer('agent_concurrency_limit').notNull().default(1),
+  e2eConcurrencyLimit: integer('e2e_concurrency_limit').notNull().default(2),
   createdBy: text('created_by').notNull().references(() => users.id),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
+});
+
+export const e2eTestSuites = sqliteTable('e2e_test_suites', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  position: integer('position').notNull().default(0),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const e2eTestCases = sqliteTable('e2e_test_cases', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  suiteId: text('suite_id').notNull().references(() => e2eTestSuites.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  scenario: text('scenario').notNull().default(''),
+  preconditions: text('preconditions').notNull().default(''),
+  expectedResult: text('expected_result').notNull().default(''),
+  rolesJson: text('roles_json').notNull().default('[]'),
+  targetUrl: text('target_url'),
+  executionMode: text('execution_mode', { enum: ['browser_harness', 'project_command'] }).notNull().default('browser_harness'),
+  agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('xhigh'),
+  runnerCommand: text('runner_command').notNull().default(''),
+  timeoutSeconds: integer('timeout_seconds').notNull().default(900),
+  triggerColumnKey: text('trigger_column_key'),
+  triggerOberthemaId: text('trigger_oberthema_id').references(() => oberthemen.id, { onDelete: 'set null' }),
+  triggerUnterthemaId: text('trigger_unterthema_id').references(() => unterthemen.id, { onDelete: 'set null' }),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  position: integer('position').notNull().default(0),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const e2eTestCaseAssets = sqliteTable('e2e_test_case_assets', {
+  id: text('id').primaryKey(),
+  caseId: text('case_id').notNull().references(() => e2eTestCases.id, { onDelete: 'cascade' }),
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type').notNull(),
+  size: integer('size').notNull(),
+  storagePath: text('storage_path').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull(),
+});
+
+export const e2eTestRuns = sqliteTable('e2e_test_runs', {
+  id: text('id').primaryKey(),
+  batchId: text('batch_id').notNull(),
+  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  suiteId: text('suite_id').references(() => e2eTestSuites.id, { onDelete: 'set null' }),
+  caseId: text('case_id').references(() => e2eTestCases.id, { onDelete: 'set null' }),
+  caseTitle: text('case_title').notNull(),
+  triggerType: text('trigger_type', { enum: ['manual', 'task_status', 'api'] }).notNull(),
+  triggerTaskId: text('trigger_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  targetRevision: text('target_revision'),
+  executionMode: text('execution_mode', { enum: ['browser_harness', 'project_command'] }).notNull().default('browser_harness'),
+  agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
+  status: text('status', { enum: ['queued', 'running', 'passed', 'warning', 'failed', 'cancelled'] }).notNull().default('queued'),
+  summary: text('summary'),
+  output: text('output').notNull().default(''),
+  definitionSnapshot: text('definition_snapshot').notNull(),
+  requestedBy: text('requested_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: text('created_at').notNull(),
+  startedAt: text('started_at'),
+  completedAt: text('completed_at'),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const e2eTestRunArtifacts = sqliteTable('e2e_test_run_artifacts', {
+  id: text('id').primaryKey(),
+  runId: text('run_id').notNull().references(() => e2eTestRuns.id, { onDelete: 'cascade' }),
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type').notNull(),
+  size: integer('size').notNull(),
+  storagePath: text('storage_path').notNull(),
+  createdAt: text('created_at').notNull(),
 });
 
 export const wikiPages = sqliteTable('wiki_pages', {
@@ -423,6 +507,11 @@ export const activity = sqliteTable('activity', {
 export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type E2eTestSuite = typeof e2eTestSuites.$inferSelect;
+export type E2eTestCase = typeof e2eTestCases.$inferSelect;
+export type E2eTestCaseAsset = typeof e2eTestCaseAssets.$inferSelect;
+export type E2eTestRun = typeof e2eTestRuns.$inferSelect;
+export type E2eTestRunArtifact = typeof e2eTestRunArtifacts.$inferSelect;
 export type WikiPage = typeof wikiPages.$inferSelect;
 export type WikiTodoList = typeof wikiTodoLists.$inferSelect;
 export type WikiTodoItem = typeof wikiTodoItems.$inferSelect;

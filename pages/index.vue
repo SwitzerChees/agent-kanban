@@ -6,7 +6,7 @@ import { compressedImageFileName, compressImageForUpload } from '~/utils/image-u
 import { canCompleteReviewedAgentTask } from '~/utils/task-status-transition';
 
 type Locale = 'en' | 'de';
-type View = 'board' | 'wiki' | 'projects' | 'users';
+type View = 'board' | 'wiki' | 'e2e' | 'projects' | 'users';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type TaskDescriptionView = TaskDescriptionSource | 'visual';
@@ -41,6 +41,7 @@ interface Project {
   description: string | null;
   folderPath: string;
   agentConcurrencyLimit: number;
+  e2eConcurrencyLimit: number;
   agentHarnessLimits: Record<AgentHarness, number>;
   createdAt?: string;
 }
@@ -505,6 +506,8 @@ const dictionary = {
     agentConcurrencyTotal: 'All harnesses',
     agentConcurrencyTotalHelp: 'Maximum active implementations in this project.',
     agentConcurrencyHarnessHelp: 'Maximum active implementations using this harness.',
+    e2eConcurrency: 'E2E test concurrency',
+    e2eConcurrencyHelp: 'Maximum smoke or browser test cases that may run in parallel for this project.',
     concurrencyPausedHint: 'Set a limit to 0 to pause new starts.',
     description: 'Description',
     originalDescription: 'Original',
@@ -842,6 +845,8 @@ const dictionary = {
     agentConcurrencyTotal: 'Alle Harnesses',
     agentConcurrencyTotalHelp: 'Maximal gleichzeitig laufende Umsetzungen in diesem Projekt.',
     agentConcurrencyHarnessHelp: 'Maximal gleichzeitig laufende Umsetzungen mit diesem Harness.',
+    e2eConcurrency: 'E2E-Test-Parallelität',
+    e2eConcurrencyHelp: 'Maximal gleichzeitig laufende Smoke- oder Browser-Testfälle in diesem Projekt.',
     concurrencyPausedHint: 'Mit dem Wert 0 werden neue Starts pausiert.',
     description: 'Beschreibung',
     originalDescription: 'Original',
@@ -1075,6 +1080,7 @@ const colorMode = useColorMode();
 const activeView = ref<View>('board');
 const activeWikiPage = ref<{ id: string; title: string } | null>(null);
 const projectWikiRef = ref<{ refreshPages: () => Promise<void> } | null>(null);
+const projectE2eRef = ref<{ refreshTests: () => Promise<void> } | null>(null);
 const user = ref<User | null>(null);
 const users = ref<User[]>([]);
 const projects = ref<Project[]>([]);
@@ -1209,6 +1215,7 @@ const emptyProjectForm = () => ({
   userIds: [] as string[],
   tags: '',
   agentConcurrencyLimit: 1,
+  e2eConcurrencyLimit: 2,
   agentHarnessLimits: {
     codex: 1,
     opencode: 1,
@@ -1423,7 +1430,7 @@ const apiTokenExpiryItems = computed(() => [
   { label: t.value.apiTokenExpiryNever, value: 'never' },
 ]);
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value) ?? null);
-const projectSurfaceCopy = computed(() => ({ board: 'Board', wiki: 'Wiki' }));
+const projectSurfaceCopy = computed(() => ({ board: 'Board', wiki: 'Wiki', e2e: 'E2E' }));
 const selectedOberthema = computed(() => board.value?.oberthemen.find((topic) => topic.id === selectedOberthemaId.value) ?? null);
 const selectedUnterthema = computed(() => board.value?.unterthemen.find((topic) => topic.id === selectedUnterthemaId.value) ?? null);
 const userInitials = computed(() => {
@@ -2060,15 +2067,15 @@ const closeSidebarOnMobile = () => {
   if (isMobileViewport.value) closeMobileSidebar();
 };
 
-const syncProjectSurfaceRoute = (surface: Extract<View, 'board' | 'wiki'>) => {
+const syncProjectSurfaceRoute = (surface: Extract<View, 'board' | 'wiki' | 'e2e'>) => {
   if (!import.meta.client) return;
   const base = `${window.location.pathname}${window.location.search}`;
-  window.history.replaceState(window.history.state, '', surface === 'wiki' ? `${base}#wiki` : base);
+  window.history.replaceState(window.history.state, '', surface === 'board' ? base : `${base}#${surface}`);
 };
 
-const projectIdFromWikiRoute = () => {
+const projectIdFromSurfaceRoute = () => {
   if (!import.meta.client) return null;
-  const encodedProjectId = window.location.hash.match(/^#wiki\/([^/]+)(?:\/|$)/)?.[1];
+  const encodedProjectId = window.location.hash.match(/^#(?:wiki|e2e)\/([^/]+)(?:\/|$)/)?.[1];
   if (!encodedProjectId) return null;
   try {
     return decodeURIComponent(encodedProjectId);
@@ -2077,7 +2084,7 @@ const projectIdFromWikiRoute = () => {
   }
 };
 
-const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki'>) => {
+const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki' | 'e2e'>) => {
   activeView.value = surface;
   syncProjectSurfaceRoute(surface);
   closeSidebarOnMobile();
@@ -2198,7 +2205,7 @@ onMounted(async () => {
   syncMobileViewport();
   sidebarCollapsed.value = isMobileViewport.value
     || localStorage.getItem('ak_sidebar_collapsed') === 'true';
-  selectedProjectId.value = projectIdFromWikiRoute() ?? localStorage.getItem('ak_project');
+  selectedProjectId.value = projectIdFromSurfaceRoute() ?? localStorage.getItem('ak_project');
   window.addEventListener('keydown', handleWindowKeydown, true);
   window.addEventListener('keyup', handleWindowKeyup, true);
   window.addEventListener('pointerdown', handleWindowPointerDown, true);
@@ -2210,6 +2217,7 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibilityChange);
   await loadSession();
   if (window.location.hash.startsWith('#wiki') && selectedProjectId.value) activeView.value = 'wiki';
+  if (window.location.hash.startsWith('#e2e') && selectedProjectId.value) activeView.value = 'e2e';
   startBoardRefresh();
 });
 
@@ -2311,7 +2319,7 @@ const loadBoard = async (projectId: string) => {
 };
 
 const refreshCurrentBoard = async () => {
-  if (!user.value || !['board', 'wiki'].includes(activeView.value) || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value || commandPaletteOpen.value) return;
+  if (!user.value || !['board', 'wiki', 'e2e'].includes(activeView.value) || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value || commandPaletteOpen.value) return;
   refreshingBoard.value = true;
   boardClock.value = Date.now();
   try {
@@ -2324,6 +2332,7 @@ const refreshCurrentBoard = async () => {
 const refreshAfterProjectChatTurn = async () => {
   await refreshCurrentBoard();
   if (activeView.value === 'wiki') await projectWikiRef.value?.refreshPages();
+  if (activeView.value === 'e2e') await projectE2eRef.value?.refreshTests();
 };
 
 const startBoardRefresh = () => {
@@ -2563,6 +2572,7 @@ const openProjectModal = async (project?: Project) => {
     projectForm.userIds = projectBoard.members.map((member) => member.id);
     projectForm.tags = projectBoard.projectTags.join(', ');
     projectForm.agentConcurrencyLimit = projectBoard.project.agentConcurrencyLimit;
+    projectForm.e2eConcurrencyLimit = projectBoard.project.e2eConcurrencyLimit;
     projectForm.agentHarnessLimits = { ...projectBoard.project.agentHarnessLimits };
   }
   projectModalOpen.value = true;
@@ -6161,18 +6171,18 @@ const humanError = (error: unknown) => {
               class="ak-project-nav-item group flex w-full items-center rounded-xl text-left transition"
               :class="[
                 sidebarCollapsed ? 'h-11 justify-center px-0' : 'min-h-12 gap-3 px-2 py-1.5',
-                project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki')
+                project.id === selectedProjectId && ['board', 'wiki', 'e2e'].includes(activeView)
                   ? 'bg-teal-50 text-teal-950 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.18)] dark:bg-teal-950/45 dark:text-teal-50'
                   : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900',
               ]"
-              :aria-current="project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki') ? 'page' : undefined"
+              :aria-current="project.id === selectedProjectId && ['board', 'wiki', 'e2e'].includes(activeView) ? 'page' : undefined"
               :aria-label="project.name"
               :title="project.name"
               @click="selectProject(project.id)"
             >
               <span
                 class="grid size-9 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tracking-wide transition"
-                :class="project.id === selectedProjectId && (activeView === 'board' || activeView === 'wiki')
+                :class="project.id === selectedProjectId && ['board', 'wiki', 'e2e'].includes(activeView)
                   ? 'border-teal-200 bg-white text-teal-700 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200'
                   : 'border-zinc-200 bg-white text-zinc-500 group-hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400'"
               >
@@ -6400,9 +6410,25 @@ const humanError = (error: unknown) => {
           :is-mobile-viewport="isMobileViewport"
           :sidebar-collapsed="sidebarCollapsed"
           @show-board="selectProjectSurface('board')"
+          @show-e2e="selectProjectSurface('e2e')"
           @open-sidebar="openMobileSidebar"
           @open-task="openWikiTask"
           @page-change="activeWikiPage = $event"
+        />
+
+        <ProjectE2eTests
+          v-else-if="activeView === 'e2e' && board"
+          ref="projectE2eRef"
+          :project="board.project"
+          :columns="board.columns"
+          :oberthemen="board.oberthemen"
+          :unterthemen="board.unterthemen"
+          :locale="locale"
+          :is-mobile-viewport="isMobileViewport"
+          :sidebar-collapsed="sidebarCollapsed"
+          @show-board="selectProjectSurface('board')"
+          @show-wiki="selectProjectSurface('wiki')"
+          @open-sidebar="openMobileSidebar"
         />
 
         <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
@@ -6452,6 +6478,17 @@ const humanError = (error: unknown) => {
               >
                 <UIcon name="i-lucide-notebook-tabs" class="size-3.5" />
                 <span class="hidden sm:inline">{{ projectSurfaceCopy.wiki }}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="ak-surface-switch-button"
+                :aria-label="projectSurfaceCopy.e2e"
+                :aria-selected="false"
+                @click="selectProjectSurface('e2e')"
+              >
+                <UIcon name="i-lucide-flask-conical" class="size-3.5" />
+                <span class="hidden sm:inline">{{ projectSurfaceCopy.e2e }}</span>
               </button>
             </div>
 
@@ -6997,6 +7034,7 @@ const humanError = (error: unknown) => {
                       inputmode="numeric"
                       size="lg"
                       icon="i-lucide-layers-3"
+                      :aria-label="t.agentConcurrencyTotal"
                     />
                   </div>
 
@@ -7010,6 +7048,14 @@ const humanError = (error: unknown) => {
                     <UFormField :label="t.harnessPrimeAgent" :description="t.agentConcurrencyHarnessHelp" size="sm">
                       <UInput v-model.number="projectForm.agentHarnessLimits['prime-agent']" type="number" min="0" max="100" inputmode="numeric" size="lg" />
                     </UFormField>
+                  </div>
+
+                  <div class="grid items-end gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950 sm:grid-cols-[1fr_8rem]">
+                    <div>
+                      <p class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.e2eConcurrency }}</p>
+                      <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ t.e2eConcurrencyHelp }}</p>
+                    </div>
+                    <UInput v-model.number="projectForm.e2eConcurrencyLimit" type="number" min="0" max="100" inputmode="numeric" size="lg" icon="i-lucide-flask-conical" :aria-label="t.e2eConcurrency" />
                   </div>
 
                   <p class="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">

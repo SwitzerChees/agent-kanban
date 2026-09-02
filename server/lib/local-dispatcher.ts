@@ -29,6 +29,7 @@ import {
   taskHarnessBrowserSession,
   taskHarnessUnitName,
 } from './task-harness-sandbox';
+import { queueE2eForTaskTransition } from './e2e-tests';
 
 let dispatcher: LocalTaskDispatcher | null = null;
 
@@ -589,6 +590,8 @@ class LocalTaskDispatcher {
         applied: completed.changes === 1,
       });
       if (completed.changes === 1) {
+        const completedTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, queued.id)).get();
+        if (completedTask && reviewColumn) queueE2eForTaskTransition(completedTask, reviewColumn.key, queued.createdBy);
         notifyVoiceJobStatus(queued.id, 'done');
       } else {
         runtimeLogger.warn('task changed before completion; result not applied', {
@@ -969,6 +972,10 @@ async function runTaskAgentHarness(options: Parameters<typeof runCodexSession>[0
     runtime: common.runtime ? {
       unitNamePrefix: common.runtime.unitName,
       sessionRoot: common.runtime.sessionRoot,
+      extraEnv: common.runtime.extraEnv,
+      workspaceWritable: common.runtime.workspaceWritable,
+      isolatedHome: common.runtime.isolatedHome,
+      protectAgentCredentials: common.runtime.protectAgentCredentials,
       onUnit: common.runtime.onUnit,
     } : undefined,
   });

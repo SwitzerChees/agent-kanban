@@ -11,6 +11,7 @@ const updateProjectSchema = z.object({
   userIds: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
   agentConcurrencyLimit: z.number().int().min(0).max(100).optional(),
+  e2eConcurrencyLimit: z.number().int().min(0).max(100).optional(),
   agentHarnessLimits: z.object({
     codex: z.number().int().min(0).max(100),
     opencode: z.number().int().min(0).max(100),

@@ -63,6 +63,7 @@ export function ensureDatabase() {
       description TEXT,
       folder_path TEXT NOT NULL,
       agent_concurrency_limit INTEGER NOT NULL DEFAULT 1,
+      e2e_concurrency_limit INTEGER NOT NULL DEFAULT 2,
       created_by TEXT NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -119,6 +120,89 @@ export function ensureDatabase() {
       updated_by TEXT NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS e2e_test_suites (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      position INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS e2e_test_cases (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      suite_id TEXT NOT NULL REFERENCES e2e_test_suites(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      scenario TEXT NOT NULL DEFAULT '',
+      preconditions TEXT NOT NULL DEFAULT '',
+      expected_result TEXT NOT NULL DEFAULT '',
+      roles_json TEXT NOT NULL DEFAULT '[]',
+      target_url TEXT,
+      execution_mode TEXT NOT NULL DEFAULT 'browser_harness',
+      agent_harness TEXT NOT NULL DEFAULT 'codex',
+      reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
+      runner_command TEXT NOT NULL DEFAULT '',
+      timeout_seconds INTEGER NOT NULL DEFAULT 900,
+      trigger_column_key TEXT,
+      trigger_oberthema_id TEXT REFERENCES oberthemen(id) ON DELETE SET NULL,
+      trigger_unterthema_id TEXT REFERENCES unterthemen(id) ON DELETE SET NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      updated_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS e2e_test_case_assets (
+      id TEXT PRIMARY KEY,
+      case_id TEXT NOT NULL REFERENCES e2e_test_cases(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      storage_path TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS e2e_test_runs (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      suite_id TEXT REFERENCES e2e_test_suites(id) ON DELETE SET NULL,
+      case_id TEXT REFERENCES e2e_test_cases(id) ON DELETE SET NULL,
+      case_title TEXT NOT NULL,
+      trigger_type TEXT NOT NULL,
+      trigger_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+      target_revision TEXT,
+      execution_mode TEXT NOT NULL DEFAULT 'browser_harness',
+      agent_harness TEXT NOT NULL DEFAULT 'codex',
+      status TEXT NOT NULL DEFAULT 'queued',
+      summary TEXT,
+      output TEXT NOT NULL DEFAULT '',
+      definition_snapshot TEXT NOT NULL,
+      requested_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS e2e_test_run_artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES e2e_test_runs(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      storage_path TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS project_harness_limits (
@@ -449,6 +533,17 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_wiki_todo_items_list
       ON wiki_todo_items(list_id, position, created_at);
     CREATE INDEX IF NOT EXISTS idx_wiki_images_page ON wiki_images(page_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_e2e_suites_project ON e2e_test_suites(project_id, position, created_at);
+    CREATE INDEX IF NOT EXISTS idx_e2e_cases_suite ON e2e_test_cases(suite_id, position, created_at);
+    CREATE INDEX IF NOT EXISTS idx_e2e_cases_triggers ON e2e_test_cases(project_id, enabled, trigger_column_key);
+    CREATE INDEX IF NOT EXISTS idx_e2e_case_assets_case ON e2e_test_case_assets(case_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_e2e_runs_project ON e2e_test_runs(project_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_e2e_runs_case ON e2e_test_runs(case_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_e2e_runs_dispatch ON e2e_test_runs(status, project_id, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_e2e_runs_active_case
+      ON e2e_test_runs(case_id)
+      WHERE case_id IS NOT NULL AND status IN ('queued', 'running');
+    CREATE INDEX IF NOT EXISTS idx_e2e_run_artifacts_run ON e2e_test_run_artifacts(run_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_tags_task ON task_tags(task_id);
     CREATE INDEX IF NOT EXISTS idx_comments_task ON comments(task_id);
     CREATE INDEX IF NOT EXISTS idx_comment_mentions_task_user ON comment_mentions(task_id, user_id);
@@ -502,10 +597,60 @@ export function ensureDatabase() {
   if (!projectColumns.some((column) => column.name === 'agent_concurrency_limit')) {
     sqlite.exec('ALTER TABLE projects ADD COLUMN agent_concurrency_limit INTEGER NOT NULL DEFAULT 1;');
   }
+  if (!projectColumns.some((column) => column.name === 'e2e_concurrency_limit')) {
+    sqlite.exec('ALTER TABLE projects ADD COLUMN e2e_concurrency_limit INTEGER NOT NULL DEFAULT 2;');
+  }
+
+  const e2eCaseColumns = new Set(
+    (sqlite.prepare('PRAGMA table_info(e2e_test_cases)').all() as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!e2eCaseColumns.has('execution_mode')) {
+    sqlite.exec("ALTER TABLE e2e_test_cases ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'browser_harness';");
+    // Intermediate builds only had project commands. Preserve those cases when
+    // introducing the browser-first execution model.
+    sqlite.exec("UPDATE e2e_test_cases SET execution_mode = 'project_command' WHERE TRIM(runner_command) <> '';");
+  }
+  if (!e2eCaseColumns.has('agent_harness')) {
+    sqlite.exec("ALTER TABLE e2e_test_cases ADD COLUMN agent_harness TEXT NOT NULL DEFAULT 'codex';");
+  }
+  if (!e2eCaseColumns.has('reasoning_effort')) {
+    sqlite.exec("ALTER TABLE e2e_test_cases ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'xhigh';");
+  }
+
+  const e2eRunColumns = new Set(
+    (sqlite.prepare('PRAGMA table_info(e2e_test_runs)').all() as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!e2eRunColumns.has('execution_mode')) {
+    sqlite.exec("ALTER TABLE e2e_test_runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'project_command';");
+  }
+  if (!e2eRunColumns.has('agent_harness')) {
+    sqlite.exec("ALTER TABLE e2e_test_runs ADD COLUMN agent_harness TEXT NOT NULL DEFAULT 'codex';");
+  }
+  sqlite.exec(`
+    UPDATE e2e_test_cases
+    SET execution_mode = 'browser_harness'
+    WHERE execution_mode NOT IN ('browser_harness', 'project_command') OR execution_mode IS NULL;
+    UPDATE e2e_test_cases
+    SET agent_harness = 'codex'
+    WHERE agent_harness NOT IN ('codex', 'opencode', 'prime-agent') OR agent_harness IS NULL;
+    UPDATE e2e_test_cases
+    SET reasoning_effort = 'xhigh'
+    WHERE reasoning_effort NOT IN ('low', 'medium', 'xhigh') OR reasoning_effort IS NULL;
+    UPDATE e2e_test_runs
+    SET execution_mode = 'project_command'
+    WHERE execution_mode NOT IN ('browser_harness', 'project_command') OR execution_mode IS NULL;
+    UPDATE e2e_test_runs
+    SET agent_harness = 'codex'
+    WHERE agent_harness NOT IN ('codex', 'opencode', 'prime-agent') OR agent_harness IS NULL;
+  `);
   sqlite.exec(`
     UPDATE projects
     SET agent_concurrency_limit = 1
     WHERE agent_concurrency_limit < 0 OR agent_concurrency_limit IS NULL;
+
+    UPDATE projects
+    SET e2e_concurrency_limit = 2
+    WHERE e2e_concurrency_limit < 0 OR e2e_concurrency_limit IS NULL;
 
     INSERT OR IGNORE INTO project_harness_limits (project_id, harness, max_concurrent_tasks)
     SELECT projects.id, harnesses.harness, projects.agent_concurrency_limit
