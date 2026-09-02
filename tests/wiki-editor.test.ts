@@ -8,7 +8,7 @@ import { Markdown } from '@tiptap/markdown';
 import StarterKit from '@tiptap/starter-kit';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '../utils/wiki-editor';
 import { canonicalizeWikiReferences, filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision } from '../utils/wiki-references';
-import { createWikiTodoListExtension, filterWikiTodoItems, type WikiTodoItemRecord } from '../utils/wiki-todos';
+import { createWikiTodoListExtension, filterWikiTodoItems, renderWikiTodoText, type WikiTodoItemRecord } from '../utils/wiki-todos';
 import { cloneWikiImageAnnotation, createWikiImageExtension, renderWikiImage, type WikiImageRecord } from '../utils/wiki-images';
 import { readFileSync } from 'node:fs';
 
@@ -46,6 +46,8 @@ describe('wiki editor document extensions', () => {
     expect(component).toContain('@paste.capture="handleWikiImagePaste"');
     expect(component).toContain('@drop.capture="handleWikiImageDrop"');
     expect(component).toContain('<WikiImageEditor');
+    expect(component).toContain('@input="handleWikiTodoInput"');
+    expect(component).toContain('data-wiki-todo-reference-menu');
   });
 
   test('canonicalizes unambiguous plain Wiki references without touching code or links', () => {
@@ -394,6 +396,24 @@ describe('wiki editor document extensions', () => {
     });
     expect(editor.getMarkdown()).toBe(`:::todo-list {#${listId} label="Numeric UUID"} :::`);
     editor.destroy();
+  });
+
+  test('renders current person and task labels in TODO items and exposes an autocomplete input', () => {
+    const itemText = 'Ask [@ id="user-1" label="Alice Old"] about [@ id="task-18" label="AK-18 · Old title" char="#"]';
+    const rendered = JSON.stringify(renderWikiTodoText(itemText, (attrs) => resolveWikiReference(
+      attrs,
+      [{ id: 'user-1', name: 'Alice Updated' }],
+      [{ id: 'task-18', key: 'AK-18', title: 'Current title' }],
+    )));
+    const todoSource = readFileSync(new URL('../utils/wiki-todos.ts', import.meta.url), 'utf8');
+
+    expect(rendered).toContain('data-wiki-user-id');
+    expect(rendered).toContain('@Alice Updated');
+    expect(rendered).toContain('data-wiki-task-id');
+    expect(rendered).toContain('#AK-18 · Current title');
+    expect(rendered).not.toContain('Alice Old');
+    expect(todoSource).toContain("'data-wiki-todo-reference-input': id");
+    expect(todoSource).toContain("'aria-autocomplete': 'list'");
   });
 
   test('filters completed TODO items by state and completion window', () => {

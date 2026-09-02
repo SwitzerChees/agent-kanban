@@ -1,6 +1,7 @@
 import { Node, createAtomBlockMarkdownSpec, mergeAttributes } from '@tiptap/core';
 import type { DOMOutputSpec } from '@tiptap/pm/model';
 import { parseWikiAtomBlockAttributes } from './wiki-atom-block';
+import type { ResolvedWikiReference, WikiReferenceAttributes } from './wiki-references';
 
 export type WikiTodoFilter = 'all' | 'active' | 'completed' | 'week' | 'month';
 
@@ -26,7 +27,11 @@ interface WikiTodoExtensionOptions {
   getList: (id: string) => WikiTodoListRecord | undefined;
   getFilter: (id: string) => WikiTodoFilter;
   getLocale: () => 'en' | 'de';
+  resolveReference?: (attrs: WikiReferenceAttributes) => ResolvedWikiReference;
 }
+
+const stableReferencePattern = /\[@\s+id="([^"\r\n]*)"\s+label="([^"\r\n]*)"(?:\s+char="([^"\r\n]*)")?\]/g;
+type WikiTodoTextNode = string | DOMOutputSpec;
 
 const markdownSpec = createAtomBlockMarkdownSpec({
   nodeName: 'wikiTodoList',
@@ -58,7 +63,7 @@ export function createWikiTodoListExtension(options: WikiTodoExtensionOptions) {
     renderHTML({ node, HTMLAttributes }) {
       const id = String(node.attrs.id ?? '');
       const fallbackLabel = String(node.attrs.label ?? 'TODO list');
-      return renderTodoList(options.getList(id), id, fallbackLabel, options.getFilter(id), options.getLocale(), HTMLAttributes);
+      return renderTodoList(options.getList(id), id, fallbackLabel, options.getFilter(id), options.getLocale(), HTMLAttributes, options.resolveReference);
     },
 
     ...markdownSpec,
@@ -86,6 +91,7 @@ function renderTodoList(
   filter: WikiTodoFilter,
   locale: 'en' | 'de',
   HTMLAttributes: Record<string, unknown>,
+  resolveReference?: WikiTodoExtensionOptions['resolveReference'],
 ): DOMOutputSpec {
   const copy = locale === 'de' ? {
     missing: 'Diese TODO-Liste ist nicht mehr verfügbar.',
@@ -140,9 +146,9 @@ function renderTodoList(
       type: 'checkbox',
       checked: item.completed ? 'checked' : null,
       'data-wiki-todo-item-id': item.id,
-      'aria-label': item.text,
+      'aria-label': wikiTodoTextLabel(item.text, resolveReference),
     }],
-    ['span', {}, item.text],
+    ['span', {}, ...renderWikiTodoText(item.text, resolveReference)],
     ...(item.completedAt ? [['time', { datetime: item.completedAt }, formatCompletionDate(item.completedAt, locale)]] : []),
   ] as DOMOutputSpec);
 
@@ -155,10 +161,77 @@ function renderTodoList(
     ],
     ['ul', {}, ...(itemNodes.length ? itemNodes : [['li', { class: 'is-empty' }, copy.empty] as DOMOutputSpec])],
     ['form', { 'data-wiki-todo-add-form': id },
-      ['input', { name: 'text', type: 'text', maxlength: '500', placeholder: copy.placeholder, 'aria-label': copy.placeholder }],
+      ['input', {
+        name: 'text',
+        type: 'text',
+        maxlength: '500',
+        autocomplete: 'off',
+        placeholder: copy.placeholder,
+        'aria-label': copy.placeholder,
+        'aria-autocomplete': 'list',
+        'aria-expanded': 'false',
+        'data-wiki-todo-reference-input': id,
+      }],
       ['button', { type: 'submit' }, copy.add],
     ],
   ];
+}
+
+export function renderWikiTodoText(
+  text: string,
+  resolveReference?: WikiTodoExtensionOptions['resolveReference'],
+): WikiTodoTextNode[] {
+  const content: WikiTodoTextNode[] = [];
+  let offset = 0;
+  for (const match of text.matchAll(stableReferencePattern)) {
+    const index = match.index ?? 0;
+    if (index > offset) content.push(text.slice(offset, index));
+    const attrs: WikiReferenceAttributes = {
+      id: match[1],
+      label: match[2],
+      mentionSuggestionChar: match[3],
+    };
+    const reference = resolveReference?.(attrs) ?? fallbackReference(attrs);
+    const page = reference.kind === 'page';
+    const label = page ? `page: · ${reference.label}` : `${reference.char}${reference.label}`;
+    content.push(['span', {
+      class: `ak-wiki-reference ${reference.kind === 'task' ? 'is-task' : page ? 'is-page' : 'is-user'}${reference.valid ? '' : ' is-invalid'}`,
+      ...(reference.kind === 'task'
+        ? { 'data-wiki-task-id': reference.id, role: 'link', tabindex: '0' }
+        : page && reference.valid
+          ? { 'data-wiki-page-id': reference.id, role: 'link', tabindex: '0' }
+          : reference.kind === 'user'
+            ? { 'data-wiki-user-id': reference.id }
+            : { 'aria-disabled': 'true' }),
+    }, label]);
+    offset = index + match[0].length;
+  }
+  if (offset < text.length) content.push(text.slice(offset));
+  return content.length ? content : [''];
+}
+
+function wikiTodoTextLabel(
+  text: string,
+  resolveReference?: WikiTodoExtensionOptions['resolveReference'],
+) {
+  return renderWikiTodoText(text, resolveReference).map((node) => (
+    typeof node === 'string' ? node : Array.isArray(node) ? String(node[2] ?? '') : ''
+  )).join('');
+}
+
+function fallbackReference(attrs: WikiReferenceAttributes): ResolvedWikiReference {
+  const char = attrs.mentionSuggestionChar === '#'
+    ? '#'
+    : attrs.mentionSuggestionChar === 'seite:' || attrs.mentionSuggestionChar === 'page:'
+      ? attrs.mentionSuggestionChar
+      : '@';
+  return {
+    id: attrs.id ?? '',
+    char,
+    kind: char === '#' ? 'task' : char === '@' ? 'user' : 'page',
+    label: attrs.label ?? attrs.id ?? '',
+    valid: true,
+  };
 }
 
 function formatCompletionDate(value: string, locale: 'en' | 'de') {

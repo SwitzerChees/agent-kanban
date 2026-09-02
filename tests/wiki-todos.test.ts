@@ -65,6 +65,19 @@ describe('reusable wiki TODO lists', () => {
     expect(reopened).toMatchObject({ completed: false, completedAt: null });
   });
 
+  test('stores person and task references in TODO items with stable IDs', async () => {
+    const task = await kanban.createTask(projectId, { title: 'Review TODO references' }, admin);
+    const list = wikiTodos.createWikiTodoList(projectId, { name: 'Referenced actions' }, admin);
+    const item = wikiTodos.addWikiTodoItem(list.id, {
+      text: `Ask @Wiki TODO Member to review #${task.key}`,
+    }, member);
+
+    expect(item.text).toContain(`[@ id="${member.id}" label="Wiki TODO Member"]`);
+    expect(item.text).toContain(`[@ id="${task.id}" label="${task.key} · Review TODO references" char="#"]`);
+    expect(item.text).not.toContain('@Wiki TODO Member');
+    expect(item.text).not.toContain(`#${task.key}`);
+  });
+
   test('enforces case-insensitive project-local names, access, and optimistic updates', () => {
     expectStatusMessage(
       () => wikiTodos.createWikiTodoList(projectId, { name: 'release CHECKLIST' }, member),

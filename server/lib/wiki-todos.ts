@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, asc, count, eq, inArray, max } from 'drizzle-orm';
 import { createError } from 'h3';
+import { canonicalizeWikiReferences } from '../../utils/wiki-references';
 import { db, schema } from './db';
 import { getProject } from './kanban';
 import type { User, WikiTodoItem, WikiTodoList } from './db/schema';
@@ -79,7 +80,7 @@ export function addWikiTodoItem(listId: string, input: CreateWikiTodoItemInput, 
   const item: typeof schema.wikiTodoItems.$inferInsert = {
     id: randomUUID(),
     listId,
-    text: normalizeItemText(input.text),
+    text: normalizeItemText(list.projectId, input.text),
     completed: false,
     completedAt: null,
     position: currentMax + 1000,
@@ -112,7 +113,7 @@ export function updateWikiTodoItem(itemId: string, input: UpdateWikiTodoItemInpu
     updatedBy: user.id,
     updatedAt: now,
   };
-  if (input.text !== undefined) updates.text = normalizeItemText(input.text);
+  if (input.text !== undefined) updates.text = normalizeItemText(list.projectId, input.text);
   if (input.completed !== undefined) {
     updates.completed = input.completed;
     updates.completedAt = input.completed ? now : null;
@@ -147,10 +148,20 @@ function decorateLists(lists: WikiTodoList[]) {
         .orderBy(asc(schema.wikiTodoItems.position), asc(schema.wikiTodoItems.createdAt))
         .all()
     : [];
-  return lists.map((list) => ({
-    ...list,
-    items: items.filter((item) => item.listId === list.id),
-  }));
+  const references = new Map(
+    [...new Set(lists.map((list) => list.projectId))]
+      .map((projectId) => [projectId, wikiTodoReferenceContext(projectId)] as const),
+  );
+  return lists.map((list) => {
+    const referenceContext = references.get(list.projectId)!;
+    return {
+      ...list,
+      items: items.filter((item) => item.listId === list.id).map((item) => ({
+        ...item,
+        text: canonicalizeWikiReferences(item.text, referenceContext.members, referenceContext.tasks),
+      })),
+    };
+  });
 }
 
 function normalizeListName(value: string) {
@@ -160,11 +171,25 @@ function normalizeListName(value: string) {
   return name;
 }
 
-function normalizeItemText(value: string) {
+function normalizeItemText(projectId: string, value: string) {
   const text = value.trim().replace(/\s+/g, ' ');
   if (!text) throw createError({ statusCode: 400, statusMessage: 'wiki_todo_item_text_required' });
   if (text.length > MAX_ITEM_TEXT_LENGTH) throw createError({ statusCode: 400, statusMessage: 'wiki_todo_item_text_too_long' });
-  return text;
+  const { members, tasks } = wikiTodoReferenceContext(projectId);
+  return canonicalizeWikiReferences(text, members, tasks);
+}
+
+function wikiTodoReferenceContext(projectId: string) {
+  const members = db.select({ id: schema.users.id, name: schema.users.name })
+    .from(schema.projectUsers)
+    .innerJoin(schema.users, eq(schema.projectUsers.userId, schema.users.id))
+    .where(eq(schema.projectUsers.projectId, projectId))
+    .all();
+  const tasks = db.select({ id: schema.tasks.id, key: schema.tasks.key, title: schema.tasks.title })
+    .from(schema.tasks)
+    .where(eq(schema.tasks.projectId, projectId))
+    .all();
+  return { members, tasks };
 }
 
 function activity(projectId: string, userId: string, action: string, metadata: Record<string, unknown>, createdAt: string) {
