@@ -1142,31 +1142,37 @@ function humanError(error: unknown) {
   list-style: none;
 }
 
-.ak-wiki-editor :deep(li[data-type='taskItem']),
-.ak-wiki-rendered :deep(li[data-type='taskItem']) {
+.ak-wiki-editor :deep(ul[data-type='taskList'] > li),
+.ak-wiki-rendered :deep(ul[data-type='taskList'] > li) {
   display: flex;
+  flex-direction: row;
   align-items: flex-start;
   gap: 0.625rem;
 }
 
-.ak-wiki-editor :deep(li[data-type='taskItem'] > label),
-.ak-wiki-rendered :deep(li[data-type='taskItem'] > label) {
+.ak-wiki-editor :deep(ul[data-type='taskList'] > li > label),
+.ak-wiki-rendered :deep(ul[data-type='taskList'] > li > label) {
   display: flex;
   flex: none;
   align-items: center;
   padding-top: 0.35rem;
 }
 
-.ak-wiki-editor :deep(li[data-type='taskItem'] input),
-.ak-wiki-rendered :deep(li[data-type='taskItem'] input) {
+.ak-wiki-editor :deep(ul[data-type='taskList'] > li > label input),
+.ak-wiki-rendered :deep(ul[data-type='taskList'] > li > label input) {
   width: 1rem;
   height: 1rem;
   accent-color: rgb(13 148 136);
 }
 
-.ak-wiki-editor :deep(li[data-type='taskItem'] > div),
-.ak-wiki-rendered :deep(li[data-type='taskItem'] > div) {
+.ak-wiki-editor :deep(ul[data-type='taskList'] > li > div),
+.ak-wiki-rendered :deep(ul[data-type='taskList'] > li > div) {
   min-width: 0;
   flex: 1;
+}
+
+.ak-wiki-editor :deep(ul[data-type='taskList'] > li > div > p),
+.ak-wiki-rendered :deep(ul[data-type='taskList'] > li > div > p) {
+  margin-block: 0;
 }
 </style>

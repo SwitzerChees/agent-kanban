@@ -60,7 +60,7 @@ Create with `title`, optional `content`, and optional `parentId`. Update only re
 }
 ```
 
-`position` is zero-based among the target parent's children. The move is cycle-safe and returns both the moved `page` and the normalized complete `pages` tree. Preserve Markdown tables and task lists. Stored member references have the form `[@ id="<user-id>" label="<fallback-name>"]`; stored task references use `[@ id="<task-id>" label="<KEY · fallback-title>" char="#"]`. IDs are stable and the UI resolves their current labels.
+`position` is zero-based among the target parent's children. The move is cycle-safe and returns both the moved `page` and the normalized complete `pages` tree. Preserve Markdown tables and task lists. Stored member references have the form `[@ id="<user-id>" label="<fallback-name>"]`; stored task references use `[@ id="<task-id>" label="<KEY · fallback-title>" char="#"]`. IDs are stable and the UI resolves their current labels. Use this markup everywhere a person or task should be linked; raw `@Name`, `**Name:**`, `#KEY`, plain task keys, and Markdown links are not Wiki references. A linked checklist owner belongs on the same line, for example `- [ ] [@ id="<user-id>" label="<fallback-name>"]: Prepare the release`.
 
 To generate tasks from a page, read that page and the board first, create each task with a unique stable `clientRequestId`, verify returned task keys, and update the source page only when explicitly requested.
 

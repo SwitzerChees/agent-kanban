@@ -78,6 +78,17 @@ describe('project wiki', () => {
     expect(updated.content).toContain('## Decisions');
   });
 
+  test('stores plain and bold owner mentions as stable project-member references', () => {
+    const page = wiki.createWikiPage(projectId, {
+      title: 'Generated meeting note',
+      content: '- @Wiki please clarify\n- [ ] **Wiki:** Prepare the release',
+    }, admin);
+
+    expect(page.content).toContain(`- [@ id="${member.id}" label="Wiki Member"] please clarify`);
+    expect(page.content).toContain(`- [ ] [@ id="${member.id}" label="Wiki Member"]: Prepare the release`);
+    expect(wiki.deleteWikiPage(page.id, admin)).toEqual({ ok: true });
+  });
+
   test('rejects cross-project parents and cyclic trees', async () => {
     const otherProject = await kanban.createProject({
       name: 'Other Wiki Project',

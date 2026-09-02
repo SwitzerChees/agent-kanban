@@ -126,12 +126,18 @@ describe('private project chats', () => {
       { id: projectId, key: 'CHAT', name: 'Chat project' },
       page,
       [page],
+      [{ id: other.id, name: other.name }],
+      [{ id: 'task-7', key: 'CHAT-7', title: 'Verify release' }],
     );
     expect(instructions).toContain('Ship after the acceptance checks.');
     expect(instructions).toContain(`/api/wiki-pages/${page.id}`);
     expect(instructions).toContain(`/api/projects/${projectId}/wiki/pages`);
     expect(instructions).toContain('clientRequestId');
     expect(instructions).toContain('untrusted');
+    expect(instructions).toContain(other.id);
+    expect(instructions).toContain('"key":"CHAT-7"');
+    expect(instructions).toContain('Verify release');
+    expect(instructions).toContain('Never substitute raw @Name');
   });
 
   test('locks harness configuration after the conversation starts and streams ordered events', () => {
