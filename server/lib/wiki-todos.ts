@@ -25,6 +25,10 @@ export interface UpdateWikiTodoItemInput {
   expectedUpdatedAt?: string;
 }
 
+export interface DeleteWikiTodoItemInput {
+  expectedUpdatedAt?: string;
+}
+
 export function listWikiTodoLists(projectId: string, user: User) {
   getProject(projectId, user);
   const lists = db.select().from(schema.wikiTodoLists)
@@ -132,6 +136,30 @@ export function updateWikiTodoItem(itemId: string, input: UpdateWikiTodoItemInpu
     }, now)).run();
   });
   return db.select().from(schema.wikiTodoItems).where(eq(schema.wikiTodoItems.id, itemId)).get()!;
+}
+
+export function deleteWikiTodoItem(itemId: string, input: DeleteWikiTodoItemInput, user: User) {
+  const item = db.select().from(schema.wikiTodoItems).where(eq(schema.wikiTodoItems.id, itemId)).get();
+  if (!item) throw createError({ statusCode: 404, statusMessage: 'wiki_todo_item_not_found' });
+  const list = authorizeList(item.listId, user);
+  if (input.expectedUpdatedAt !== undefined && input.expectedUpdatedAt !== item.updatedAt) {
+    throw createError({ statusCode: 409, statusMessage: 'wiki_todo_item_stale' });
+  }
+  const now = new Date().toISOString();
+  db.transaction((tx) => {
+    const deleted = tx.delete(schema.wikiTodoItems).where(and(
+      eq(schema.wikiTodoItems.id, itemId),
+      eq(schema.wikiTodoItems.updatedAt, item.updatedAt),
+    )).run();
+    if (!deleted.changes) throw createError({ statusCode: 409, statusMessage: 'wiki_todo_item_stale' });
+    tx.update(schema.wikiTodoLists).set({ updatedBy: user.id, updatedAt: now })
+      .where(eq(schema.wikiTodoLists.id, list.id)).run();
+    tx.insert(schema.activity).values(activity(list.projectId, user.id, 'wiki_todo_item_deleted', {
+      listId: list.id,
+      itemId,
+    }, now)).run();
+  });
+  return { id: itemId, listId: list.id };
 }
 
 function authorizeList(listId: string, user: User) {

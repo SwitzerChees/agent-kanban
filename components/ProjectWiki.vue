@@ -340,6 +340,7 @@ const WikiTodoList = createWikiTodoListExtension({
   createItem: createWikiTodoItem,
   updateItem: updateWikiTodoItemText,
   toggleItem: toggleWikiTodoItem,
+  deleteItem: deleteWikiTodoItem,
   openTask: (taskId) => emit('openTask', taskId),
 }).extend({
   addNodeView() {
@@ -873,6 +874,25 @@ async function updateWikiTodoItemText(current: WikiTodoItemRecord, text: string)
     });
     updateWikiTodoItemState(response.item);
     return response.item;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    await refreshTodoLists();
+    throw error;
+  }
+}
+
+async function deleteWikiTodoItem(current: WikiTodoItemRecord) {
+  errorMessage.value = null;
+  try {
+    await $fetch(`/api/wiki-todo-items/${current.id}`, {
+      method: 'DELETE',
+      body: { expectedUpdatedAt: current.updatedAt },
+    });
+    todoLists.value = todoLists.value.map((list) => list.id !== current.listId ? list : {
+      ...list,
+      updatedAt: new Date().toISOString(),
+      items: list.items.filter((item) => item.id !== current.id),
+    });
   } catch (error) {
     errorMessage.value = humanError(error);
     await refreshTodoLists();

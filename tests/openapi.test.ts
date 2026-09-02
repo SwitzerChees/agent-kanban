@@ -24,6 +24,7 @@ describe('external harness OpenAPI contract', () => {
     expect(document.paths['/api/projects/{projectId}/wiki/todo-lists']?.post?.operationId).toBe('createWikiTodoList');
     expect(document.paths['/api/wiki-todo-lists/{listId}/items']?.post?.operationId).toBe('addWikiTodoItem');
     expect(document.paths['/api/wiki-todo-items/{itemId}']?.patch?.operationId).toBe('updateWikiTodoItem');
+    expect(document.paths['/api/wiki-todo-items/{itemId}']?.delete?.operationId).toBe('deleteWikiTodoItem');
     expect(document.paths['/api/wiki-pages/{pageId}/images']?.get?.operationId).toBe('listWikiImages');
     expect(document.paths['/api/wiki-pages/{pageId}/images']?.post?.operationId).toBe('uploadWikiImage');
     expect(document.paths['/api/wiki-images/{imageId}']?.get?.operationId).toBe('getWikiImageContent');

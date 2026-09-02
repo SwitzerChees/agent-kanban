@@ -62,6 +62,9 @@ describe('wiki editor document extensions', () => {
     expect(todoNodeView).toContain(':aria-expanded="!collapsed"');
     expect(todoNodeView).toContain('@click.stop="collapsed = !collapsed"');
     expect(todoNodeView).toContain('<ul v-show="!collapsed">');
+    expect(todoNodeView).toContain('@click.stop="removeItem(item)"');
+    expect(todoNodeView).toContain('copy.value.deleteConfirm');
+    expect(component).toContain('deleteItem: deleteWikiTodoItem');
     expect(todoTextArea).toContain('rows="2"');
     expect(todoTextArea).toContain("event.metaKey || event.ctrlKey");
     expect(todoTextArea).toContain('data-wiki-todo-reference-menu');

@@ -136,6 +136,23 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [Wiki]
+      operationId: deleteWikiTodoItem
+      summary: Delete an item from every reference of its reusable list
+      parameters: [{ $ref: '#/components/parameters/WikiTodoItemId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedUpdatedAt]
+              properties:
+                expectedUpdatedAt: { type: string, format: date-time }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/wiki-pages/{pageId}:
     get:
       tags: [Wiki]

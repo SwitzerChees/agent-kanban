@@ -39,6 +39,8 @@ const copy = computed(() => locale.value === 'de' ? {
   edit: 'Eintrag bearbeiten',
   save: 'Speichern',
   cancel: 'Abbrechen',
+  delete: 'Löschen',
+  deleteConfirm: 'Diesen TODO-Eintrag wirklich löschen?',
   empty: 'Keine Einträge in dieser Ansicht.',
   failed: 'Die Änderung konnte nicht gespeichert werden.',
   collapse: 'TODO-Liste einklappen',
@@ -56,6 +58,8 @@ const copy = computed(() => locale.value === 'de' ? {
   edit: 'Edit item',
   save: 'Save',
   cancel: 'Cancel',
+  delete: 'Delete',
+  deleteConfirm: 'Delete this TODO item?',
   empty: 'No items in this view.',
   failed: 'The change could not be saved.',
   collapse: 'Collapse TODO list',
@@ -102,6 +106,20 @@ async function saveItem(item: WikiTodoItemRecord) {
   error.value = '';
   try {
     await options.value.updateItem(item, text);
+    cancelEditing();
+  } catch {
+    error.value = copy.value.failed;
+  } finally {
+    setBusy(item.id, false);
+  }
+}
+
+async function removeItem(item: WikiTodoItemRecord) {
+  if (!options.value.deleteItem || busyItems.value.has(item.id) || !window.confirm(copy.value.deleteConfirm)) return;
+  setBusy(item.id, true);
+  error.value = '';
+  try {
+    await options.value.deleteItem(item);
     cancelEditing();
   } catch {
     error.value = copy.value.failed;
@@ -221,6 +239,7 @@ function formatDate(value: string) {
               @cancel="cancelEditing"
             />
             <div class="ak-wiki-todo-edit-actions">
+              <button type="button" class="is-danger" :disabled="busyItems.has(item.id)" @mousedown.stop @click.stop="removeItem(item)">{{ copy.delete }}</button>
               <button type="button" @mousedown.stop @click.stop="cancelEditing">{{ copy.cancel }}</button>
               <button type="submit" class="is-primary" :disabled="!editingText.trim() || busyItems.has(item.id)" @mousedown.stop>{{ copy.save }}</button>
             </div>
@@ -371,6 +390,8 @@ li:hover .ak-wiki-todo-edit-button,
 .ak-wiki-todo-edit-button svg { width: 0.75rem; height: 0.75rem; }
 .ak-wiki-todo-edit { grid-column: 2 / -1; min-width: 0; }
 .ak-wiki-todo-edit-actions { display: flex; justify-content: flex-end; gap: 0.375rem; margin-top: 0.5rem; }
+.ak-wiki-todo button.is-danger { margin-right: auto; color: rgb(220 38 38); }
+.ak-wiki-todo button.is-danger:hover:not(:disabled) { background: rgb(254 226 226); color: rgb(185 28 28); }
 .ak-wiki-todo button.is-primary { background: rgb(13 148 136); color: white; padding: 0.4375rem 0.875rem; }
 .ak-wiki-todo button.is-primary:hover:not(:disabled) { background: rgb(15 118 110); color: white; }
 .ak-wiki-todo > ul > li.is-empty { display: block; color: rgb(113 113 122); font-size: 0.8125rem; }
@@ -392,6 +413,8 @@ li:hover .ak-wiki-todo-edit-button,
 :global(.dark) .ak-wiki-todo button:hover:not(:disabled),
 :global(.dark) .ak-wiki-todo button.is-active { background: rgb(19 78 74); color: rgb(153 246 228); }
 :global(.dark) .ak-wiki-todo button.is-primary { background: rgb(13 148 136); color: white; }
+:global(.dark) .ak-wiki-todo button.is-danger { color: rgb(252 165 165); }
+:global(.dark) .ak-wiki-todo button.is-danger:hover:not(:disabled) { background: rgb(127 29 29 / 0.45); color: rgb(254 202 202); }
 :global(.dark) .ak-wiki-todo .ak-wiki-reference.is-user { background: rgb(6 78 59 / 0.6); color: rgb(110 231 183); }
 :global(.dark) .ak-wiki-todo .ak-wiki-reference.is-task { background: rgb(30 58 138 / 0.55); color: rgb(147 197 253); }
 :global(.dark) .ak-wiki-todo-error { border-color: rgb(127 29 29); background: rgb(69 10 10 / 0.45); color: rgb(254 202 202); }

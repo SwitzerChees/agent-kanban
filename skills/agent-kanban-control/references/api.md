@@ -53,6 +53,7 @@ Create a project with `name`, `key`, and `folderPath`. Optional fields are `desc
 | `POST` | `/api/projects/{projectId}/wiki/todo-lists` | Create a project-local list with a case-insensitively unique `name`. |
 | `POST` | `/api/wiki-todo-lists/{listId}/items` | Append an item with `text`. |
 | `PATCH` | `/api/wiki-todo-items/{itemId}` | Update `text` and/or `completed`, optionally guarded by `expectedUpdatedAt`. |
+| `DELETE` | `/api/wiki-todo-items/{itemId}` | Delete one item from every embedded view, guarded by `expectedUpdatedAt`. |
 | `GET` | `/api/wiki-pages/{pageId}/images` | List page-scoped image metadata, editable strokes, and comment pins. |
 | `POST` | `/api/wiki-pages/{pageId}/images` | Upload one JPEG/PNG/WebP as multipart field `file`. |
 | `GET` | `/api/wiki-images/{imageId}` | Stream the rendered image; add `?variant=source` for the preserved source. |

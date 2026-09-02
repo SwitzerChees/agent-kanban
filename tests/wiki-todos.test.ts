@@ -123,6 +123,33 @@ describe('reusable wiki TODO lists', () => {
       'wiki_todo_item_updated',
     ]));
   });
+
+  test('deletes one item for every shared list reference with authorization and stale-write protection', () => {
+    const list = wikiTodos.createWikiTodoList(projectId, { name: 'Disposable actions' }, admin);
+    const item = wikiTodos.addWikiTodoItem(list.id, { text: 'Remove this item' }, member);
+
+    expectStatusMessage(
+      () => wikiTodos.deleteWikiTodoItem(item.id, { expectedUpdatedAt: '2020-01-01T00:00:00.000Z' }, member),
+      'wiki_todo_item_stale',
+    );
+    expectStatusMessage(
+      () => wikiTodos.deleteWikiTodoItem(item.id, { expectedUpdatedAt: item.updatedAt }, outsider),
+      'project_forbidden',
+    );
+
+    expect(wikiTodos.deleteWikiTodoItem(item.id, { expectedUpdatedAt: item.updatedAt }, member))
+      .toEqual({ id: item.id, listId: list.id });
+    expect(wikiTodos.listWikiTodoLists(projectId, admin).find((candidate) => candidate.id === list.id)?.items).toEqual([]);
+    expectStatusMessage(
+      () => wikiTodos.deleteWikiTodoItem(item.id, { expectedUpdatedAt: item.updatedAt }, member),
+      'wiki_todo_item_not_found',
+    );
+
+    const actions = dbModule.db.select().from(dbModule.schema.activity)
+      .where(eq(dbModule.schema.activity.projectId, projectId)).all()
+      .map((entry) => entry.action);
+    expect(actions).toContain('wiki_todo_item_deleted');
+  });
 });
 
 function insertUser(emailPrefix: string, name: string): User {
