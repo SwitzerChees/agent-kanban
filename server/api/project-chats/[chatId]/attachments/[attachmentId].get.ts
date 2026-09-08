@@ -2,26 +2,29 @@ import { createReadStream, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createError, getQuery, getRouterParam, sendStream, setHeader } from 'h3';
 import { appDataDir } from '../../../../lib/db';
-import { getProjectChatAttachment } from '../../../../lib/project-chat';
+import { isImportedProjectFile } from '../../../../lib/backup/imported-files';
+import { authorizeProjectChat, getProjectChatAttachment } from '../../../../lib/project-chat';
 import { requireSessionUser } from '../../../../lib/security/auth';
 
 export default defineEventHandler((event) => {
   const chatId = getRouterParam(event, 'chatId')!;
+  const user = requireSessionUser(event);
+  const thread = authorizeProjectChat(chatId, user);
   const attachment = getProjectChatAttachment(
     chatId,
     getRouterParam(event, 'attachmentId')!,
-    requireSessionUser(event),
+    user,
   );
   let realPath: string;
-  let uploadRoot: string;
   try {
     realPath = realpathSync(attachment.storagePath);
-    uploadRoot = realpathSync(appDataDir('chat-sessions', chatId, 'uploads'));
   } catch {
     throw createError({ statusCode: 404, statusMessage: 'chat_attachment_not_found' });
   }
+  const uploadRoot = realpathOrResolved(appDataDir('chat-sessions', chatId, 'uploads'));
   const relative = path.relative(uploadRoot, realPath);
-  if (relative.startsWith('..') || path.isAbsolute(relative) || !statSync(realPath).isFile()) {
+  const isOriginalUpload = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  if ((!isOriginalUpload && !isImportedProjectFile(realPath, thread.projectId)) || !statSync(realPath).isFile()) {
     throw createError({ statusCode: 404, statusMessage: 'chat_attachment_not_found' });
   }
 
@@ -35,3 +38,11 @@ export default defineEventHandler((event) => {
   setHeader(event, 'x-content-type-options', 'nosniff');
   return sendStream(event, createReadStream(realPath));
 });
+
+function realpathOrResolved(value: string) {
+  try {
+    return realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}

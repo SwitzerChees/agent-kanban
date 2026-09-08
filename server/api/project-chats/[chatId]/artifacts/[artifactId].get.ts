@@ -2,6 +2,7 @@ import { createReadStream, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createError, getRouterParam, sendStream, setHeader } from 'h3';
 import { appDataDir } from '../../../../lib/db';
+import { isImportedProjectFile } from '../../../../lib/backup/imported-files';
 import { authorizeProjectChat } from '../../../../lib/project-chat';
 import { requireSessionUser } from '../../../../lib/security/auth';
 
@@ -36,7 +37,8 @@ export default defineEventHandler((event) => {
   } catch {
     throw createError({ statusCode: 404, statusMessage: 'chat_artifact_not_found' });
   }
-  if (!roots.some((root) => isWithinPath(realPath, realpathOrResolved(root)))) {
+  if (!roots.some((root) => isWithinPath(realPath, realpathOrResolved(root)))
+    && !isImportedProjectFile(realPath, thread.projectId)) {
     throw createError({ statusCode: 404, statusMessage: 'chat_artifact_not_found' });
   }
   const contentType = IMAGE_TYPES[path.extname(realPath).toLowerCase()];

@@ -821,6 +821,84 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backups/capabilities:
+    get:
+      tags: [Administration]
+      operationId: getBackupCapabilities
+      summary: Get backup scope and S3 configuration (admin session only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backups/download:
+    get:
+      tags: [Administration]
+      operationId: downloadBackup
+      summary: Create and download a complete backup (admin session only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200':
+          description: Agent Kanban backup ZIP
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backups/s3:
+    post:
+      tags: [Administration]
+      operationId: uploadBackupToS3
+      summary: Create a backup, upload it to configured S3 storage, and apply retention (admin session only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/imports/preview:
+    post:
+      tags: [Administration]
+      operationId: previewBackupImport
+      summary: Upload and validate a backup without changing data (admin session only)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema: { type: string, format: binary }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/imports/{importId}:
+    delete:
+      tags: [Administration]
+      operationId: cancelBackupImport
+      summary: Remove a staged backup import (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: importId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/imports/{importId}/apply:
+    post:
+      tags: [Administration]
+      operationId: applyBackupImport
+      summary: Replace selected projects from a validated backup (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { name: importId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectIds, confirmation]
+              properties:
+                projectIds: { type: array, minItems: 1, items: { type: string, format: uuid } }
+                folderPaths: { type: object, additionalProperties: { type: string } }
+                confirmation: { type: string, enum: [IMPORT] }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/users:
     get:
       tags: [Administration]

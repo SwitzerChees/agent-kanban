@@ -31,6 +31,7 @@ import {
 } from './task-harness-sandbox';
 import { queueE2eForTaskTransition } from './e2e-tests';
 import { enqueueTaskCompletionNotification } from './task-completion-notifications';
+import { isMaintenanceMode } from './maintenance';
 
 let dispatcher: LocalTaskDispatcher | null = null;
 
@@ -108,6 +109,7 @@ class LocalTaskDispatcher {
   }
 
   private async tick() {
+    if (isMaintenanceMode()) return;
     this.wakeDueExternalWaits();
     this.checkStalledTasks();
     const queuedRows = db.select({ task: schema.tasks, column: schema.columns })

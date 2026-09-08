@@ -6,7 +6,7 @@ import { compressedImageFileName, compressImageForUpload } from '~/utils/image-u
 import { canCompleteReviewedAgentTask } from '~/utils/task-status-transition';
 
 type Locale = 'en' | 'de';
-type View = 'board' | 'wiki' | 'e2e' | 'projects' | 'users';
+type View = 'board' | 'wiki' | 'e2e' | 'projects' | 'users' | 'backups';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type TaskDescriptionView = TaskDescriptionSource | 'visual';
@@ -441,6 +441,7 @@ const dictionary = {
     apiTokenNeverExpires: 'Never expires',
     projects: 'Projects',
     users: 'Users',
+    backups: 'Backup & Import',
     admin: 'Admin',
     workspace: 'Projects',
     projectNavigation: 'Project navigation',
@@ -485,6 +486,7 @@ const dictionary = {
     commandOpenBoardOverview: 'Open project overview',
     commandGoToProjects: 'Manage projects',
     commandGoToUsers: 'Manage users',
+    commandGoToBackups: 'Backup and import',
     commandKeyboardHint: 'Navigate with arrows, run with Enter, clear or close with Esc',
     fullKeyboardMode: 'Full keyboard mode',
     fullKeyboardModeDescription: 'Show a short code on every visible control and type it to interact.',
@@ -742,6 +744,7 @@ const dictionary = {
     openBoard: 'Open board',
     projectTableHint: 'Manage projects and access. New projects appear in the sidebar immediately.',
     userTableHint: 'Create users and manage who can access projects.',
+    backupTableHint: 'Secure all application data or restore selected projects.',
     primaryDetails: 'Primary details',
     placement: 'Board area',
     evidence: 'Files and screenshots',
@@ -790,6 +793,7 @@ const dictionary = {
     apiTokenNeverExpires: 'Unbegrenzt gültig',
     projects: 'Projekte',
     users: 'Benutzer',
+    backups: 'Backup & Import',
     admin: 'Admin',
     workspace: 'Projekte',
     projectNavigation: 'Projektnavigation',
@@ -834,6 +838,7 @@ const dictionary = {
     commandOpenBoardOverview: 'Projektübersicht öffnen',
     commandGoToProjects: 'Projekte verwalten',
     commandGoToUsers: 'Benutzer verwalten',
+    commandGoToBackups: 'Backup und Import',
     commandKeyboardHint: 'Mit Pfeilen navigieren, mit Enter ausführen, mit Esc leeren oder schließen',
     fullKeyboardMode: 'Vollständiger Tastaturmodus',
     fullKeyboardModeDescription: 'Zeigt auf jedem sichtbaren Bedienelement einen kurzen Code, den du direkt tippen kannst.',
@@ -1091,6 +1096,7 @@ const dictionary = {
     openBoard: 'Board öffnen',
     projectTableHint: 'Verwalte Projekte und Zugriffe. Neue Projekte erscheinen sofort links.',
     userTableHint: 'Erstelle Benutzer und verwalte, wer Zugriff auf Projekte hat.',
+    backupTableHint: 'Sichere alle Applikationsdaten oder stelle ausgewählte Projekte wieder her.',
     primaryDetails: 'Kerndaten',
     placement: 'Board-Bereich',
     evidence: 'Dateien und Screenshots',
@@ -2138,7 +2144,7 @@ const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki' | 'e2e'>) 
   closeSidebarOnMobile();
 };
 
-const selectAdminView = (view: Extract<View, 'projects' | 'users'>) => {
+const selectAdminView = (view: Extract<View, 'projects' | 'users' | 'backups'>) => {
   activeView.value = view;
   syncProjectSurfaceRoute('board');
   closeSidebarOnMobile();
@@ -5807,6 +5813,12 @@ const commandPaletteGroups = computed<CommandPaletteGroup<AppCommandPaletteItem>
       icon: 'i-lucide-users-round',
       kbds: ['G', 'U'],
       onSelect: () => runCommandPaletteAction(() => selectAdminView('users')),
+    }, {
+      id: 'navigation:backups',
+      label: t.value.commandGoToBackups,
+      icon: 'i-lucide-archive-restore',
+      kbds: ['G', 'R'],
+      onSelect: () => runCommandPaletteAction(() => selectAdminView('backups')),
     });
   }
   navigationItems.push({
@@ -6396,6 +6408,18 @@ const humanError = (error: unknown) => {
           >
             <span v-if="!sidebarCollapsed">{{ t.users }}</span>
           </UButton>
+          <UButton
+            :variant="activeView === 'backups' ? 'soft' : 'ghost'"
+            color="neutral"
+            icon="i-lucide-archive-restore"
+            block
+            :aria-label="t.backups"
+            :title="sidebarCollapsed ? t.backups : undefined"
+            :class="sidebarCollapsed ? 'justify-center px-0' : 'justify-start'"
+            @click="selectAdminView('backups')"
+          >
+            <span v-if="!sidebarCollapsed">{{ t.backups }}</span>
+          </UButton>
         </nav>
 
         <nav class="ak-sidebar-projects min-h-0 flex-1 overflow-y-auto overflow-x-hidden" :aria-label="t.workspace">
@@ -6547,7 +6571,7 @@ const humanError = (error: unknown) => {
         :aria-hidden="isMobileViewport && !sidebarCollapsed ? 'true' : undefined"
         :inert="isMobileViewport && !sidebarCollapsed"
       >
-        <header v-if="activeView === 'projects' || activeView === 'users'" class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
+        <header v-if="activeView === 'projects' || activeView === 'users' || activeView === 'backups'" class="ak-main-header mb-3 flex min-h-16 shrink-0 items-center justify-between gap-3 border-b border-zinc-200/80 dark:border-zinc-800">
           <div class="flex min-w-0 items-center gap-3">
             <UButton
               class="md:hidden"
@@ -6564,10 +6588,10 @@ const humanError = (error: unknown) => {
             </span>
             <div class="min-w-0">
               <h1 class="ak-display truncate text-lg font-semibold tracking-tight sm:text-xl">
-                {{ activeView === 'projects' ? t.projects : t.users }}
+                {{ activeView === 'projects' ? t.projects : activeView === 'users' ? t.users : t.backups }}
               </h1>
               <p class="hidden truncate text-xs text-zinc-500 dark:text-zinc-400 sm:block">
-                {{ activeView === 'projects' ? t.projectTableHint : t.userTableHint }}
+                {{ activeView === 'projects' ? t.projectTableHint : activeView === 'users' ? t.userTableHint : t.backupTableHint }}
               </p>
             </div>
           </div>
@@ -6683,6 +6707,10 @@ const humanError = (error: unknown) => {
               </template>
             </UTable>
           </UCard>
+        </section>
+
+        <section v-else-if="activeView === 'backups'" class="min-h-0 flex-1 overflow-y-auto pb-2">
+          <AdminBackupRestore :locale="locale" />
         </section>
 
         <ProjectWiki

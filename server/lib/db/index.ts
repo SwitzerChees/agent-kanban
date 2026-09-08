@@ -13,7 +13,8 @@ const dbPath = path.join(dataDir, 'kanban.sqlite');
 
 fs.mkdirSync(dataDir, { recursive: true });
 
-const sqlite = new Database(dbPath);
+export const sqliteDatabase = new Database(dbPath);
+const sqlite = sqliteDatabase;
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('busy_timeout = 5000');
 sqlite.pragma('foreign_keys = ON');
@@ -1065,6 +1066,19 @@ export function appDataDir(...parts: string[]) {
   const target = path.join(dataDir, ...parts);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   return target;
+}
+
+export function appDataRoot() {
+  return dataDir;
+}
+
+export function databasePath() {
+  return dbPath;
+}
+
+export async function snapshotDatabase(destination: string) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  await sqlite.backup(destination);
 }
 
 function seedAdmin() {

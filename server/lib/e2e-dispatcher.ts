@@ -14,6 +14,7 @@ import {
   stopTaskHarnessUnit,
   taskHarnessBrowserSession,
 } from './task-harness-sandbox';
+import { isMaintenanceMode } from './maintenance';
 
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_ARTIFACTS = 50;
@@ -73,6 +74,7 @@ class E2eRunDispatcher {
   }
 
   private async tick() {
+    if (isMaintenanceMode()) return;
     const queued = db.select().from(schema.e2eTestRuns)
       .where(eq(schema.e2eTestRuns.status, 'queued'))
       .orderBy(asc(schema.e2eTestRuns.createdAt)).all();

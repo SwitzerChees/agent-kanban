@@ -124,6 +124,14 @@ export function requireSessionUser(event: H3Event): User {
   return user;
 }
 
+export function requireAdminSession(event: H3Event): User {
+  const user = requireSessionUser(event);
+  if (user.role !== 'admin') {
+    throw createError({ statusCode: 403, statusMessage: 'admin_required' });
+  }
+  return user;
+}
+
 export function createApiToken(userId: string, name: string, expiresInDays: 30 | 90 | 365 | null = 90) {
   const id = randomUUID();
   const secret = randomBytes(32).toString('base64url');

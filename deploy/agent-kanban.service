@@ -17,6 +17,11 @@ Environment=PATH=/home/ubuntu/.bun/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/
 # Give each transient task harness enough headroom for memory-intensive builds.
 Environment=KANBAN_TASK_MEMORY_HIGH_MB=4096
 Environment=KANBAN_TASK_MEMORY_MAX_MB=4096
+# Backup uploads use the AWS SDK credential chain. Configure the bucket in a
+# protected systemd drop-in and override the retention count when needed:
+# Environment=KANBAN_BACKUP_S3_BUCKET=example-bucket
+# Environment=KANBAN_BACKUP_S3_PREFIX=agent-kanban
+Environment=KANBAN_BACKUP_S3_RETENTION_COUNT=30
 ExecStart=/home/ubuntu/.local/bin/node .output/server/index.mjs
 Restart=on-failure
 RestartSec=5

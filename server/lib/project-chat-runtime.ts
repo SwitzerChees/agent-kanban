@@ -24,6 +24,7 @@ import {
   type ProjectChatActivity,
   type ProjectChatMode,
 } from './project-chat-harness';
+import { isMaintenanceMode } from './maintenance';
 
 const execFileAsync = promisify(execFile);
 const MAX_MESSAGE_LENGTH = 24_000;
@@ -99,6 +100,7 @@ export class ProjectChatRuntime {
     files: UploadedProjectChatFile[],
     user: User,
   ) {
+    if (isMaintenanceMode()) throw createError({ statusCode: 503, statusMessage: 'maintenance_in_progress' });
     validateProjectChatUploads(files);
     const thread = authorizeProjectChat(threadId, user);
     if (thread.status === 'running' || this.jobs.has(threadId)) {
@@ -137,6 +139,7 @@ export class ProjectChatRuntime {
     user: User,
     options: QueueMessageOptions = {},
   ) {
+    if (isMaintenanceMode()) throw createError({ statusCode: 503, statusMessage: 'maintenance_in_progress' });
     const thread = authorizeProjectChat(threadId, user);
     const content = body.trim();
     const displayContent = (options.displayContent ?? body).trim();
