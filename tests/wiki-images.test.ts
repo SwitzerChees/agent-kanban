@@ -97,6 +97,61 @@ describe('Wiki images', () => {
     expect(existsSync(renderedPath)).toBe(false);
   });
 
+  test('duplicates embedded image files and annotations with an independent page copy', async () => {
+    const source = wiki.createWikiPage(projectId, { title: 'Illustrated runbook' }, admin);
+    const image = await wikiImages.createWikiImage(source.id, {
+      fileName: 'runbook.png',
+      mimeType: 'image/png',
+      data: validPng,
+    }, admin);
+    const annotationData = {
+      version: 1 as const,
+      strokes: [{
+        color: '#0f766e',
+        width: 4,
+        points: [{ x: 0.1, y: 0.2 }, { x: 0.8, y: 0.7 }],
+      }],
+      pins: [{ id: 'copy-pin', x: 0.5, y: 0.5, comment: 'Keep this note' }],
+    };
+    await wikiImages.updateWikiImageAnnotation(image.id, {
+      annotationData,
+      renderedImage,
+      expectedUpdatedAt: image.updatedAt,
+    }, admin);
+    const updatedSource = wiki.updateWikiPage(source.id, {
+      content: `## Diagram\n\n:::wiki-image {#${image.id} alt="Runbook"} :::`,
+    }, admin);
+
+    const duplicated = wiki.duplicateWikiPage(updatedSource.id, {
+      title: 'Illustrated runbook (copy)',
+      expectedUpdatedAt: updatedSource.updatedAt,
+    }, member);
+    const copiedImages = wikiImages.listWikiImages(duplicated.page.id, member);
+    expect(copiedImages).toHaveLength(1);
+    expect(copiedImages[0]).toMatchObject({
+      pageId: duplicated.page.id,
+      fileName: image.fileName,
+      annotation: annotationData,
+    });
+    expect(copiedImages[0]!.id).not.toBe(image.id);
+    expect(duplicated.page.content).toContain(`#${copiedImages[0]!.id}`);
+    expect(duplicated.page.content).not.toContain(`#${image.id}`);
+
+    const sourceRecord = wikiImages.getWikiImage(image.id, admin).image;
+    const copiedRecord = wikiImages.getWikiImage(copiedImages[0]!.id, admin).image;
+    expect(copiedRecord.storagePath).not.toBe(sourceRecord.storagePath);
+    expect(copiedRecord.renderedStoragePath).not.toBe(sourceRecord.renderedStoragePath);
+    expect(readFileSync(copiedRecord.storagePath)).toEqual(validPng);
+    expect(readFileSync(copiedRecord.renderedStoragePath!)).toEqual(validPng);
+
+    expect(wiki.deleteWikiPage(source.id, admin)).toEqual({ ok: true });
+    expect(existsSync(copiedRecord.storagePath)).toBe(true);
+    expect(existsSync(copiedRecord.renderedStoragePath!)).toBe(true);
+    expect(wiki.deleteWikiPage(duplicated.page.id, admin)).toEqual({ ok: true });
+    expect(existsSync(copiedRecord.storagePath)).toBe(false);
+    expect(existsSync(copiedRecord.renderedStoragePath!)).toBe(false);
+  });
+
   test('rejects project outsiders, unsupported formats, spoofed signatures, and invalid pins', async () => {
     const page = wiki.createWikiPage(projectId, { title: 'Protected image page' }, admin);
     expectStatusMessage(() => wikiImages.listWikiImages(page.id, outsider), 'project_forbidden');

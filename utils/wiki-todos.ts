@@ -38,6 +38,7 @@ export interface WikiTodoExtensionOptions {
   createItem?: (listId: string, text: string) => Promise<WikiTodoItemRecord>;
   updateItem?: (item: WikiTodoItemRecord, text: string) => Promise<WikiTodoItemRecord>;
   toggleItem?: (item: WikiTodoItemRecord, completed: boolean) => Promise<WikiTodoItemRecord>;
+  moveItem?: (item: WikiTodoItemRecord, position: number) => Promise<WikiTodoItemRecord>;
   deleteItem?: (item: WikiTodoItemRecord) => Promise<void>;
   openTask?: (taskId: string) => void;
 }

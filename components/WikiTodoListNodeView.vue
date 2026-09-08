@@ -26,6 +26,8 @@ const editingText = ref('');
 const busyItems = ref(new Set<string>());
 const creating = ref(false);
 const error = ref('');
+const draggedItemId = ref<string | null>(null);
+const dropTarget = ref<{ itemId: string; placement: 'before' | 'after' } | null>(null);
 
 const copy = computed(() => locale.value === 'de' ? {
   missing: 'Diese TODO-Liste ist nicht mehr verfügbar.',
@@ -41,6 +43,9 @@ const copy = computed(() => locale.value === 'de' ? {
   cancel: 'Abbrechen',
   delete: 'Löschen',
   deleteConfirm: 'Diesen TODO-Eintrag wirklich löschen?',
+  move: 'TODO-Eintrag verschieben',
+  moveUp: 'TODO-Eintrag nach oben verschieben',
+  moveDown: 'TODO-Eintrag nach unten verschieben',
   empty: 'Keine Einträge in dieser Ansicht.',
   failed: 'Die Änderung konnte nicht gespeichert werden.',
   collapse: 'TODO-Liste einklappen',
@@ -60,6 +65,9 @@ const copy = computed(() => locale.value === 'de' ? {
   cancel: 'Cancel',
   delete: 'Delete',
   deleteConfirm: 'Delete this TODO item?',
+  move: 'Move TODO item',
+  moveUp: 'Move TODO item up',
+  moveDown: 'Move TODO item down',
   empty: 'No items in this view.',
   failed: 'The change could not be saved.',
   collapse: 'Collapse TODO list',
@@ -158,6 +166,71 @@ async function createItem() {
   }
 }
 
+function startItemDrag(event: DragEvent, item: WikiTodoItemRecord) {
+  if (!options.value.moveItem || busyItems.value.has(item.id) || editingItemId.value === item.id) {
+    event.preventDefault();
+    return;
+  }
+  draggedItemId.value = item.id;
+  dropTarget.value = null;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', item.id);
+  }
+}
+
+function updateItemDrop(event: DragEvent, item: WikiTodoItemRecord) {
+  if (!draggedItemId.value || draggedItemId.value === item.id || busyItems.value.has(item.id)) {
+    dropTarget.value = null;
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  dropTarget.value = {
+    itemId: item.id,
+    placement: event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after',
+  };
+}
+
+async function finishItemDrop(event: DragEvent, targetItem: WikiTodoItemRecord) {
+  event.preventDefault();
+  const dragged = list.value?.items.find((item) => item.id === draggedItemId.value);
+  const target = dropTarget.value;
+  clearItemDrag();
+  if (!dragged || !target || target.itemId !== targetItem.id) return;
+  const siblings = list.value?.items.filter((item) => item.id !== dragged.id) ?? [];
+  const targetIndex = siblings.findIndex((item) => item.id === targetItem.id);
+  if (targetIndex < 0) return;
+  await moveItem(dragged, targetIndex + (target.placement === 'after' ? 1 : 0));
+}
+
+async function moveItemBy(item: WikiTodoItemRecord, offset: -1 | 1) {
+  const items = list.value?.items ?? [];
+  const currentIndex = items.findIndex((candidate) => candidate.id === item.id);
+  const position = currentIndex + offset;
+  if (currentIndex < 0 || position < 0 || position >= items.length) return;
+  await moveItem(item, position);
+}
+
+async function moveItem(item: WikiTodoItemRecord, position: number) {
+  if (!options.value.moveItem || busyItems.value.has(item.id)) return;
+  setBusy(item.id, true);
+  error.value = '';
+  try {
+    await options.value.moveItem(item, position);
+  } catch {
+    error.value = copy.value.failed;
+  } finally {
+    setBusy(item.id, false);
+  }
+}
+
+function clearItemDrag() {
+  draggedItemId.value = null;
+  dropTarget.value = null;
+}
+
 function setBusy(itemId: string, busy: boolean) {
   const next = new Set(busyItems.value);
   if (busy) next.add(itemId);
@@ -213,7 +286,34 @@ function formatDate(value: string) {
       </header>
 
       <ul v-show="!collapsed">
-        <li v-for="item in visibleItems" :key="item.id" :class="{ 'is-completed': item.completed, 'is-editing': editingItemId === item.id }">
+        <li
+          v-for="item in visibleItems"
+          :key="item.id"
+          :class="{
+            'is-completed': item.completed,
+            'is-editing': editingItemId === item.id,
+            'is-dragging': draggedItemId === item.id,
+            'is-drop-before': dropTarget?.itemId === item.id && dropTarget.placement === 'before',
+            'is-drop-after': dropTarget?.itemId === item.id && dropTarget.placement === 'after',
+          }"
+          @dragover.stop="updateItemDrop($event, item)"
+          @drop.stop="finishItemDrop($event, item)"
+        >
+          <button
+            type="button"
+            class="ak-wiki-todo-item-drag"
+            draggable="true"
+            :disabled="busyItems.has(item.id) || editingItemId === item.id"
+            :aria-label="`${copy.move}: ${itemLabel(item)}`"
+            aria-keyshortcuts="ArrowUp ArrowDown"
+            :title="copy.move"
+            @mousedown.stop
+            @click.stop
+            @dragstart.stop="startItemDrag($event, item)"
+            @dragend="clearItemDrag"
+            @keydown.up.stop.prevent="moveItemBy(item, -1)"
+            @keydown.down.stop.prevent="moveItemBy(item, 1)"
+          ><UIcon name="i-lucide-grip-vertical" /></button>
           <input
             type="checkbox"
             :checked="item.completed"
@@ -278,6 +378,8 @@ function formatDate(value: string) {
             </div>
             <div class="ak-wiki-todo-item-meta">
               <time v-if="item.completedAt" :datetime="item.completedAt">{{ formatDate(item.completedAt) }}</time>
+              <button type="button" class="ak-wiki-todo-move-button" :disabled="busyItems.has(item.id) || list.items[0]?.id === item.id" :aria-label="`${copy.moveUp}: ${itemLabel(item)}`" :title="copy.moveUp" @mousedown.stop @click.stop="moveItemBy(item, -1)"><UIcon name="i-lucide-chevron-up" /></button>
+              <button type="button" class="ak-wiki-todo-move-button" :disabled="busyItems.has(item.id) || list.items.at(-1)?.id === item.id" :aria-label="`${copy.moveDown}: ${itemLabel(item)}`" :title="copy.moveDown" @mousedown.stop @click.stop="moveItemBy(item, 1)"><UIcon name="i-lucide-chevron-down" /></button>
               <button type="button" class="ak-wiki-todo-edit-button" :aria-label="`${copy.edit}: ${itemLabel(item)}`" @mousedown.stop @click.stop="startEditing(item)"><UIcon name="i-lucide-pencil" /></button>
             </div>
           </template>
@@ -360,8 +462,9 @@ function formatDate(value: string) {
 .ak-wiki-todo button:disabled { cursor: not-allowed; opacity: 0.55; }
 .ak-wiki-todo > ul { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
 .ak-wiki-todo > ul > li {
+  position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 0.625rem;
   margin: 0;
@@ -369,6 +472,31 @@ function formatDate(value: string) {
   border-bottom: 1px solid rgb(244 244 245);
 }
 .ak-wiki-todo > ul > li::before { display: none; }
+.ak-wiki-todo > ul > li.is-dragging { opacity: 0.45; }
+.ak-wiki-todo > ul > li.is-drop-before::after,
+.ak-wiki-todo > ul > li.is-drop-after::after {
+  position: absolute;
+  right: 0.75rem;
+  left: 0.75rem;
+  height: 2px;
+  border-radius: 999px;
+  background: rgb(13 148 136);
+  content: '';
+  pointer-events: none;
+}
+.ak-wiki-todo > ul > li.is-drop-before::after { top: -1px; }
+.ak-wiki-todo > ul > li.is-drop-after::after { bottom: -1px; }
+.ak-wiki-todo button.ak-wiki-todo-item-drag {
+  display: grid;
+  width: 1.5rem;
+  height: 1.75rem;
+  padding: 0;
+  cursor: grab;
+  place-items: center;
+  color: rgb(161 161 170);
+}
+.ak-wiki-todo button.ak-wiki-todo-item-drag:active { cursor: grabbing; }
+.ak-wiki-todo-item-drag svg { width: 0.875rem; height: 0.875rem; }
 .ak-wiki-todo input[type='checkbox'] { width: 1rem; height: 1rem; margin-top: 0.35rem; accent-color: rgb(13 148 136); }
 .ak-wiki-todo-item-text {
   min-width: 0;
@@ -384,11 +512,16 @@ function formatDate(value: string) {
 .ak-wiki-todo-item-text:focus-visible { box-shadow: 0 0 0 2px rgb(20 184 166 / 0.35); }
 .is-completed .ak-wiki-todo-item-text { color: rgb(113 113 122); text-decoration: line-through; }
 .ak-wiki-todo-item-meta { display: flex; min-height: 1.5rem; align-items: center; gap: 0.25rem; }
+.ak-wiki-todo-move-button,
 .ak-wiki-todo-edit-button { display: grid; width: 1.5rem; height: 1.5rem; place-items: center; opacity: 0; }
+.ak-wiki-todo button.ak-wiki-todo-move-button:disabled { opacity: 0; }
+.ak-wiki-todo-move-button svg,
+.ak-wiki-todo-edit-button svg { width: 0.75rem; height: 0.75rem; }
+li:hover .ak-wiki-todo-move-button,
+.ak-wiki-todo-move-button:focus-visible,
 li:hover .ak-wiki-todo-edit-button,
 .ak-wiki-todo-edit-button:focus-visible { opacity: 1; }
-.ak-wiki-todo-edit-button svg { width: 0.75rem; height: 0.75rem; }
-.ak-wiki-todo-edit { grid-column: 2 / -1; min-width: 0; }
+.ak-wiki-todo-edit { grid-column: 3 / -1; min-width: 0; }
 .ak-wiki-todo-edit-actions { display: flex; justify-content: flex-end; gap: 0.375rem; margin-top: 0.5rem; }
 .ak-wiki-todo button.is-danger { margin-right: auto; color: rgb(220 38 38); }
 .ak-wiki-todo button.is-danger:hover:not(:disabled) { background: rgb(254 226 226); color: rgb(185 28 28); }
@@ -422,8 +555,13 @@ li:hover .ak-wiki-todo-edit-button,
   .ak-wiki-todo-header-actions { width: 100%; justify-content: space-between; }
   .ak-wiki-todo-add { flex-direction: column; }
   .ak-wiki-todo-add > button { width: 100%; }
-  .ak-wiki-todo > ul > li { grid-template-columns: auto minmax(0, 1fr); }
-  .ak-wiki-todo-item-meta { grid-column: 2; }
-  .ak-wiki-todo-edit { grid-column: 2; }
+  .ak-wiki-todo > ul > li { grid-template-columns: auto auto minmax(0, 1fr); }
+  .ak-wiki-todo-item-meta { grid-column: 3; }
+  .ak-wiki-todo-edit { grid-column: 3; }
+}
+@media (hover: none) {
+  .ak-wiki-todo-move-button,
+  .ak-wiki-todo-edit-button { opacity: 1; }
+  .ak-wiki-todo button.ak-wiki-todo-move-button:disabled { opacity: 0.3; }
 }
 </style>

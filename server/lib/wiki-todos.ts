@@ -25,6 +25,11 @@ export interface UpdateWikiTodoItemInput {
   expectedUpdatedAt?: string;
 }
 
+export interface MoveWikiTodoItemInput {
+  position: number;
+  expectedUpdatedAt?: string;
+}
+
 export interface DeleteWikiTodoItemInput {
   expectedUpdatedAt?: string;
 }
@@ -138,6 +143,46 @@ export function updateWikiTodoItem(itemId: string, input: UpdateWikiTodoItemInpu
   return db.select().from(schema.wikiTodoItems).where(eq(schema.wikiTodoItems.id, itemId)).get()!;
 }
 
+export function moveWikiTodoItem(itemId: string, input: MoveWikiTodoItemInput, user: User) {
+  const item = db.select().from(schema.wikiTodoItems).where(eq(schema.wikiTodoItems.id, itemId)).get();
+  if (!item) throw createError({ statusCode: 404, statusMessage: 'wiki_todo_item_not_found' });
+  const list = authorizeList(item.listId, user);
+  if (input.expectedUpdatedAt !== undefined && input.expectedUpdatedAt !== item.updatedAt) {
+    throw createError({ statusCode: 409, statusMessage: 'wiki_todo_item_stale' });
+  }
+
+  const siblings = db.select().from(schema.wikiTodoItems)
+    .where(eq(schema.wikiTodoItems.listId, item.listId))
+    .orderBy(asc(schema.wikiTodoItems.position), asc(schema.wikiTodoItems.createdAt))
+    .all()
+    .filter((candidate) => candidate.id !== itemId);
+  const targetIndex = Math.min(Math.max(input.position, 0), siblings.length);
+  siblings.splice(targetIndex, 0, item);
+  const now = nextRevision(item.updatedAt);
+
+  db.transaction((tx) => {
+    for (const [index, sibling] of siblings.entries()) {
+      tx.update(schema.wikiTodoItems).set({
+        position: index * 1000,
+        ...(sibling.id === itemId ? { updatedBy: user.id, updatedAt: now } : {}),
+      }).where(eq(schema.wikiTodoItems.id, sibling.id)).run();
+    }
+    tx.update(schema.wikiTodoLists).set({ updatedBy: user.id, updatedAt: now })
+      .where(eq(schema.wikiTodoLists.id, list.id)).run();
+    tx.insert(schema.activity).values(activity(list.projectId, user.id, 'wiki_todo_item_moved', {
+      listId: list.id,
+      itemId,
+      position: targetIndex,
+    }, now)).run();
+  });
+
+  const items = decorateLists([list])[0]!.items;
+  return {
+    item: items.find((candidate) => candidate.id === itemId)!,
+    items,
+  };
+}
+
 export function deleteWikiTodoItem(itemId: string, input: DeleteWikiTodoItemInput, user: User) {
   const item = db.select().from(schema.wikiTodoItems).where(eq(schema.wikiTodoItems.id, itemId)).get();
   if (!item) throw createError({ statusCode: 404, statusMessage: 'wiki_todo_item_not_found' });
@@ -235,4 +280,10 @@ function activity(projectId: string, userId: string, action: string, metadata: R
     metadata: JSON.stringify(metadata),
     createdAt,
   };
+}
+
+function nextRevision(previous: string) {
+  const now = Date.now();
+  const previousTime = Date.parse(previous);
+  return new Date(Number.isFinite(previousTime) && now <= previousTime ? previousTime + 1 : now).toISOString();
 }

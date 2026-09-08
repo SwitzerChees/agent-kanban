@@ -166,6 +166,53 @@ describe('project wiki', () => {
     expect(wiki.deleteWikiPage(child.id, admin)).toEqual({ ok: true });
   });
 
+  test('duplicates one page beside its source while keeping child pages attached to the original', () => {
+    const parent = wiki.createWikiPage(projectId, { title: 'Runbooks' }, admin);
+    const first = wiki.createWikiPage(projectId, { title: 'First runbook', parentId: parent.id }, admin);
+    const source = wiki.createWikiPage(projectId, {
+      title: 'Release runbook',
+      parentId: parent.id,
+      content: '## Release\n\nShared checklist content.',
+    }, admin);
+    const child = wiki.createWikiPage(projectId, { title: 'Release appendix', parentId: source.id }, admin);
+
+    expectStatusMessage(
+      () => wiki.duplicateWikiPage(source.id, { title: 'Stale copy', expectedUpdatedAt: '2020-01-01T00:00:00.000Z' }, member),
+      'wiki_page_stale',
+    );
+    expectStatusMessage(
+      () => wiki.duplicateWikiPage(source.id, { title: 'Forbidden copy', expectedUpdatedAt: source.updatedAt }, outsider),
+      'project_forbidden',
+    );
+
+    const duplicated = wiki.duplicateWikiPage(source.id, {
+      title: 'Release runbook (copy)',
+      expectedUpdatedAt: source.updatedAt,
+    }, member);
+    expect(duplicated.page).toMatchObject({
+      parentId: parent.id,
+      title: 'Release runbook (copy)',
+      content: source.content,
+      createdBy: member.id,
+      updatedBy: member.id,
+    });
+    expect(duplicated.pages.filter((page) => page.parentId === parent.id).map((page) => page.id))
+      .toEqual([first.id, source.id, duplicated.page.id]);
+    expect(duplicated.pages.filter((page) => page.parentId === duplicated.page.id)).toEqual([]);
+    expect(duplicated.pages.find((page) => page.id === child.id)?.parentId).toBe(source.id);
+
+    const actions = dbModule.db.select().from(dbModule.schema.activity)
+      .where(eq(dbModule.schema.activity.projectId, projectId)).all()
+      .map((entry) => entry.action);
+    expect(actions).toContain('wiki_page_duplicated');
+
+    expect(wiki.deleteWikiPage(child.id, admin)).toEqual({ ok: true });
+    expect(wiki.deleteWikiPage(duplicated.page.id, admin)).toEqual({ ok: true });
+    expect(wiki.deleteWikiPage(source.id, admin)).toEqual({ ok: true });
+    expect(wiki.deleteWikiPage(first.id, admin)).toEqual({ ok: true });
+    expect(wiki.deleteWikiPage(parent.id, admin)).toEqual({ ok: true });
+  });
+
   test('enforces project access, protects non-empty trees, and records activity', () => {
     expectStatusMessage(() => wiki.listWikiPages(projectId, outsider), 'project_forbidden');
     const root = wiki.listWikiPages(projectId, member).find((page) => page.parentId === null)!;

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { copyFileSync, rmSync } from 'node:fs';
+import { extname } from 'node:path';
 import { and, asc, count, eq, inArray, isNull, max } from 'drizzle-orm';
 import { createError } from 'h3';
 import { canonicalizeWikiReferences } from '../../utils/wiki-references';
-import { db, schema } from './db';
+import { appDataDir, db, schema } from './db';
 import { getProject } from './kanban';
 import type { User, WikiPage } from './db/schema';
 
@@ -28,6 +29,11 @@ export interface UpdateWikiPageInput {
 export interface MoveWikiPageInput {
   parentId: string | null;
   position: number;
+  expectedUpdatedAt?: string;
+}
+
+export interface DuplicateWikiPageInput {
+  title: string;
   expectedUpdatedAt?: string;
 }
 
@@ -184,6 +190,114 @@ export function moveWikiPage(pageId: string, input: MoveWikiPageInput, user: Use
   const result = listWikiPages(page.projectId, user);
   return {
     page: result.find((item) => item.id === pageId)!,
+    pages: result,
+  };
+}
+
+export function duplicateWikiPage(pageId: string, input: DuplicateWikiPageInput, user: User) {
+  const source = authorizeWikiPage(pageId, user);
+  assertWikiPageRevision(source, input.expectedUpdatedAt);
+  const pageCount = db.select({ value: count() }).from(schema.wikiPages)
+    .where(eq(schema.wikiPages.projectId, source.projectId)).get()?.value ?? 0;
+  if (pageCount >= MAX_PAGES_PER_PROJECT) {
+    throw createError({ statusCode: 409, statusMessage: 'too_many_wiki_pages' });
+  }
+
+  const sourceImages = db.select().from(schema.wikiImages)
+    .where(eq(schema.wikiImages.pageId, pageId))
+    .orderBy(asc(schema.wikiImages.createdAt))
+    .all();
+  const duplicateId = randomUUID();
+  const now = new Date().toISOString();
+  const copiedPaths: string[] = [];
+  const images = sourceImages.map((image) => {
+    const imageId = randomUUID();
+    const storagePath = appDataDir('wiki-images', source.projectId, duplicateId, `${imageId}${extname(image.storagePath)}`);
+    const renderedStoragePath = image.renderedStoragePath
+      ? appDataDir('wiki-images', source.projectId, duplicateId, `${imageId}-annotated.png`)
+      : null;
+    return {
+      source: image,
+      record: {
+        id: imageId,
+        pageId: duplicateId,
+        fileName: image.fileName,
+        mimeType: image.mimeType,
+        size: image.size,
+        storagePath,
+        renderedStoragePath,
+        annotationData: image.annotationData,
+        createdBy: user.id,
+        updatedBy: user.id,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies typeof schema.wikiImages.$inferInsert,
+    };
+  });
+  let content = source.content;
+  for (const image of images) content = content.replaceAll(image.source.id, image.record.id);
+  content = normalizeProjectWikiContent(source.projectId, content);
+
+  const pages = db.select().from(schema.wikiPages)
+    .where(eq(schema.wikiPages.projectId, source.projectId))
+    .orderBy(asc(schema.wikiPages.position), asc(schema.wikiPages.createdAt))
+    .all();
+  const siblings = pages.filter((candidate) => (candidate.parentId ?? null) === (source.parentId ?? null));
+  const sourceIndex = siblings.findIndex((candidate) => candidate.id === source.id);
+  const duplicate: typeof schema.wikiPages.$inferInsert = {
+    id: duplicateId,
+    projectId: source.projectId,
+    parentId: source.parentId,
+    title: normalizeTitle(input.title),
+    content,
+    position: 0,
+    createdBy: user.id,
+    updatedBy: user.id,
+    createdAt: now,
+    updatedAt: now,
+  };
+  siblings.splice(sourceIndex + 1, 0, duplicate as WikiPage);
+
+  try {
+    for (const image of images) {
+      copyFileSync(image.source.storagePath, image.record.storagePath);
+      copiedPaths.push(image.record.storagePath);
+      if (image.source.renderedStoragePath && image.record.renderedStoragePath) {
+        copyFileSync(image.source.renderedStoragePath, image.record.renderedStoragePath);
+        copiedPaths.push(image.record.renderedStoragePath);
+      }
+    }
+    db.transaction((tx) => {
+      tx.insert(schema.wikiPages).values(duplicate).run();
+      if (images.length) tx.insert(schema.wikiImages).values(images.map((image) => image.record)).run();
+      for (const [index, sibling] of siblings.entries()) {
+        tx.update(schema.wikiPages).set({ position: index * 1000 })
+          .where(eq(schema.wikiPages.id, sibling.id)).run();
+      }
+      tx.insert(schema.activity).values({
+        id: randomUUID(),
+        projectId: source.projectId,
+        taskId: null,
+        userId: user.id,
+        action: 'wiki_page_duplicated',
+        metadata: JSON.stringify({
+          sourcePageId: source.id,
+          pageId: duplicateId,
+          title: duplicate.title,
+          parentId: duplicate.parentId,
+          imageCount: images.length,
+        }),
+        createdAt: now,
+      }).run();
+    });
+  } catch (error) {
+    for (const copiedPath of copiedPaths) rmSync(copiedPath, { force: true });
+    throw error;
+  }
+
+  const result = listWikiPages(source.projectId, user);
+  return {
+    page: result.find((page) => page.id === duplicateId)!,
     pages: result,
   };
 }

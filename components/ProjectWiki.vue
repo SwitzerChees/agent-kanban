@@ -102,6 +102,8 @@ const copy = computed(() => props.locale === 'de' ? {
   edit: 'Bearbeiten',
   save: 'Speichern',
   cancel: 'Abbrechen',
+  pageActions: 'Seitenaktionen',
+  duplicate: 'Seite duplizieren',
   delete: 'Seite löschen',
   deleteConfirm: 'Diese Wiki-Seite wirklich löschen?',
   share: 'Link kopieren',
@@ -178,6 +180,8 @@ const copy = computed(() => props.locale === 'de' ? {
   edit: 'Edit',
   save: 'Save',
   cancel: 'Cancel',
+  pageActions: 'Page actions',
+  duplicate: 'Duplicate page',
   delete: 'Delete page',
   deleteConfirm: 'Delete this wiki page?',
   share: 'Copy link',
@@ -365,6 +369,7 @@ const WikiTodoList = createWikiTodoListExtension({
   createItem: createWikiTodoItem,
   updateItem: updateWikiTodoItemText,
   toggleItem: toggleWikiTodoItem,
+  moveItem: moveWikiTodoItem,
   deleteItem: deleteWikiTodoItem,
   openTask: (taskId) => emit('openTask', taskId),
 }).extend({
@@ -897,6 +902,37 @@ async function deleteSelectedPage() {
   }
 }
 
+async function duplicateSelectedPage() {
+  if (!selectedPage.value || saving.value) return;
+  const source = selectedPage.value;
+  saving.value = true;
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ page: WikiPage; pages: WikiPage[] }>(`/api/wiki-pages/${source.id}/duplicate`, {
+      method: 'POST',
+      body: {
+        title: duplicatePageTitle(source.title),
+        expectedUpdatedAt: source.updatedAt,
+      },
+    });
+    pages.value = response.pages;
+    if (response.page.parentId) setPageExpanded(response.page.parentId, true);
+    selectedPageId.value = response.page.id;
+    editing.value = false;
+    resetDraft();
+    syncHash(response.page.id);
+  } catch (error) {
+    errorMessage.value = humanError(error);
+  } finally {
+    saving.value = false;
+  }
+}
+
+function duplicatePageTitle(title: string) {
+  const suffix = props.locale === 'de' ? ' (Kopie)' : ' (copy)';
+  return `${title.slice(0, 200 - suffix.length).trimEnd()}${suffix}`;
+}
+
 async function copyPageLink() {
   if (!selectedPage.value) return;
   syncHash(selectedPage.value.id);
@@ -998,6 +1034,26 @@ async function updateWikiTodoItemText(current: WikiTodoItemRecord, text: string)
       body: { text, expectedUpdatedAt: current.updatedAt },
     });
     updateWikiTodoItemState(response.item);
+    return response.item;
+  } catch (error) {
+    errorMessage.value = humanError(error);
+    await refreshTodoLists();
+    throw error;
+  }
+}
+
+async function moveWikiTodoItem(current: WikiTodoItemRecord, position: number) {
+  errorMessage.value = null;
+  try {
+    const response = await $fetch<{ item: WikiTodoItemRecord; items: WikiTodoItemRecord[] }>(`/api/wiki-todo-items/${current.id}/move`, {
+      method: 'POST',
+      body: { position, expectedUpdatedAt: current.updatedAt },
+    });
+    todoLists.value = todoLists.value.map((list) => list.id !== current.listId ? list : {
+      ...list,
+      updatedAt: response.item.updatedAt,
+      items: response.items,
+    });
     return response.item;
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -1402,10 +1458,11 @@ function humanErrorCode(error: unknown) {
           <UButton color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim()" :aria-label="copy.save" @click="savePageAction"><span class="hidden sm:inline">{{ copy.save }}</span></UButton>
         </template>
         <UPopover v-if="selectedPage && !editing" :content="{ align: 'end', side: 'bottom' }">
-          <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-ellipsis" :aria-label="copy.delete" aria-controls="wiki-page-actions-menu" />
+          <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-ellipsis" :aria-label="copy.pageActions" aria-controls="wiki-page-actions-menu" />
           <template #content>
             <div id="wiki-page-actions-menu" class="grid w-56 gap-1 p-2">
               <UButton color="neutral" variant="ghost" icon="i-lucide-copy" class="justify-start" @click="copyPageLink">{{ copied ? copy.copied : copy.share }}</UButton>
+              <UButton color="neutral" variant="ghost" icon="i-lucide-copy-plus" class="justify-start" :loading="saving" @click="duplicateSelectedPage">{{ copy.duplicate }}</UButton>
               <UButton color="error" variant="ghost" icon="i-lucide-trash-2" class="justify-start" @click="deleteSelectedPage">{{ copy.delete }}</UButton>
             </div>
           </template>

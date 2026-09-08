@@ -20,11 +20,13 @@ describe('external harness OpenAPI contract', () => {
     expect(document.paths['/api/wiki-pages/{pageId}']?.patch?.operationId).toBe('updateWikiPage');
     expect(document.paths['/api/wiki-pages/{pageId}']?.delete?.operationId).toBe('deleteWikiPage');
     expect(document.paths['/api/wiki-pages/{pageId}/move']?.post?.operationId).toBe('moveWikiPage');
+    expect(document.paths['/api/wiki-pages/{pageId}/duplicate']?.post?.operationId).toBe('duplicateWikiPage');
     expect(document.paths['/api/projects/{projectId}/wiki/todo-lists']?.get?.operationId).toBe('listWikiTodoLists');
     expect(document.paths['/api/projects/{projectId}/wiki/todo-lists']?.post?.operationId).toBe('createWikiTodoList');
     expect(document.paths['/api/wiki-todo-lists/{listId}/items']?.post?.operationId).toBe('addWikiTodoItem');
     expect(document.paths['/api/wiki-todo-items/{itemId}']?.patch?.operationId).toBe('updateWikiTodoItem');
     expect(document.paths['/api/wiki-todo-items/{itemId}']?.delete?.operationId).toBe('deleteWikiTodoItem');
+    expect(document.paths['/api/wiki-todo-items/{itemId}/move']?.post?.operationId).toBe('moveWikiTodoItem');
     expect(document.paths['/api/wiki-pages/{pageId}/images']?.get?.operationId).toBe('listWikiImages');
     expect(document.paths['/api/wiki-pages/{pageId}/images']?.post?.operationId).toBe('uploadWikiImage');
     expect(document.paths['/api/wiki-images/{imageId}']?.get?.operationId).toBe('getWikiImageContent');

@@ -65,6 +65,36 @@ describe('reusable wiki TODO lists', () => {
     expect(reopened).toMatchObject({ completed: false, completedAt: null });
   });
 
+  test('atomically reorders items and rejects stale or unauthorized moves', () => {
+    const list = wikiTodos.createWikiTodoList(projectId, { name: 'Ordered actions' }, admin);
+    const first = wikiTodos.addWikiTodoItem(list.id, { text: 'First action' }, admin);
+    const second = wikiTodos.addWikiTodoItem(list.id, { text: 'Second action' }, admin);
+    const third = wikiTodos.addWikiTodoItem(list.id, { text: 'Third action' }, admin);
+
+    const moved = wikiTodos.moveWikiTodoItem(third.id, {
+      position: 0,
+      expectedUpdatedAt: third.updatedAt,
+    }, member);
+    expect(moved.item).toMatchObject({ id: third.id, position: 0, updatedBy: member.id });
+    expect(moved.item.updatedAt).not.toBe(third.updatedAt);
+    expect(moved.items.map((item) => item.id)).toEqual([third.id, first.id, second.id]);
+    expect(moved.items.map((item) => item.position)).toEqual([0, 1000, 2000]);
+
+    expectStatusMessage(
+      () => wikiTodos.moveWikiTodoItem(third.id, { position: 2, expectedUpdatedAt: third.updatedAt }, admin),
+      'wiki_todo_item_stale',
+    );
+    expectStatusMessage(
+      () => wikiTodos.moveWikiTodoItem(first.id, { position: 2, expectedUpdatedAt: first.updatedAt }, outsider),
+      'project_forbidden',
+    );
+
+    const actions = dbModule.db.select().from(dbModule.schema.activity)
+      .where(eq(dbModule.schema.activity.projectId, projectId)).all()
+      .map((entry) => entry.action);
+    expect(actions).toContain('wiki_todo_item_moved');
+  });
+
   test('stores person and task references in TODO items with stable IDs', async () => {
     const task = await kanban.createTask(projectId, { title: 'Review TODO references' }, admin);
     const list = wikiTodos.createWikiTodoList(projectId, { name: 'Referenced actions' }, admin);

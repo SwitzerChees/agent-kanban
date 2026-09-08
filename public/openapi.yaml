@@ -227,6 +227,20 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-todo-items/{itemId}/move:
+    post:
+      tags: [Wiki]
+      operationId: moveWikiTodoItem
+      summary: Atomically reorder an item inside its reusable TODO list
+      parameters: [{ $ref: '#/components/parameters/WikiTodoItemId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiTodoItemMove' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/wiki-pages/{pageId}:
     get:
       tags: [Wiki]
@@ -268,6 +282,20 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/WikiPageMove' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/wiki-pages/{pageId}/duplicate:
+    post:
+      tags: [Wiki]
+      operationId: duplicateWikiPage
+      summary: Duplicate one Wiki page and its embedded images beside the source page
+      parameters: [{ $ref: '#/components/parameters/WikiPageId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WikiPageDuplicate' }
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
@@ -923,6 +951,12 @@ components:
         parentId: { type: [string, 'null'], format: uuid, description: Parent page or null for the project Wiki root }
         position: { type: integer, minimum: 0, maximum: 500, description: Zero-based position among the target parent's children }
         expectedUpdatedAt: { type: string, format: date-time }
+    WikiPageDuplicate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200, description: Title for the independent page copy }
+        expectedUpdatedAt: { type: string, format: date-time }
     WikiTodoListCreate:
       type: object
       required: [name]
@@ -942,6 +976,12 @@ components:
       anyOf:
         - required: [text]
         - required: [completed]
+    WikiTodoItemMove:
+      type: object
+      required: [position]
+      properties:
+        position: { type: integer, minimum: 0, maximum: 500, description: Zero-based position inside the TODO list }
+        expectedUpdatedAt: { type: string, format: date-time }
     WikiImageAnnotationUpdate:
       type: object
       required: [annotationData, renderedImage]
