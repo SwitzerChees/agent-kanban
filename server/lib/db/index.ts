@@ -385,6 +385,15 @@ export function ensureDatabase() {
       completed_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS task_completion_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      agent_run_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS task_refinements (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -551,6 +560,10 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity(task_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_agent_runs_task ON task_agent_runs(task_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_task_agent_runs_resume ON task_agent_runs(status, resume_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_completion_notifications_run_user
+      ON task_completion_notifications(agent_run_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_task_completion_notifications_pending
+      ON task_completion_notifications(user_id, delivered_at, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_agent_runs_active
       ON task_agent_runs(task_id)
       WHERE status IN ('running', 'waiting_external');

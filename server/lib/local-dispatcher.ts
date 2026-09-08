@@ -30,6 +30,7 @@ import {
   taskHarnessUnitName,
 } from './task-harness-sandbox';
 import { queueE2eForTaskTransition } from './e2e-tests';
+import { enqueueTaskCompletionNotification } from './task-completion-notifications';
 
 let dispatcher: LocalTaskDispatcher | null = null;
 
@@ -592,6 +593,21 @@ class LocalTaskDispatcher {
       if (completed.changes === 1) {
         const completedTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, queued.id)).get();
         if (completedTask && reviewColumn) queueE2eForTaskTransition(completedTask, reviewColumn.key, queued.createdBy);
+        if (completedTask) {
+          try {
+            enqueueTaskCompletionNotification({
+              taskId: completedTask.id,
+              assigneeId: completedTask.assigneeId,
+              agentRunId: agentRun.id,
+            });
+          } catch (error) {
+            runtimeLogger.warn('task completion notification could not be queued', {
+              task_id: queued.id,
+              run_id: agentRun.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
         notifyVoiceJobStatus(queued.id, 'done');
       } else {
         runtimeLogger.warn('task changed before completion; result not applied', {

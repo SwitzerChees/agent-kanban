@@ -367,6 +367,17 @@ export const taskAgentRuns = sqliteTable('task_agent_runs', {
   completedAt: text('completed_at'),
 });
 
+export const taskCompletionNotifications = sqliteTable('task_completion_notifications', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  agentRunId: text('agent_run_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  deliveredAt: text('delivered_at'),
+}, (table) => ({
+  runUser: uniqueIndex('idx_task_completion_notifications_run_user').on(table.agentRunId, table.userId),
+}));
+
 export const taskRefinements = sqliteTable('task_refinements', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
@@ -529,6 +540,7 @@ export type Unterthema = typeof unterthemen.$inferSelect;
 export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskAgentRun = typeof taskAgentRuns.$inferSelect;
+export type TaskCompletionNotification = typeof taskCompletionNotifications.$inferSelect;
 export type TaskRefinement = typeof taskRefinements.$inferSelect;
 export type TaskRefinementComment = typeof taskRefinementComments.$inferSelect;
 export type TaskRefinementVisualComment = typeof taskRefinementVisualComments.$inferSelect;

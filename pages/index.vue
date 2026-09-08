@@ -29,6 +29,16 @@ interface ApiToken {
   lastUsedAt: string | null;
 }
 
+interface TaskCompletionNotification {
+  notificationId: number;
+  taskId: string;
+  taskKey: string;
+  taskTitle: string;
+  projectId: string;
+  projectName: string;
+  createdAt: string;
+}
+
 interface CreatedApiToken {
   token: string;
   apiToken: ApiToken;
@@ -714,6 +724,16 @@ const dictionary = {
     closeSidebar: 'Close sidebar',
     darkMode: 'Dark mode',
     lightMode: 'Light mode',
+    completionAlerts: 'Completion alerts',
+    completionAlertsDescription: 'An in-app notice always appears. Enable sound and system notifications for assigned AI tasks.',
+    completionAlertsEnabled: 'Sound and system notifications enabled',
+    completionAlertsDisabled: 'Sound and system notifications disabled',
+    completionAlertsBlocked: 'System notifications are blocked by the browser. The sound remains active.',
+    completionAlertsUnsupported: 'This browser does not support system notifications. The sound remains active.',
+    completionAlertsTest: 'Play test sound',
+    taskCompletedNotificationTitle: '{key} is ready for review',
+    taskCompletedNotificationBody: '{title} in {project} has been completed by the AI agent.',
+    reviewTask: 'Review task',
     userName: 'Name',
     columns: 'Areas',
     tasks: 'Tasks',
@@ -1053,6 +1073,16 @@ const dictionary = {
     closeSidebar: 'Sidebar schließen',
     darkMode: 'Dunkelmodus',
     lightMode: 'Hellmodus',
+    completionAlerts: 'Abschlussmeldungen',
+    completionAlertsDescription: 'Ein Hinweis in der App erscheint immer. Aktiviere zusätzlich Ton und Systembenachrichtigungen für zugewiesene KI-Tasks.',
+    completionAlertsEnabled: 'Ton und Systembenachrichtigungen aktiviert',
+    completionAlertsDisabled: 'Ton und Systembenachrichtigungen deaktiviert',
+    completionAlertsBlocked: 'Systembenachrichtigungen sind im Browser blockiert. Der Ton bleibt aktiv.',
+    completionAlertsUnsupported: 'Dieser Browser unterstützt keine Systembenachrichtigungen. Der Ton bleibt aktiv.',
+    completionAlertsTest: 'Testton abspielen',
+    taskCompletedNotificationTitle: '{key} ist bereit zur Prüfung',
+    taskCompletedNotificationBody: '{title} in {project} wurde vom KI-Agenten abgeschlossen.',
+    reviewTask: 'Task prüfen',
     userName: 'Name',
     columns: 'Bereiche',
     tasks: 'Aufgaben',
@@ -1105,6 +1135,9 @@ const hierarchyReordering = ref(false);
 const projectModalOpen = ref(false);
 const userModalOpen = ref(false);
 const apiTokenModalOpen = ref(false);
+const completionAlertsEnabled = ref(false);
+const completionNotificationPermission = ref<NotificationPermission | 'unsupported'>('unsupported');
+const completionNotificationQueue = ref<TaskCompletionNotification[]>([]);
 const taskModalOpen = ref(false);
 const refinementCommentInteractionActive = ref(false);
 const discardTaskModalOpen = ref(false);
@@ -1184,6 +1217,10 @@ const drawingStroke = ref<AnnotationStroke | null>(null);
 const annotationColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'];
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let taskEventSource: EventSource | null = null;
+let completionEventSource: EventSource | null = null;
+let completionToastTimer: ReturnType<typeof setTimeout> | null = null;
+let completionAudioContext: AudioContext | null = null;
+const completionClaimsInFlight = new Set<number>();
 let taskDetailRefreshInFlight: Promise<void> | null = null;
 let taskDetailRefreshQueued = false;
 let commentMentionVisibilityObserver: IntersectionObserver | null = null;
@@ -1422,6 +1459,17 @@ const commandPaletteInputProps = computed(() => ({
 const isDarkMode = computed(() => colorMode.value === 'dark');
 const themeToggleLabel = computed(() => isDarkMode.value ? t.value.lightMode : t.value.darkMode);
 const themeToggleIcon = computed(() => isDarkMode.value ? 'i-lucide-sun' : 'i-lucide-moon');
+const activeCompletionNotification = computed(() => completionNotificationQueue.value[0] ?? null);
+const completionAlertLabel = computed(() => completionAlertsEnabled.value
+  ? t.value.completionAlertsEnabled
+  : t.value.completionAlertsDisabled);
+const completionAlertIcon = computed(() => completionAlertsEnabled.value ? 'i-lucide-bell-ring' : 'i-lucide-bell-off');
+const completionPermissionMessage = computed(() => {
+  if (!completionAlertsEnabled.value || completionNotificationPermission.value === 'granted' || completionNotificationPermission.value === 'default') return null;
+  return completionNotificationPermission.value === 'denied'
+    ? t.value.completionAlertsBlocked
+    : t.value.completionAlertsUnsupported;
+});
 const isAdmin = computed(() => user.value?.role === 'admin');
 const apiTokenExpiryItems = computed(() => [
   { label: t.value.apiTokenExpiry30, value: '30' },
@@ -2116,6 +2164,7 @@ const trapMobileSidebarFocus = (event: KeyboardEvent) => {
 };
 
 const handleWindowKeydown = (event: KeyboardEvent) => {
+  if (completionAlertsEnabled.value) void primeCompletionAudio();
   if (event.isComposing) {
     keyboardHintModifierArmed = false;
     if (keyboardHintMode.value) deactivateKeyboardHintMode();
@@ -2153,6 +2202,7 @@ const handleWindowKeyup = (event: KeyboardEvent) => {
 };
 
 const handleWindowPointerDown = () => {
+  if (completionAlertsEnabled.value) void primeCompletionAudio();
   keyboardHintModifierArmed = false;
   if (keyboardHintMode.value) deactivateKeyboardHintMode();
 };
@@ -2194,6 +2244,184 @@ const syncMobileViewport = () => {
   isMobileViewport.value = nextMobile;
   if (annotationModalOpen.value) scheduleAnnotationCanvasSync();
   if (keyboardHintMode.value) scheduleKeyboardHintRefresh();
+};
+
+const completionAlertPreferenceKey = () => `ak_completion_alerts:${user.value?.id ?? 'anonymous'}`;
+
+const syncCompletionNotificationPermission = () => {
+  completionNotificationPermission.value = 'Notification' in window ? Notification.permission : 'unsupported';
+};
+
+const ensureCompletionAudioContext = () => {
+  if (completionAudioContext) return completionAudioContext;
+  const AudioContextConstructor = window.AudioContext
+    ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextConstructor) return null;
+  completionAudioContext = new AudioContextConstructor();
+  return completionAudioContext;
+};
+
+const primeCompletionAudio = async () => {
+  if (!import.meta.client || !completionAlertsEnabled.value) return;
+  const context = ensureCompletionAudioContext();
+  if (context?.state === 'suspended') await context.resume().catch(() => undefined);
+};
+
+const playCompletionChime = async () => {
+  if (!import.meta.client) return;
+  const context = ensureCompletionAudioContext();
+  if (!context) return;
+  if (context.state === 'suspended') await context.resume().catch(() => undefined);
+  if (context.state !== 'running') return;
+
+  const notes = [
+    { frequency: 659.25, offset: 0, duration: 0.18 },
+    { frequency: 880, offset: 0.14, duration: 0.24 },
+  ];
+  const now = context.currentTime;
+  for (const note of notes) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const startsAt = now + note.offset;
+    const endsAt = startsAt + note.duration;
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(note.frequency, startsAt);
+    gain.gain.setValueAtTime(0.0001, startsAt);
+    gain.gain.exponentialRampToValueAtTime(0.09, startsAt + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, endsAt);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startsAt);
+    oscillator.stop(endsAt + 0.02);
+  }
+};
+
+const setCompletionAlertsEnabled = async (enabled: boolean) => {
+  if (!import.meta.client) return;
+  completionAlertsEnabled.value = enabled;
+  localStorage.setItem(completionAlertPreferenceKey(), String(enabled));
+  if (!enabled) return;
+
+  const context = ensureCompletionAudioContext();
+  const resumePromise = context?.state === 'suspended'
+    ? context.resume().catch(() => undefined)
+    : Promise.resolve();
+  const permissionPromise = 'Notification' in window && Notification.permission === 'default'
+    ? Notification.requestPermission().catch(() => Notification.permission)
+    : Promise.resolve('Notification' in window ? Notification.permission : 'unsupported');
+  await resumePromise;
+  await playCompletionChime();
+  await permissionPromise;
+  syncCompletionNotificationPermission();
+};
+
+const completionNotificationTitle = (notification: TaskCompletionNotification) => t.value.taskCompletedNotificationTitle
+  .replace('{key}', notification.taskKey);
+const completionNotificationBody = (notification: TaskCompletionNotification) => t.value.taskCompletedNotificationBody
+  .replace('{title}', notification.taskTitle)
+  .replace('{project}', notification.projectName);
+
+const scheduleCompletionToastDismissal = () => {
+  if (completionToastTimer) clearTimeout(completionToastTimer);
+  completionToastTimer = activeCompletionNotification.value
+    ? setTimeout(() => dismissCompletionNotification(activeCompletionNotification.value?.notificationId), 12_000)
+    : null;
+};
+
+const queueCompletionNotification = (notification: TaskCompletionNotification) => {
+  completionNotificationQueue.value.push(notification);
+  if (completionNotificationQueue.value.length === 1) scheduleCompletionToastDismissal();
+};
+
+const dismissCompletionNotification = (notificationId?: number) => {
+  const activeId = activeCompletionNotification.value?.notificationId;
+  if (notificationId !== undefined) {
+    completionNotificationQueue.value = completionNotificationQueue.value.filter((item) => item.notificationId !== notificationId);
+  } else {
+    completionNotificationQueue.value.shift();
+  }
+  if (activeId === notificationId || notificationId === undefined) scheduleCompletionToastDismissal();
+};
+
+const openTaskCompletionNotification = async (notification: TaskCompletionNotification) => {
+  dismissCompletionNotification(notification.notificationId);
+  await activateCommandProject(notification.projectId);
+  const task = board.value?.tasks.find((candidate) => candidate.id === notification.taskId);
+  if (!task) throw new Error('task_not_found');
+  await openTaskDetail(task);
+};
+
+const reviewTaskCompletionNotification = (notification: TaskCompletionNotification) => {
+  void openTaskCompletionNotification(notification).catch((error) => {
+    errorMessage.value = humanError(error);
+  });
+};
+
+const showNativeCompletionNotification = (notification: TaskCompletionNotification) => {
+  if (!completionAlertsEnabled.value || completionNotificationPermission.value !== 'granted' || !document.hidden) return;
+  const nativeNotification = new Notification(completionNotificationTitle(notification), {
+    body: completionNotificationBody(notification),
+    icon: '/agent-kanban-mark.svg',
+    tag: `agent-task-completed:${notification.notificationId}`,
+  });
+  nativeNotification.onclick = () => {
+    nativeNotification.close();
+    window.focus();
+    reviewTaskCompletionNotification(notification);
+  };
+};
+
+const isTaskCompletionNotification = (value: unknown): value is TaskCompletionNotification => {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<TaskCompletionNotification>;
+  return Number.isSafeInteger(candidate.notificationId)
+    && typeof candidate.taskId === 'string'
+    && typeof candidate.taskKey === 'string'
+    && typeof candidate.taskTitle === 'string'
+    && typeof candidate.projectId === 'string'
+    && typeof candidate.projectName === 'string'
+    && typeof candidate.createdAt === 'string';
+};
+
+const claimCompletionNotification = async (notification: TaskCompletionNotification) => {
+  if (completionClaimsInFlight.has(notification.notificationId)) return;
+  completionClaimsInFlight.add(notification.notificationId);
+  try {
+    const response = await $fetch<{ claimed: boolean }>(`/api/notifications/${notification.notificationId}/claim`, { method: 'POST' });
+    if (!response.claimed) return;
+    queueCompletionNotification(notification);
+    if (selectedProjectId.value === notification.projectId) void refreshCurrentBoard();
+    if (completionAlertsEnabled.value) {
+      void playCompletionChime();
+      showNativeCompletionNotification(notification);
+    }
+  } catch {
+    // Pending notifications remain on the server and are retried by the stream.
+  } finally {
+    completionClaimsInFlight.delete(notification.notificationId);
+  }
+};
+
+const closeCompletionNotificationStream = () => {
+  completionEventSource?.close();
+  completionEventSource = null;
+  completionClaimsInFlight.clear();
+};
+
+const startCompletionNotificationStream = () => {
+  closeCompletionNotificationStream();
+  if (!import.meta.client || !user.value) return;
+  completionAlertsEnabled.value = localStorage.getItem(completionAlertPreferenceKey()) === 'true';
+  syncCompletionNotificationPermission();
+  completionEventSource = new EventSource('/api/notifications/events');
+  completionEventSource.addEventListener('task_completed', (event) => {
+    try {
+      const notification = JSON.parse((event as MessageEvent).data) as unknown;
+      if (isTaskCompletionNotification(notification)) void claimCompletionNotification(notification);
+    } catch {
+      // Ignore malformed events; the server retains the unclaimed notification.
+    }
+  });
 };
 
 onMounted(async () => {
@@ -2260,6 +2488,10 @@ onBeforeUnmount(() => {
     document.removeEventListener('visibilitychange', handleVisibilityChange);
   }
   deactivateKeyboardHintMode();
+  closeCompletionNotificationStream();
+  if (completionToastTimer) clearTimeout(completionToastTimer);
+  void completionAudioContext?.close();
+  completionAudioContext = null;
   closeTaskEventStream();
   stopCommentMentionVisibilityObserver();
   stopRefinementPolling();
@@ -2270,7 +2502,10 @@ onBeforeUnmount(() => {
 const loadSession = async () => {
   const response = await $fetch<{ user: User | null }>('/api/auth/me');
   user.value = response.user;
-  if (user.value) await loadAppData();
+  if (user.value) {
+    await loadAppData();
+    startCompletionNotificationStream();
+  }
 };
 
 const loadAppData = async () => {
@@ -3132,12 +3367,14 @@ const login = async () => {
     const response = await $fetch<{ user: User }>('/api/auth/login', { method: 'POST', body: loginForm });
     user.value = response.user;
     await loadAppData();
+    startCompletionNotificationStream();
   } catch (error) {
     errorMessage.value = humanError(error);
   }
 };
 
 const logout = async () => {
+  closeCompletionNotificationStream();
   await $fetch('/api/auth/logout', { method: 'POST' });
   deactivateKeyboardHintMode();
   commandPaletteOpen.value = false;
@@ -3146,6 +3383,9 @@ const logout = async () => {
   apiTokenModalOpen.value = false;
   apiTokens.value = [];
   createdApiToken.value = null;
+  completionNotificationQueue.value = [];
+  if (completionToastTimer) clearTimeout(completionToastTimer);
+  completionToastTimer = null;
   user.value = null;
   board.value = null;
   projects.value = [];
@@ -6208,7 +6448,7 @@ const humanError = (error: unknown) => {
               <span class="block truncate text-[10px] text-zinc-500 dark:text-zinc-400">{{ user.email }}</span>
             </span>
           </div>
-          <div :class="sidebarCollapsed ? 'grid justify-items-center gap-1' : 'grid grid-cols-[auto_auto_auto_1fr] gap-1'">
+          <div :class="sidebarCollapsed ? 'grid justify-items-center gap-1' : 'grid grid-cols-[auto_auto_auto_auto_1fr] gap-1'">
             <UButton
               variant="ghost"
               color="neutral"
@@ -6231,6 +6471,51 @@ const humanError = (error: unknown) => {
               :class="sidebarCollapsed ? 'size-10 justify-center px-0' : ''"
               @click="toggleTheme"
             />
+            <UPopover :content="{ align: isMobileViewport ? 'end' : 'start', side: 'top' }">
+              <UButton
+                :variant="completionAlertsEnabled ? 'soft' : 'ghost'"
+                :color="completionAlertsEnabled ? 'primary' : 'neutral'"
+                size="sm"
+                :icon="completionAlertIcon"
+                :aria-label="completionAlertLabel"
+                :title="completionAlertLabel"
+                :class="sidebarCollapsed ? 'size-10 justify-center px-0' : ''"
+              />
+              <template #content>
+                <div class="grid w-[min(17rem,calc(100vw-2rem))] gap-4 p-4">
+                  <div class="flex items-start gap-3">
+                    <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-200">
+                      <UIcon name="i-lucide-bell-ring" class="size-4" />
+                    </span>
+                    <div class="min-w-0">
+                      <p class="text-sm font-semibold text-zinc-950 dark:text-zinc-100">{{ t.completionAlerts }}</p>
+                      <p class="mt-1 text-xs leading-5 text-zinc-600 dark:text-zinc-400">{{ t.completionAlertsDescription }}</p>
+                    </div>
+                  </div>
+                  <USwitch
+                    :model-value="completionAlertsEnabled"
+                    color="primary"
+                    :label="completionAlertLabel"
+                    :ui="{ label: 'text-xs font-medium text-zinc-800 dark:text-zinc-200' }"
+                    @update:model-value="(value) => setCompletionAlertsEnabled(Boolean(value))"
+                  />
+                  <p v-if="completionPermissionMessage" class="text-xs leading-5 text-amber-700 dark:text-amber-300">
+                    {{ completionPermissionMessage }}
+                  </p>
+                  <UButton
+                    v-if="completionAlertsEnabled"
+                    color="neutral"
+                    variant="soft"
+                    size="sm"
+                    icon="i-lucide-volume-2"
+                    block
+                    @click="playCompletionChime"
+                  >
+                    {{ t.completionAlertsTest }}
+                  </UButton>
+                </div>
+              </template>
+            </UPopover>
             <UButton
               variant="ghost"
               color="neutral"
@@ -8629,6 +8914,46 @@ const humanError = (error: unknown) => {
     </div>
 
     <Teleport to="body">
+      <div
+        class="pointer-events-none fixed inset-x-4 top-4 z-50 flex justify-end sm:left-auto sm:w-96"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <Transition name="ak-completion-toast">
+          <div
+            v-if="activeCompletionNotification"
+            :key="activeCompletionNotification.notificationId"
+            data-completion-notification
+            class="pointer-events-auto flex w-full items-start gap-3 rounded-xl bg-zinc-950 p-3 text-white shadow-md dark:bg-white dark:text-zinc-950"
+          >
+            <span class="grid size-9 shrink-0 place-items-center rounded-lg bg-teal-500/20 text-teal-200 dark:bg-teal-100 dark:text-teal-800">
+              <UIcon name="i-lucide-circle-check" class="size-4" />
+            </span>
+            <button
+              type="button"
+              class="min-w-0 flex-1 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
+              @click="reviewTaskCompletionNotification(activeCompletionNotification)"
+            >
+              <span class="block text-sm font-semibold leading-5">{{ completionNotificationTitle(activeCompletionNotification) }}</span>
+              <span class="mt-0.5 block text-xs leading-5 text-zinc-300 dark:text-zinc-600">{{ completionNotificationBody(activeCompletionNotification) }}</span>
+              <span class="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-teal-200 dark:text-teal-700">
+                {{ t.reviewTask }}
+                <UIcon name="i-lucide-arrow-right" class="size-3.5" />
+              </span>
+            </button>
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              icon="i-lucide-x"
+              :aria-label="t.close"
+              class="shrink-0 text-zinc-300 hover:text-white dark:text-zinc-600 dark:hover:text-zinc-950"
+              @click="dismissCompletionNotification(activeCompletionNotification.notificationId)"
+            />
+          </div>
+        </Transition>
+      </div>
+
       <div
         v-if="keyboardHintMode"
         data-keytip-layer
