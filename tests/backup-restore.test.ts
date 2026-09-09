@@ -147,6 +147,18 @@ describe('S3 backup retention', () => {
     expect(s3.backupS3Config({ KANBAN_BACKUP_S3_BUCKET: 'bucket', KANBAN_BACKUP_S3_RETENTION_COUNT: '12' })?.retentionCount).toBe(12);
   });
 
+  test('turns common S3 connection failures into actionable API errors', () => {
+    expect(s3.s3ConnectionError({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }, {
+      endpoint: 'https://s3.example.test', forcePathStyle: false,
+    })).toMatchObject({ statusCode: 400, statusMessage: 'backup_s3_virtual_host_tls_failed' });
+    expect(s3.s3ConnectionError({ name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }, {
+      endpoint: 'https://s3.example.test', forcePathStyle: true,
+    })).toMatchObject({ statusCode: 403, statusMessage: 'backup_s3_access_denied' });
+    expect(s3.s3ConnectionError({ code: 'ENOTFOUND' }, {
+      endpoint: 'https://missing.example.test', forcePathStyle: true,
+    })).toMatchObject({ statusCode: 502, statusMessage: 'backup_s3_endpoint_unreachable' });
+  });
+
   test('also removes managed backups older than the configured retention days', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-09T12:00:00Z'));

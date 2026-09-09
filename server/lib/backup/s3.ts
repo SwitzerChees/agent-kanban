@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
+import { createError } from 'h3';
 import {
   DeleteObjectsCommand,
   ListObjectsV2Command,
@@ -123,9 +124,43 @@ export async function testS3Connection(config: BackupS3Config) {
       MaxKeys: 1,
     }));
     return { ok: true };
+  } catch (error) {
+    throw s3ConnectionError(error, config);
   } finally {
     client.destroy();
   }
+}
+
+export function s3ConnectionError(error: unknown, config: Pick<BackupS3Config, 'endpoint' | 'forcePathStyle'>) {
+  const candidate = error as {
+    name?: string;
+    code?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  const code = candidate.Code ?? candidate.code ?? candidate.name ?? '';
+  const status = candidate.$metadata?.httpStatusCode;
+  if (code === 'DEPTH_ZERO_SELF_SIGNED_CERT') {
+    return createError({
+      statusCode: 400,
+      statusMessage: config.endpoint && !config.forcePathStyle
+        ? 'backup_s3_virtual_host_tls_failed'
+        : 'backup_s3_certificate_untrusted',
+    });
+  }
+  if (code === 'AccessDenied' || status === 403) {
+    return createError({ statusCode: 403, statusMessage: 'backup_s3_access_denied' });
+  }
+  if (code === 'InvalidAccessKeyId' || code === 'SignatureDoesNotMatch' || status === 401) {
+    return createError({ statusCode: 401, statusMessage: 'backup_s3_credentials_invalid' });
+  }
+  if (code === 'NoSuchBucket' || status === 404) {
+    return createError({ statusCode: 404, statusMessage: 'backup_s3_bucket_not_found' });
+  }
+  if (code === 'ENOTFOUND' || code === 'ECONNREFUSED' || code === 'ETIMEDOUT') {
+    return createError({ statusCode: 502, statusMessage: 'backup_s3_endpoint_unreachable' });
+  }
+  return createError({ statusCode: 502, statusMessage: 'backup_s3_connection_failed' });
 }
 
 export function prefixWithDirectory(prefix: string, directory: string) {

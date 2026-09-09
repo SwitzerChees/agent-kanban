@@ -43,7 +43,7 @@ const copy = computed(() => props.locale === 'de' ? {
   region: 'Region', basePrefix: 'Basisverzeichnis', basePrefixHint: 'Optionaler gemeinsamer Pfad innerhalb des Buckets.',
   accessKey: 'Access Key', secretKey: 'Secret Key', credentialsHint: 'Verschlüsselt auf diesem Server gespeichert und nicht in Backups exportiert.',
   keepCredentials: 'Leer lassen, um die gespeicherten Zugangsdaten beizubehalten.', clearCredentials: 'Gespeicherte Zugangsdaten entfernen',
-  pathStyle: 'Path-Style-Zugriff verwenden', encryption: 'Serverseitige Verschlüsselung', noEncryption: 'Nicht explizit setzen', kmsKey: 'KMS Key ID',
+  pathStyle: 'Path-Style-Zugriff verwenden', pathStyleHint: 'Für die meisten S3-kompatiblen Endpoints erforderlich; verhindert Bucket-Subdomains und Zertifikatsfehler.', encryption: 'Serverseitige Verschlüsselung', noEncryption: 'Nicht explizit setzen', kmsKey: 'KMS Key ID',
   test: 'Verbindung testen', testing: 'Verbindung wird geprüft …', testOk: 'Verbindung erfolgreich.', save: 'Speichern', cancel: 'Abbrechen',
   newSchedule: 'Backup-Zeitplan anlegen', editSchedule: 'Backup-Zeitplan bearbeiten', scheduleDescription: 'Cron-Ausdruck und Zeitzone bestimmen den nächsten Lauf.',
   cron: 'Cron-Ausdruck', cronHint: 'Fünf Felder: Minute, Stunde, Tag, Monat, Wochentag. Beispiel: 17 */12 * * *',
@@ -63,7 +63,7 @@ const copy = computed(() => props.locale === 'de' ? {
   region: 'Region', basePrefix: 'Base directory', basePrefixHint: 'Optional shared path inside the bucket.',
   accessKey: 'Access key', secretKey: 'Secret key', credentialsHint: 'Stored encrypted on this server and excluded from backups.',
   keepCredentials: 'Leave empty to keep the stored credentials.', clearCredentials: 'Remove stored credentials',
-  pathStyle: 'Use path-style access', encryption: 'Server-side encryption', noEncryption: 'Do not set explicitly', kmsKey: 'KMS key ID',
+  pathStyle: 'Use path-style access', pathStyleHint: 'Required by most S3-compatible endpoints; avoids bucket subdomains and certificate errors.', encryption: 'Server-side encryption', noEncryption: 'Do not set explicitly', kmsKey: 'KMS key ID',
   test: 'Test connection', testing: 'Testing connection …', testOk: 'Connection successful.', save: 'Save', cancel: 'Cancel',
   newSchedule: 'Add backup schedule', editSchedule: 'Edit backup schedule', scheduleDescription: 'The cron expression and time zone determine the next run.',
   cron: 'Cron expression', cronHint: 'Five fields: minute, hour, day, month, weekday. Example: 17 */12 * * *',
@@ -107,6 +107,10 @@ const encryptionItems = computed(() => [
 ]);
 
 onMounted(load);
+
+watch(() => destinationForm.endpoint, (endpoint, previous) => {
+  if (!editingDestinationId.value && endpoint && !previous) destinationForm.forcePathStyle = true;
+});
 
 async function load() {
   loading.value = true;
@@ -284,6 +288,13 @@ function humanError(error: unknown) {
     backup_s3_kms_key_required: { de: 'Für SSE-KMS ist eine KMS Key ID erforderlich.', en: 'SSE-KMS requires a KMS key ID.' },
     backup_credentials_unavailable: { de: 'Die gespeicherten Zugangsdaten konnten nicht entschlüsselt werden.', en: 'Stored credentials could not be decrypted.' },
     backup_runtime_busy: { de: 'Ein Agent-Lauf ist aktiv. Der Zeitplan versucht es beim nächsten Termin erneut.', en: 'An agent run is active. The schedule will try again at its next time.' },
+    backup_s3_virtual_host_tls_failed: { de: 'Der Endpoint unterstützt keine Bucket-Subdomain mit gültigem Zertifikat. Aktiviere Path-Style-Zugriff.', en: 'The endpoint does not support a bucket subdomain with a valid certificate. Enable path-style access.' },
+    backup_s3_certificate_untrusted: { de: 'Das TLS-Zertifikat des S3-Endpoints wird vom Server nicht als vertrauenswürdig erkannt.', en: 'The S3 endpoint TLS certificate is not trusted by the server.' },
+    backup_s3_access_denied: { de: 'Die Zugangsdaten haben keine Listenberechtigung für diesen Bucket.', en: 'The credentials do not have list permission for this bucket.' },
+    backup_s3_credentials_invalid: { de: 'Access Key oder Secret Key sind ungültig.', en: 'The access key or secret key is invalid.' },
+    backup_s3_bucket_not_found: { de: 'Der konfigurierte Bucket wurde nicht gefunden.', en: 'The configured bucket was not found.' },
+    backup_s3_endpoint_unreachable: { de: 'Der S3-Endpoint ist vom Server aus nicht erreichbar.', en: 'The S3 endpoint cannot be reached from the server.' },
+    backup_s3_connection_failed: { de: 'Die S3-Verbindung konnte nicht hergestellt werden.', en: 'The S3 connection could not be established.' },
   };
   return messages[code]?.[props.locale] ?? String(code).replaceAll('_', ' ');
 }
@@ -344,7 +355,7 @@ function humanError(error: unknown) {
           <div class="grid gap-4 sm:grid-cols-2"><UFormField :label="copy.region" required><UInput v-model="destinationForm.region" class="w-full" required /></UFormField><UFormField :label="copy.basePrefix" :description="copy.basePrefixHint"><UInput v-model="destinationForm.prefix" class="w-full" placeholder="agent-kanban" /></UFormField></div>
           <div class="rounded-xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-800 dark:bg-zinc-900/60"><div class="grid gap-4 sm:grid-cols-2"><UFormField :label="copy.accessKey"><UInput v-model="destinationForm.accessKeyId" class="w-full" autocomplete="off" :placeholder="editingDestinationId ? '••••••••••••' : ''" /></UFormField><UFormField :label="copy.secretKey"><UInput v-model="destinationForm.secretAccessKey" class="w-full" type="password" autocomplete="new-password" :placeholder="editingDestinationId ? '••••••••••••' : ''" /></UFormField></div><p class="mt-2 text-xs text-zinc-500">{{ editingDestinationId ? copy.keepCredentials : copy.credentialsHint }}</p><USwitch v-if="editingDestinationId" v-model="destinationForm.clearCredentials" class="mt-3" :label="copy.clearCredentials" /></div>
           <div class="grid gap-4 sm:grid-cols-2"><UFormField :label="copy.encryption"><USelect v-model="destinationForm.serverSideEncryption" class="w-full" :items="encryptionItems" /></UFormField><UFormField v-if="destinationForm.serverSideEncryption === 'aws:kms'" :label="copy.kmsKey" required><UInput v-model="destinationForm.kmsKeyId" class="w-full" required /></UFormField></div>
-          <USwitch v-model="destinationForm.forcePathStyle" :label="copy.pathStyle" />
+          <USwitch v-model="destinationForm.forcePathStyle" :label="copy.pathStyle" :description="copy.pathStyleHint" />
           <UAlert v-if="errorMessage" color="error" variant="soft" icon="i-lucide-alert-triangle" :description="errorMessage" /><UAlert v-if="successMessage" color="success" variant="soft" icon="i-lucide-circle-check" :description="successMessage" />
           <div class="flex flex-wrap justify-between gap-2"><UButton type="button" color="neutral" variant="outline" icon="i-lucide-plug-zap" :loading="busy" @click="testDestination">{{ copy.test }}</UButton><div class="flex gap-2"><UButton type="button" color="neutral" variant="ghost" :disabled="busy" @click="destinationModalOpen = false">{{ copy.cancel }}</UButton><UButton class="!bg-teal-700 !text-white hover:!bg-teal-800" type="submit" icon="i-lucide-save" :loading="busy">{{ copy.save }}</UButton></div></div>
         </form>
