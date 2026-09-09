@@ -116,6 +116,14 @@ export function ensureDatabase() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS wiki_collaboration_documents (
+      page_id TEXT PRIMARY KEY REFERENCES wiki_pages(id) ON DELETE CASCADE,
+      state BLOB NOT NULL,
+      generation TEXT NOT NULL,
+      source_updated_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS wiki_todo_lists (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -648,6 +656,12 @@ export function ensureDatabase() {
   }
   if (!projectColumns.some((column) => column.name === 'e2e_concurrency_limit')) {
     sqlite.exec('ALTER TABLE projects ADD COLUMN e2e_concurrency_limit INTEGER NOT NULL DEFAULT 2;');
+  }
+
+  const wikiCollaborationColumns = sqlite.prepare('PRAGMA table_info(wiki_collaboration_documents)').all() as Array<{ name: string }>;
+  if (!wikiCollaborationColumns.some((column) => column.name === 'generation')) {
+    sqlite.exec("ALTER TABLE wiki_collaboration_documents ADD COLUMN generation TEXT NOT NULL DEFAULT '';");
+    sqlite.exec("UPDATE wiki_collaboration_documents SET generation = lower(hex(randomblob(16))) WHERE generation = '';");
   }
 
   const e2eCaseColumns = new Set(

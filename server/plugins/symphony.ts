@@ -5,6 +5,7 @@ import { startProjectChatRuntime } from '../lib/project-chat-runtime';
 import { installServerStreamShutdown } from '../lib/server-streams';
 import { startE2eRunDispatcher } from '../lib/e2e-dispatcher';
 import { startBackupScheduler } from '../lib/backup/scheduler';
+import { stopWikiCollaboration } from '../lib/wiki-collaboration';
 
 export default defineNitroPlugin((nitroApp) => {
   ensureDatabase();
@@ -15,6 +16,7 @@ export default defineNitroPlugin((nitroApp) => {
   const e2eDispatcher = startE2eRunDispatcher();
   const backupScheduler = startBackupScheduler();
   nitroApp.hooks.hook('close', async () => {
+    stopWikiCollaboration();
     await Promise.all([
       taskDispatcher.stop(),
       refinementWorker.stop(),

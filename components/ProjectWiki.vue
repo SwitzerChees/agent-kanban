@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { EditorToolbarItem } from '@nuxt/ui';
 import type { Editor } from '@tiptap/core';
+import Collaboration from '@tiptap/extension-collaboration';
 import TaskItem from '@tiptap/extension-task-item';
 import TaskList from '@tiptap/extension-task-list';
 import { Table, TableCell, TableHeader, TableRow, TableView } from '@tiptap/extension-table';
@@ -10,6 +11,9 @@ import WikiTodoListNodeView from '~/components/WikiTodoListNodeView.vue';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown, wikiEditorHandlers, wikiTableKeyboardShortcuts } from '~/utils/wiki-editor';
 import { captureWikiScrollAnchor, normalizeWikiAnchorText, replaceCurrentWikiPage, restoredWikiScrollTop, type WikiScrollCandidate } from '~/utils/wiki-live-refresh';
 import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
+import { createWikiCollaborationBlocks, selectedWikiCollaborationBlockId, WIKI_COLLABORATION_LOCK_META, type WikiCollaborationLease } from '~/utils/wiki-collaboration-blocks';
+import { openWikiCollaboration, type WikiCollaborationHandle, type WikiCollaborationPageUpdate, type WikiCollaborationParticipant, type WikiCollaborationStatus } from '~/utils/wiki-collaboration-client';
+import { WIKI_COLLABORATION_FIELD } from '~/utils/wiki-collaboration-document';
 import { createWikiImageExtension, type WikiImageAnnotation, type WikiImageRecord } from '~/utils/wiki-images';
 import { filterWikiPageReferenceItems, resolveWikiReference, wikiPageReferenceItems, wikiReferenceRevision, type WikiReferenceAttributes } from '~/utils/wiki-references';
 import { createWikiTodoListExtension, type WikiTodoItemRecord, type WikiTodoListRecord } from '~/utils/wiki-todos';
@@ -164,6 +168,13 @@ const copy = computed(() => props.locale === 'de' ? {
   imageUploadError: 'Das Bild konnte nicht eingefügt werden. Unterstützt werden JPEG, PNG und WebP.',
   imageSaving: 'Bild wird verarbeitet …',
   imageStale: 'Das Bild wurde inzwischen geändert. Die aktuelle Version wurde neu geladen.',
+  done: 'Fertig',
+  live: 'Live synchronisiert',
+  connecting: 'Live-Verbindung wird aufgebaut …',
+  syncing: 'Änderungen werden synchronisiert …',
+  offline: 'Offline · Änderungen ausstehend',
+  activeHere: 'Auf dieser Seite aktiv',
+  editingHere: 'bearbeiten gerade',
 } : {
   board: 'Board',
   wiki: 'Wiki',
@@ -242,6 +253,13 @@ const copy = computed(() => props.locale === 'de' ? {
   imageUploadError: 'The image could not be inserted. JPEG, PNG, and WebP are supported.',
   imageSaving: 'Processing image …',
   imageStale: 'This image changed in the meantime. The current version was reloaded.',
+  done: 'Done',
+  live: 'Synced live',
+  connecting: 'Connecting live collaboration …',
+  syncing: 'Syncing changes …',
+  offline: 'Offline · changes pending',
+  activeHere: 'Active on this page',
+  editingHere: 'currently editing',
 });
 
 const pages = ref<WikiPage[]>([]);
@@ -264,6 +282,15 @@ const pageSearchDe = ref('');
 const pageSearchEn = ref('');
 const draftTitle = ref('');
 const draftContent = ref('');
+const collaborationDocument = shallowRef<WikiCollaborationHandle['document'] | null>(null);
+const collaborationHandle = shallowRef<WikiCollaborationHandle | null>(null);
+const collaborationParticipants = ref<WikiCollaborationParticipant[]>([]);
+const collaborationLeases = ref<WikiCollaborationLease[]>([]);
+const collaborationStatus = ref<WikiCollaborationStatus>('connecting');
+const collaborationLoading = ref(false);
+const collaborationEditorRevision = ref(0);
+const titleEditingFocused = ref(false);
+const editAfterCollaborationPageId = ref<string | null>(null);
 const draggedPageId = ref<string | null>(null);
 const dropTarget = ref<{ pageId: string | null; placement: WikiDropPlacement | 'root' } | null>(null);
 const wikiDocument = ref<HTMLElement | null>(null);
@@ -279,6 +306,8 @@ const WIKI_READ_REFRESH_INTERVAL_MS = 5_000;
 let wikiPollTimer: ReturnType<typeof setTimeout> | null = null;
 let wikiPollController: AbortController | null = null;
 let wikiPollGeneration = 0;
+let collaborationLoadGeneration = 0;
+let collaborationRetryTimer: ReturnType<typeof setTimeout> | null = null;
 const imageUploading = ref(false);
 const imageEditorOpen = ref(false);
 const imageEditorSaving = ref(false);
@@ -383,7 +412,7 @@ const WikiImage = createWikiImageExtension({
   getLocale: () => props.locale,
 });
 
-const wikiEditorExtensions = [
+const baseWikiEditorExtensions = [
   TaskList,
   TaskItem.configure({ nested: true }),
   AccessibleTable,
@@ -393,6 +422,22 @@ const wikiEditorExtensions = [
   WikiTodoList,
   WikiImage,
 ];
+
+const collaborationActive = computed(() => Boolean(collaborationDocument.value && collaborationHandle.value));
+const wikiEditorExtensions = computed(() => [
+  ...baseWikiEditorExtensions,
+  ...(collaborationDocument.value ? [
+    createWikiCollaborationBlocks({
+      getLeases: () => collaborationLeases.value,
+      getOwnSessionId: () => collaborationHandle.value?.sessionId ?? null,
+    }),
+    Collaboration.configure({
+      document: collaborationDocument.value,
+      field: WIKI_COLLABORATION_FIELD,
+    }),
+  ] : []),
+]);
+const wikiStarterKit = computed(() => collaborationActive.value ? { undoRedo: false as const } : {});
 
 const userMentionItems = computed(() => props.members.map((member) => ({
   id: member.id,
@@ -442,6 +487,28 @@ const dirty = computed(() => Boolean(selectedPage.value && (
   draftTitle.value.trim() !== selectedPage.value.title
   || draftContent.value !== selectedPage.value.content
 )));
+const visibleCollaborators = computed(() => {
+  const byUser = new Map<string, WikiCollaborationParticipant>();
+  for (const participant of collaborationParticipants.value) {
+    const current = byUser.get(participant.userId);
+    if (!current || participant.editing) byUser.set(participant.userId, participant);
+  }
+  return [...byUser.values()];
+});
+const foreignTitleLease = computed(() => collaborationLeases.value.find((lease) => (
+  lease.blockId === 'meta:title' && lease.sessionId !== collaborationHandle.value?.sessionId
+)) ?? null);
+const collaborationStatusLabel = computed(() => {
+  if (collaborationLoading.value || collaborationStatus.value === 'connecting') return copy.value.connecting;
+  if (collaborationStatus.value === 'syncing') return copy.value.syncing;
+  if (collaborationStatus.value === 'offline') return copy.value.offline;
+  return copy.value.live;
+});
+const collaborationStatusIcon = computed(() => collaborationStatus.value === 'offline'
+  ? 'i-lucide-cloud-off'
+  : collaborationStatus.value === 'syncing' || collaborationLoading.value
+    ? 'i-lucide-loader-circle'
+    : 'i-lucide-cloud-check');
 
 const treeRows = computed<WikiTreeRow[]>(() => {
   const byParent = new Map<string | null, WikiPage[]>();
@@ -623,19 +690,35 @@ const updatedLabel = computed(() => {
 const updatedInitials = computed(() => (selectedPage.value?.updatedByName ?? 'AK')
   .split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join(''));
 
+function collaboratorInitials(name: string) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
+}
+
 watch(selectedPage, (page) => {
   emit('pageChange', page ? { id: page.id, title: page.title } : null);
 }, { immediate: true });
 
 watch(() => props.project.id, () => {
   stopWikiPolling();
+  void disconnectWikiCollaboration();
   loadWikiLayoutPreferences();
   void loadPages();
 });
 
-watch([selectedPageId, editing, loading], () => restartWikiPolling(), { flush: 'post' });
+watch([selectedPageId, editing, loading, collaborationLoading, collaborationDocument], () => restartWikiPolling(), { flush: 'post' });
 watch(selectedPageId, (pageId) => {
   void loadWikiImages(pageId);
+  void connectWikiCollaboration(pageId);
+});
+watch(editing, (isEditing) => {
+  if (!isEditing) titleEditingFocused.value = false;
+  nextTick(syncWikiCollaborationPresence);
+  if (!isEditing && !collaborationHandle.value && collaborationStatus.value === 'offline' && selectedPageId.value) {
+    void connectWikiCollaboration(selectedPageId.value);
+  }
+});
+watch(draftTitle, (title) => {
+  if (editing.value && collaborationHandle.value) collaborationHandle.value.setTitle(title);
 });
 
 onMounted(() => {
@@ -649,8 +732,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   finishPageTreeResize();
   stopWikiPolling();
+  void disconnectWikiCollaboration();
   wikiImageLoadGeneration += 1;
-  activeWikiEditor = null;
+  handleWikiEditorReady(null);
   window.removeEventListener('keydown', handleSaveShortcut);
   window.removeEventListener('beforeunload', handleBeforeUnload);
   document.removeEventListener('visibilitychange', restartWikiPolling);
@@ -658,7 +742,7 @@ onBeforeUnmount(() => {
 
 function restartWikiPolling() {
   stopWikiPolling();
-  if (!import.meta.client || loading.value || editing.value || !selectedPageId.value || document.hidden) return;
+  if (!import.meta.client || loading.value || editing.value || collaborationLoading.value || collaborationDocument.value || !selectedPageId.value || document.hidden) return;
   scheduleWikiPoll(selectedPageId.value, wikiPollGeneration);
 }
 
@@ -733,6 +817,101 @@ function nextBrowserPaint() {
   return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+async function connectWikiCollaboration(pageId: string | null) {
+  const generation = ++collaborationLoadGeneration;
+  if (collaborationRetryTimer) clearTimeout(collaborationRetryTimer);
+  collaborationRetryTimer = null;
+  const previous = collaborationHandle.value;
+  collaborationHandle.value = null;
+  collaborationDocument.value = null;
+  collaborationParticipants.value = [];
+  collaborationLeases.value = [];
+  collaborationLoading.value = Boolean(pageId);
+  collaborationStatus.value = 'connecting';
+  stopWikiPolling();
+  if (previous) await previous.close();
+  if (!pageId || generation !== collaborationLoadGeneration || selectedPageId.value !== pageId) {
+    collaborationLoading.value = false;
+    restartWikiPolling();
+    return;
+  }
+
+  try {
+    const handle = await openWikiCollaboration(pageId, {
+      onStatus: (status) => {
+        if (generation === collaborationLoadGeneration) collaborationStatus.value = status;
+      },
+      onPresence: (presence) => {
+        if (generation !== collaborationLoadGeneration) return;
+        collaborationParticipants.value = presence.participants;
+        collaborationLeases.value = presence.leases;
+        redrawWikiCollaborationLocks();
+      },
+      onPage: (page) => {
+        if (generation === collaborationLoadGeneration) applyWikiCollaborationPage(page);
+      },
+      onTitle: (title) => {
+        if (generation === collaborationLoadGeneration && selectedPageId.value === pageId) draftTitle.value = title;
+      },
+      onReload: () => {
+        if (generation === collaborationLoadGeneration && selectedPageId.value === pageId) void connectWikiCollaboration(pageId);
+      },
+    });
+    if (generation !== collaborationLoadGeneration || selectedPageId.value !== pageId) {
+      await handle.close();
+      return;
+    }
+    collaborationHandle.value = handle;
+    collaborationDocument.value = handle.document;
+    collaborationEditorRevision.value += 1;
+    collaborationLoading.value = false;
+    handle.setPresence(editing.value, null);
+    if (editAfterCollaborationPageId.value === pageId) {
+      editAfterCollaborationPageId.value = null;
+      startEditing();
+      await nextTick();
+      document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.select();
+    }
+  } catch {
+    if (generation !== collaborationLoadGeneration) return;
+    collaborationLoading.value = false;
+    collaborationStatus.value = 'offline';
+    restartWikiPolling();
+    if (editAfterCollaborationPageId.value === pageId) {
+      editAfterCollaborationPageId.value = null;
+      startEditing();
+      await nextTick();
+      document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.select();
+    }
+    collaborationRetryTimer = setTimeout(() => {
+      collaborationRetryTimer = null;
+      if (selectedPageId.value === pageId && !editing.value) void connectWikiCollaboration(pageId);
+    }, WIKI_READ_REFRESH_INTERVAL_MS);
+  }
+}
+
+async function disconnectWikiCollaboration() {
+  collaborationLoadGeneration += 1;
+  if (collaborationRetryTimer) clearTimeout(collaborationRetryTimer);
+  collaborationRetryTimer = null;
+  const handle = collaborationHandle.value;
+  collaborationHandle.value = null;
+  collaborationDocument.value = null;
+  collaborationParticipants.value = [];
+  collaborationLeases.value = [];
+  collaborationLoading.value = false;
+  if (handle) await handle.close();
+}
+
+function applyWikiCollaborationPage(update: WikiCollaborationPageUpdate) {
+  pages.value = pages.value.map((page) => page.id === update.id ? { ...page, ...update } : page);
+}
+
+function redrawWikiCollaborationLocks() {
+  if (!activeWikiEditor || activeWikiEditor.isDestroyed) return;
+  activeWikiEditor.view.dispatch(activeWikiEditor.state.tr.setMeta(WIKI_COLLABORATION_LOCK_META, Date.now()));
+}
+
 async function loadPages() {
   loading.value = true;
   errorMessage.value = null;
@@ -776,10 +955,17 @@ function startEditing() {
   if (!selectedPage.value) return;
   resetDraft();
   editing.value = true;
-  nextTick(() => document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.focus());
+  nextTick(() => {
+    document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.focus();
+    syncWikiCollaborationPresence();
+  });
 }
 
 function cancelEditing() {
+  if (collaborationActive.value) {
+    void savePage();
+    return;
+  }
   resetDraft();
   editing.value = false;
   errorMessage.value = null;
@@ -791,6 +977,23 @@ async function savePage() {
   if (!title) {
     errorMessage.value = props.locale === 'de' ? 'Der Seitentitel darf nicht leer sein.' : 'The page title cannot be empty.';
     return false;
+  }
+  if (collaborationHandle.value) {
+    saving.value = true;
+    errorMessage.value = null;
+    collaborationHandle.value.setTitle(title);
+    try {
+      await collaborationHandle.value.flush();
+      if (collaborationStatus.value === 'offline') {
+        errorMessage.value = copy.value.offline;
+        return false;
+      }
+      collaborationHandle.value.setPresence(false, null);
+      editing.value = false;
+      return true;
+    } finally {
+      saving.value = false;
+    }
   }
   if (!dirty.value) {
     editing.value = false;
@@ -849,6 +1052,7 @@ async function selectPage(pageId: string) {
     return;
   }
   if (editing.value && dirty.value && !(await savePage())) return;
+  editAfterCollaborationPageId.value = null;
   selectedPageId.value = pageId;
   editing.value = false;
   mobilePagesOpen.value = false;
@@ -869,12 +1073,11 @@ async function createFromTemplate(templateId: WikiTemplateId, parentId: string |
     });
     pages.value.push(response.page);
     if (parentId) setPageExpanded(parentId, true);
+    editAfterCollaborationPageId.value = response.page.id;
     selectedPageId.value = response.page.id;
     syncHash(response.page.id);
     resetDraft();
-    editing.value = true;
-    await nextTick();
-    document.querySelector<HTMLTextAreaElement>('.ak-wiki-title-editor')?.select();
+    editing.value = false;
   } catch (error) {
     errorMessage.value = humanError(error);
   } finally {
@@ -1131,7 +1334,45 @@ async function loadWikiImages(pageId: string | null) {
 }
 
 function handleWikiEditorReady(editor: Editor | null) {
+  if (activeWikiEditor) {
+    activeWikiEditor.off('selectionUpdate', syncWikiCollaborationPresence);
+    activeWikiEditor.off('focus', syncWikiCollaborationPresence);
+    activeWikiEditor.off('blur', syncWikiCollaborationPresence);
+  }
   activeWikiEditor = editor;
+  if (activeWikiEditor) {
+    activeWikiEditor.on('selectionUpdate', syncWikiCollaborationPresence);
+    activeWikiEditor.on('focus', syncWikiCollaborationPresence);
+    activeWikiEditor.on('blur', syncWikiCollaborationPresence);
+    syncWikiCollaborationPresence();
+  }
+}
+
+function handleWikiTitleFocus() {
+  titleEditingFocused.value = true;
+  syncWikiCollaborationPresence();
+}
+
+function handleWikiTitleBlur() {
+  titleEditingFocused.value = false;
+  syncWikiCollaborationPresence();
+}
+
+function syncWikiCollaborationPresence() {
+  const handle = collaborationHandle.value;
+  if (!handle) return;
+  if (!editing.value) {
+    handle.setPresence(false, null);
+    return;
+  }
+  if (titleEditingFocused.value) {
+    handle.setPresence(true, 'meta:title');
+    return;
+  }
+  const blockId = activeWikiEditor?.isFocused
+    ? selectedWikiCollaborationBlockId(activeWikiEditor)
+    : null;
+  handle.setPresence(true, blockId);
 }
 
 function handleWikiImagePaste(event: ClipboardEvent) {
@@ -1436,6 +1677,20 @@ function humanErrorCode(error: unknown) {
 
       <UInput v-model="searchQuery" class="ml-1 hidden min-w-36 flex-1 md:block lg:max-w-xs" size="sm" icon="i-lucide-search" :placeholder="copy.search" :aria-label="copy.search" />
 
+      <div v-if="visibleCollaborators.length" class="hidden items-center -space-x-1.5 sm:flex" :title="copy.activeHere" :aria-label="copy.activeHere">
+        <span
+          v-for="participant in visibleCollaborators.slice(0, 4)"
+          :key="participant.userId"
+          class="relative grid size-7 place-items-center rounded-full border-2 border-white text-[9px] font-bold text-white shadow-sm dark:border-zinc-900"
+          :style="{ backgroundColor: participant.color }"
+          :title="participant.userName"
+        >
+          {{ collaboratorInitials(participant.userName) }}
+          <span v-if="participant.editing" class="absolute -bottom-0.5 -right-0.5 size-2 rounded-full border border-white bg-emerald-400 dark:border-zinc-900" aria-hidden="true" />
+        </span>
+        <span v-if="visibleCollaborators.length > 4" class="grid size-7 place-items-center rounded-full border-2 border-white bg-zinc-700 text-[9px] font-bold text-white dark:border-zinc-900">+{{ visibleCollaborators.length - 4 }}</span>
+      </div>
+
       <div class="ml-auto flex shrink-0 items-center gap-1">
         <UPopover v-model:open="createMenuOpen" :content="{ align: 'end', side: 'bottom' }">
           <UButton color="primary" variant="soft" size="sm" icon="i-lucide-file-plus-2" class="!bg-teal-50 !text-teal-800 dark:!bg-teal-950/60 dark:!text-teal-200" :loading="saving" :aria-label="copy.newPage" aria-controls="wiki-new-page-menu">
@@ -1452,10 +1707,13 @@ function humanErrorCode(error: unknown) {
           </template>
         </UPopover>
         <UButton v-if="selectedPage && !editing" class="hidden lg:inline-flex" color="neutral" variant="ghost" size="sm" :icon="copied ? 'i-lucide-check' : 'i-lucide-share-2'" @click="copyPageLink">{{ copied ? copy.copied : copy.share }}</UButton>
-        <UButton v-if="selectedPage && !editing" color="neutral" variant="soft" size="sm" icon="i-lucide-pencil-line" :aria-label="copy.edit" @click="startEditing"><span class="hidden sm:inline">{{ copy.edit }}</span></UButton>
+        <UButton v-if="selectedPage && !editing" color="neutral" variant="soft" size="sm" icon="i-lucide-pencil-line" :disabled="collaborationLoading" :aria-label="copy.edit" @click="startEditing"><span class="hidden sm:inline">{{ copy.edit }}</span></UButton>
         <template v-if="selectedPage && editing">
-          <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-x" :disabled="saving" :aria-label="copy.cancel" @click="cancelEditing"><span class="hidden lg:inline">{{ copy.cancel }}</span></UButton>
-          <UButton color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim()" :aria-label="copy.save" @click="savePageAction"><span class="hidden sm:inline">{{ copy.save }}</span></UButton>
+          <UButton v-if="collaborationActive" color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim() || collaborationStatus === 'offline'" :aria-label="copy.done" @click="savePageAction"><span class="hidden sm:inline">{{ copy.done }}</span></UButton>
+          <template v-else>
+            <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-x" :disabled="saving" :aria-label="copy.cancel" @click="cancelEditing"><span class="hidden lg:inline">{{ copy.cancel }}</span></UButton>
+            <UButton color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim()" :aria-label="copy.save" @click="savePageAction"><span class="hidden sm:inline">{{ copy.save }}</span></UButton>
+          </template>
         </template>
         <UPopover v-if="selectedPage && !editing" :content="{ align: 'end', side: 'bottom' }">
           <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-ellipsis" :aria-label="copy.pageActions" aria-controls="wiki-page-actions-menu" />
@@ -1581,19 +1839,23 @@ function humanErrorCode(error: unknown) {
               </div>
             </template>
           </UPopover>
-          <span v-if="editing" class="ml-auto inline-flex items-center gap-1.5 text-xs text-teal-700 dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span>
+          <span v-if="collaborationActive" class="ml-auto inline-flex items-center gap-1.5 text-xs" :class="collaborationStatus === 'offline' ? 'text-amber-700 dark:text-amber-300' : 'text-teal-700 dark:text-teal-300'"><UIcon :name="collaborationStatusIcon" class="size-3.5" :class="collaborationStatus === 'syncing' || collaborationLoading ? 'animate-spin' : ''" />{{ collaborationStatusLabel }}</span>
+          <span v-else-if="editing" class="ml-auto inline-flex items-center gap-1.5 text-xs text-teal-700 dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span>
         </div>
 
         <article v-if="selectedPage" class="ak-wiki-document-inner mx-auto w-full max-w-[1180px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
           <header class="ak-wiki-document-header border-b border-zinc-200 pb-7 dark:border-zinc-800">
             <div class="flex items-center gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400"><span class="grid size-8 place-items-center rounded-lg bg-teal-50 text-teal-700 ring-1 ring-teal-200 dark:bg-teal-950/60 dark:text-teal-300 dark:ring-teal-900"><UIcon name="i-lucide-file-text" class="size-4" /></span><span>{{ props.project.name }}</span><UIcon name="i-lucide-chevron-right" class="size-3.5" /><span class="truncate">{{ selectedPage.title }}</span></div>
-            <textarea v-if="editing" v-model="draftTitle" class="ak-wiki-title-editor mt-5" rows="2" maxlength="200" :aria-label="copy.titleLabel" />
+            <div v-if="editing" class="relative mt-5">
+              <textarea v-model="draftTitle" class="ak-wiki-title-editor" :class="foreignTitleLease ? 'is-collab-locked' : ''" rows="2" maxlength="200" :readonly="Boolean(foreignTitleLease)" :aria-label="copy.titleLabel" @focus="handleWikiTitleFocus" @blur="handleWikiTitleBlur" />
+              <span v-if="foreignTitleLease" class="absolute right-2 top-2 rounded-full px-2 py-1 text-[10px] font-semibold text-white shadow-sm" :style="{ backgroundColor: foreignTitleLease.color }">{{ foreignTitleLease.userName }}</span>
+            </div>
             <h2 v-else class="ak-display mt-5 text-3xl font-semibold leading-tight tracking-tight text-zinc-950 text-balance sm:text-4xl dark:text-white">{{ selectedPage.title }}</h2>
-            <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ updatedInitials }}</span><span>{{ copy.editedBy }} {{ selectedPage.updatedByName ?? '—' }}</span><span aria-hidden="true">·</span><time :datetime="selectedPage.updatedAt">{{ updatedLabel }}</time><span v-if="editing" class="ml-auto hidden items-center gap-1.5 text-teal-700 sm:inline-flex dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span></div>
+            <div class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400"><span class="grid size-6 place-items-center rounded-md bg-zinc-900 text-[9px] font-bold text-white dark:bg-white dark:text-zinc-950">{{ updatedInitials }}</span><span>{{ copy.editedBy }} {{ selectedPage.updatedByName ?? '—' }}</span><span aria-hidden="true">·</span><time :datetime="selectedPage.updatedAt">{{ updatedLabel }}</time><span v-if="collaborationActive" class="ml-auto hidden items-center gap-1.5 sm:inline-flex" :class="collaborationStatus === 'offline' ? 'text-amber-700 dark:text-amber-300' : 'text-teal-700 dark:text-teal-300'"><UIcon :name="collaborationStatusIcon" class="size-3.5" :class="collaborationStatus === 'syncing' || collaborationLoading ? 'animate-spin' : ''" />{{ collaborationStatusLabel }}</span><span v-else-if="editing" class="ml-auto hidden items-center gap-1.5 text-teal-700 sm:inline-flex dark:text-teal-300"><UIcon name="i-lucide-cloud" class="size-3.5" />{{ saving ? copy.saving : dirty ? copy.save : copy.saved }}</span></div>
           </header>
 
           <div v-if="editing" class="ak-wiki-editor mt-6 rounded-xl border border-zinc-200 bg-white shadow-sm focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/15 dark:border-zinc-800 dark:bg-zinc-950" @click="handleWikiContentClick" @keydown="handleWikiKeydown" @paste.capture="handleWikiImagePaste" @dragover.capture="handleWikiImageDragOver" @drop.capture="handleWikiImageDrop">
-            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${wikiImageRevision}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
+            <UEditor :key="`wiki-edit:${selectedPage.id}:${props.locale}:${collaborationEditorRevision}:${referenceLabelVersion}:${wikiImageRevision}`" v-slot="{ editor }" v-model="draftContent" content-type="markdown" :starter-kit="wikiStarterKit" :extensions="wikiEditorExtensions" :handlers="wikiEditorHandlers" :image="false" :mention="wikiMentionOptions" :placeholder="copy.placeholder" :ui="{ content: 'min-h-[26rem]', base: 'min-h-[26rem] px-5 py-5 sm:px-7' }" :aria-label="copy.contentLabel">
               <div class="ak-wiki-editor-toolbar sticky top-12 z-[5] flex min-w-0 items-center border-b border-zinc-200 bg-zinc-50/95 px-2 py-1.5 backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/95 md:top-0">
                 <div class="min-w-0 flex-1 overflow-x-auto">
                   <UEditorToolbar layout="fixed" :editor="editor" :items="editorToolbarItems" class="w-max" />
@@ -1608,7 +1870,7 @@ function humanErrorCode(error: unknown) {
             <p class="flex items-center gap-2 border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400 sm:px-7"><UIcon v-if="imageUploading" name="i-lucide-loader-circle" class="size-3 animate-spin text-teal-600" /><span>{{ imageUploading ? copy.imageSaving : copy.referencesHint }}</span></p>
           </div>
           <div v-else-if="selectedPage.content" @click="handleWikiContentClick" @keydown="handleWikiKeydown">
-            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${referenceLabelVersion}:${wikiImageRevision}`" :model-value="selectedPage.content" content-type="markdown" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
+            <UEditor :key="`wiki-read:${selectedPage.id}:${props.locale}:${collaborationEditorRevision}:${referenceLabelVersion}:${wikiImageRevision}`" :model-value="collaborationActive ? '' : selectedPage.content" content-type="markdown" :starter-kit="wikiStarterKit" :extensions="wikiEditorExtensions" :editable="false" :image="false" :mention="wikiMentionOptions" class="ak-wiki-rendered ak-wiki-prose pt-8 text-zinc-800 dark:text-zinc-200" :ui="{ root: 'px-0', content: 'px-0 py-0', base: 'px-0 py-0 text-[15px] leading-7 text-zinc-700 dark:text-zinc-300' }" />
           </div>
           <button v-else type="button" class="mt-8 flex min-h-40 w-full items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-500 transition hover:border-teal-400 hover:bg-teal-50/50 hover:text-teal-700 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-teal-700 dark:hover:bg-teal-950/20 dark:hover:text-teal-300" @click="startEditing"><span class="inline-flex items-center gap-2"><UIcon name="i-lucide-pencil-line" class="size-4" />{{ copy.placeholder }}</span></button>
         </article>
@@ -2098,5 +2360,37 @@ function humanErrorCode(error: unknown) {
 .ak-wiki-editor :deep(ul[data-type='taskList'] > li > div > p),
 .ak-wiki-rendered :deep(ul[data-type='taskList'] > li > div > p) {
   margin-block: 0;
+}
+
+.ak-wiki-title-editor.is-collab-locked {
+  border-radius: 0.75rem;
+  cursor: not-allowed;
+  outline: 2px solid color-mix(in srgb, var(--ak-collab-color, #0d9488) 70%, transparent);
+  outline-offset: 0.35rem;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-collab-block-locked) {
+  position: relative;
+  cursor: not-allowed;
+  border-radius: 0.45rem;
+  box-shadow: -3px 0 0 var(--ak-collab-color, #0d9488);
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--ak-collab-color, #0d9488) 9%, transparent), transparent 45%);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-collab-block-locked::after) {
+  position: absolute;
+  z-index: 3;
+  top: -0.65rem;
+  right: 0.25rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  color: white;
+  background: var(--ak-collab-color, #0d9488);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  content: attr(data-collab-editor);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1rem;
+  pointer-events: none;
 }
 </style>

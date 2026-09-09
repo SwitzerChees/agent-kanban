@@ -42,11 +42,12 @@ describe('Wiki read-mode live refresh', () => {
     expect(normalizeWikiAnchorText('  A\n  stable   section  ')).toBe('A stable section');
   });
 
-  test('binds one cancellable polling lifecycle to the selected page and read mode', () => {
+  test('keeps cancellable polling as the fallback outside a live collaboration session', () => {
     const component = readFileSync(new URL('../components/ProjectWiki.vue', import.meta.url), 'utf8');
-    expect(component).toContain('watch([selectedPageId, editing, loading]');
+    expect(component).toContain('watch([selectedPageId, editing, loading, collaborationLoading, collaborationDocument]');
     expect(component).toContain('stopWikiPolling();');
     expect(component).toContain('wikiPollController?.abort()');
+    expect(component).toContain('collaborationDocument.value');
     expect(component).toContain('if (nextPages !== pages.value)');
     expect(component).toContain('ref="wikiDocument"');
     expect(component).toContain('/api/wiki-pages/${pageId}');
