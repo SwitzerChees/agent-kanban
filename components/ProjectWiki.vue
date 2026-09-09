@@ -2373,11 +2373,12 @@ function humanErrorCode(error: unknown) {
   position: relative;
   cursor: not-allowed;
   border-radius: 0.45rem;
-  box-shadow: -3px 0 0 var(--ak-collab-color, #0d9488);
-  background-image: linear-gradient(90deg, color-mix(in srgb, var(--ak-collab-color, #0d9488) 9%, transparent), transparent 45%);
+  outline: 1px solid color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent);
+  outline-offset: 2px;
+  background-color: color-mix(in srgb, var(--ak-collab-color, #0d9488) 8%, transparent);
 }
 
-.ak-wiki-editor :deep(.ak-wiki-collab-block-locked::after) {
+.ak-wiki-editor :deep(.ak-wiki-collab-block-locked[data-collab-editor]::after) {
   position: absolute;
   z-index: 3;
   top: -0.65rem;
@@ -2392,5 +2393,25 @@ function humanErrorCode(error: unknown) {
   font-weight: 700;
   line-height: 1rem;
   pointer-events: none;
+}
+
+.ak-wiki-editor :deep(.ak-wiki-collab-block-locked[data-collab-lock-scope='table-row']) {
+  border-radius: 0;
+  outline: 0;
+  background-color: color-mix(in srgb, var(--ak-collab-color, #0d9488) 10%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-collab-block-locked[data-collab-lock-scope='table-row']:first-child) {
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent);
+}
+
+.ak-wiki-editor :deep(.ak-wiki-collab-block-locked[data-collab-lock-scope='table-row']:last-child) {
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--ak-collab-color, #0d9488) 55%, transparent);
 }
 </style>

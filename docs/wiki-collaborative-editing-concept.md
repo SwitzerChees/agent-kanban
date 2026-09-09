@@ -21,10 +21,10 @@ Für die aktuelle Ein-Node-Produktion reicht ein pro Seite geführter In-Memory-
 
 ## Fein granularer Lock
 
-Zusätzlich zum CRDT würde ich einen **Soft-Lock als kurzlebige Lease pro Top-Level-Block** einführen:
+Zusätzlich zum CRDT wird ein **Soft-Lock als kurzlebige Lease pro sinnvoller Bearbeitungseinheit** verwendet:
 
-- Absätze, Überschriften, Listen und Tabellen erhalten im Yjs-Dokument eine stabile `collabId`; die ID muss nicht im sichtbaren Markdown stehen.
-- Sobald der Cursor einen Block verändert, fordert der Client dafür eine Lease an. Tabellen und Listen gelten jeweils als ein Block; der Seitentitel verwendet die feste ID `meta:title`.
+- Absätze, Überschriften und andere eigenständige Blöcke erhalten im Yjs-Dokument eine stabile `collabId`; Tabellenzeilen und einzelne Listeneinträge erhalten zusätzlich je eine eigene ID. Die IDs müssen nicht im sichtbaren Markdown stehen.
+- Sobald der Cursor eine Einheit verändert, fordert der Client dafür eine Lease an. In Tabellen wird nur die aktuelle Zeile, in Listen nur der aktuelle Eintrag reserviert; der Seitentitel verwendet die feste ID `meta:title`.
 - Die Lease wird etwa alle fünf Sekunden erneuert und läuft nach circa 15 Sekunden oder beim Disconnect aus.
 - Andere Nutzer sehen Name/Farbe am Block und können ihn lesen, aber nicht versehentlich bearbeiten. Andere Blöcke der Seite bleiben frei.
 - Avatare und Bearbeitungsindikatoren zeigen zusätzlich, wer gerade auf der Seite aktiv ist.

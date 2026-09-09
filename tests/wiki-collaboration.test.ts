@@ -119,6 +119,47 @@ describe('collaborative wiki documents', () => {
       .toMatchObject({ granted: true });
   });
 
+  test('grants independent leases for table rows and assigns stable IDs to list items', () => {
+    const page = wiki.createWikiPage(projectId, {
+      title: 'Granular lease page',
+      content: [
+        '| Topic | Owner |',
+        '| --- | --- |',
+        '| Release | Alice |',
+        '| Review | Bob |',
+        '',
+        '- First item',
+        '- Second item',
+      ].join('\n'),
+    }, admin);
+    const first = collaboration.createWikiCollaborationSession(page.id, 'row-first', admin);
+    const second = collaboration.createWikiCollaborationSession(page.id, 'row-second', member);
+    const document = decodeDocument(first.state);
+    const root = document.getXmlFragment(WIKI_COLLABORATION_FIELD);
+    const rows = findXmlElements(root, 'tableRow');
+    const listItems = findXmlElements(root, 'listItem');
+    const rowIds = rows.map((row) => String(row.getAttribute('collabId')));
+
+    expect(rows).toHaveLength(3);
+    expect(new Set(rowIds).size).toBe(rows.length);
+    expect(rowIds.every(Boolean)).toBe(true);
+    expect(listItems).toHaveLength(2);
+    expect(listItems.every((item) => Boolean(item.getAttribute('collabId')))).toBe(true);
+
+    expect(collaboration.updateWikiCollaborationPresence(page.id, first.sessionId, {
+      editing: true,
+      blockId: rowIds[1],
+    }, admin)).toMatchObject({ granted: true });
+    expect(collaboration.updateWikiCollaborationPresence(page.id, second.sessionId, {
+      editing: true,
+      blockId: rowIds[2],
+    }, member)).toMatchObject({ granted: true });
+    expect(collaboration.updateWikiCollaborationPresence(page.id, second.sessionId, {
+      editing: true,
+      blockId: rowIds[1],
+    }, member)).toMatchObject({ granted: false, lockedBy: { userId: admin.id } });
+  });
+
   test('enforces project access and reloads active sessions after an external REST update', () => {
     const page = wiki.createWikiPage(projectId, { title: 'Externally edited', content: 'Original body' }, admin);
     expectStatusMessage(
@@ -155,6 +196,16 @@ function decodeDocument(state: string) {
 
 function encodeUpdate(update: Uint8Array) {
   return Buffer.from(update).toString('base64');
+}
+
+function findXmlElements(fragment: Y.XmlFragment, nodeName: string): Y.XmlElement[] {
+  const matches: Y.XmlElement[] = [];
+  for (const child of fragment.toArray()) {
+    if (!(child instanceof Y.XmlElement)) continue;
+    if (child.nodeName === nodeName) matches.push(child);
+    matches.push(...findXmlElements(child, nodeName));
+  }
+  return matches;
 }
 
 function insertUser(emailPrefix: string, name: string): User {

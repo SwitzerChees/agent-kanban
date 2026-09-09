@@ -21,7 +21,7 @@ export interface WikiCollaborationBlockOptions {
 export const WIKI_COLLABORATION_LOCK_META = 'wikiCollaborationLocks';
 const assignIdsMeta = 'wikiCollaborationAssignIds';
 const blockPluginKey = new PluginKey('wikiCollaborationBlocks');
-const blockTypes = [
+const topLevelBlockTypes = [
   'paragraph',
   'heading',
   'bulletList',
@@ -34,6 +34,14 @@ const blockTypes = [
   'wikiTodoList',
   'wikiImage',
 ];
+const granularBlockTypes = ['tableRow', 'listItem', 'taskItem'];
+const blockTypes = [...topLevelBlockTypes, ...granularBlockTypes];
+const topLevelBlockTypeSet = new Set(topLevelBlockTypes);
+const granularBlockTypeSet = new Set(granularBlockTypes);
+
+export function wikiCollaborationNodeUsesId(type: string, topLevel = false) {
+  return granularBlockTypeSet.has(type) || (topLevel && topLevelBlockTypeSet.has(type));
+}
 
 export function createWikiCollaborationBlocks(options?: Partial<WikiCollaborationBlockOptions>) {
   const resolved: WikiCollaborationBlockOptions = {
@@ -74,23 +82,20 @@ export function createWikiCollaborationBlocks(options?: Partial<WikiCollaboratio
             .filter((lease) => lease.sessionId !== ownSessionId)
             .map((lease) => [lease.blockId, lease]));
           if (!foreignLocks.size) return true;
-          return !changedTopLevelBlockIds(state.doc, transaction).some((id) => foreignLocks.has(id));
+          return !changedWikiCollaborationBlockIds(state.doc, transaction).some((id) => foreignLocks.has(id));
         },
         appendTransaction(_transactions, _oldState, state) {
-          let position = 0;
           let changed = false;
           const transaction = state.tr;
-          for (let index = 0; index < state.doc.childCount; index += 1) {
-            const node = state.doc.child(index);
-            if (!node.attrs.collabId) {
+          state.doc.descendants((node, position, parent) => {
+            if (wikiCollaborationNodeUsesId(node.type.name, parent === state.doc) && !node.attrs.collabId) {
               transaction.setNodeMarkup(position, undefined, {
                 ...node.attrs,
                 collabId: globalThis.crypto.randomUUID(),
               });
               changed = true;
             }
-            position += node.nodeSize;
-          }
+          });
           return changed
             ? transaction.setMeta(assignIdsMeta, true).setMeta('addToHistory', false)
             : null;
@@ -103,19 +108,30 @@ export function createWikiCollaborationBlocks(options?: Partial<WikiCollaboratio
               .map((lease) => [lease.blockId, lease]));
             if (!locks.size) return null;
             const decorations: Decoration[] = [];
-            let position = 0;
-            for (let index = 0; index < state.doc.childCount; index += 1) {
-              const node = state.doc.child(index);
+            state.doc.descendants((node, position) => {
               const lease = locks.get(String(node.attrs.collabId ?? ''));
               if (lease) {
-                decorations.push(Decoration.node(position, position + node.nodeSize, {
-                  class: 'ak-wiki-collab-block-locked',
-                  'data-collab-editor': lease.userName,
-                  style: `--ak-collab-color:${lease.color}`,
-                }));
+                if (node.type.name === 'tableRow') {
+                  node.forEach((cell, offset, index) => {
+                    decorations.push(Decoration.node(
+                      position + 1 + offset,
+                      position + 1 + offset + cell.nodeSize,
+                      lockDecorationAttributes(lease, 'table-row', index === 0),
+                    ));
+                  });
+                } else {
+                  decorations.push(Decoration.node(
+                    position,
+                    position + node.nodeSize,
+                    lockDecorationAttributes(
+                      lease,
+                      granularBlockTypeSet.has(node.type.name) ? 'list-item' : 'block',
+                      true,
+                    ),
+                  ));
+                }
               }
-              position += node.nodeSize;
-            }
+            });
             return DecorationSet.create(state.doc, decorations);
           },
         },
@@ -126,30 +142,52 @@ export function createWikiCollaborationBlocks(options?: Partial<WikiCollaboratio
 
 export function selectedWikiCollaborationBlockId(editor: { state: { selection: { $from: any } } }) {
   const position = editor.state.selection.$from;
+  for (let depth = position.depth; depth >= 1; depth -= 1) {
+    const node = position.node(depth);
+    if (node.type.name === 'tableRow') return String(node.attrs.collabId ?? '') || null;
+  }
+  for (let depth = position.depth; depth >= 1; depth -= 1) {
+    const node = position.node(depth);
+    if (node.type.name === 'listItem' || node.type.name === 'taskItem') {
+      return String(node.attrs.collabId ?? '') || null;
+    }
+  }
   if (position.depth >= 1) return String(position.node(1).attrs.collabId ?? '') || null;
   return String(position.nodeAfter?.attrs?.collabId ?? '') || null;
 }
 
-function changedTopLevelBlockIds(
+function changedWikiCollaborationBlockIds(
   doc: ProseMirrorNode,
   transaction: Transaction,
 ) {
   const ids = new Set<string>();
   for (const step of transaction.steps) {
     step.getMap().forEach((oldStart, oldEnd) => {
-      collectTopLevelBlockIds(doc, oldStart, Math.max(oldStart + 1, oldEnd), ids);
+      collectWikiCollaborationBlockIds(doc, oldStart, Math.max(oldStart + 1, oldEnd), ids);
     });
   }
-  collectTopLevelBlockIds(doc, transaction.selection.from, Math.max(transaction.selection.from + 1, transaction.selection.to), ids);
+  collectWikiCollaborationBlockIds(doc, transaction.selection.from, Math.max(transaction.selection.from + 1, transaction.selection.to), ids);
   return [...ids];
 }
 
-function collectTopLevelBlockIds(doc: ProseMirrorNode, from: number, to: number, ids: Set<string>) {
+function collectWikiCollaborationBlockIds(doc: ProseMirrorNode, from: number, to: number, ids: Set<string>) {
   const maximum = doc.content.size;
-  doc.nodesBetween(Math.max(0, Math.min(from, maximum)), Math.max(0, Math.min(to, maximum)), (node, _position, parent) => {
-    if (parent !== doc) return true;
+  doc.nodesBetween(Math.max(0, Math.min(from, maximum)), Math.max(0, Math.min(to, maximum)), (node) => {
     const id = String(node.attrs.collabId ?? '');
     if (id) ids.add(id);
-    return false;
+    return true;
   });
+}
+
+function lockDecorationAttributes(
+  lease: WikiCollaborationLease,
+  scope: 'block' | 'list-item' | 'table-row',
+  showEditor: boolean,
+) {
+  return {
+    class: 'ak-wiki-collab-block-locked',
+    ...(showEditor ? { 'data-collab-editor': lease.userName } : {}),
+    'data-collab-lock-scope': scope,
+    style: `--ak-collab-color:${lease.color}`,
+  };
 }

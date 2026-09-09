@@ -1,4 +1,4 @@
-import { getSchema, type AnyExtension } from '@tiptap/core';
+import { getSchema, type AnyExtension, type JSONContent } from '@tiptap/core';
 import Mention from '@tiptap/extension-mention';
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
 import TaskItem from '@tiptap/extension-task-item';
@@ -7,7 +7,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { MarkdownManager } from '@tiptap/markdown';
 import { prosemirrorJSONToYDoc, yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 import * as Y from 'yjs';
-import { createWikiCollaborationBlocks } from './wiki-collaboration-blocks';
+import { createWikiCollaborationBlocks, wikiCollaborationNodeUsesId } from './wiki-collaboration-blocks';
 import { parseWikiTableMarkdown, renderWikiTableMarkdown } from './wiki-editor';
 import { createWikiImageExtension } from './wiki-images';
 import { createWikiTodoListExtension } from './wiki-todos';
@@ -25,13 +25,20 @@ let documentCodec: ReturnType<typeof createDocumentCodec> | null = null;
 export function createWikiCollaborationDocument(title: string, markdown: string) {
   const { manager, schema } = getDocumentCodec();
   const content = manager.parse(markdown);
-  content.content = content.content?.map((node) => ({
-    ...node,
-    attrs: { ...node.attrs, collabId: globalThis.crypto.randomUUID() },
-  }));
+  content.content = content.content?.map((node) => assignWikiCollaborationIds(node, true));
   const document = prosemirrorJSONToYDoc(schema, content, WIKI_COLLABORATION_FIELD);
   document.getMap<string>(WIKI_COLLABORATION_META).set('title', title);
   return document;
+}
+
+function assignWikiCollaborationIds(node: JSONContent, topLevel = false): JSONContent {
+  return {
+    ...node,
+    ...(wikiCollaborationNodeUsesId(String(node.type), topLevel)
+      ? { attrs: { ...node.attrs, collabId: globalThis.crypto.randomUUID() } }
+      : {}),
+    ...(node.content ? { content: node.content.map((child) => assignWikiCollaborationIds(child)) } : {}),
+  };
 }
 
 export function serializeWikiCollaborationDocument(document: Y.Doc) {
