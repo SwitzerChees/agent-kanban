@@ -38,7 +38,8 @@ describe('external harness OpenAPI contract', () => {
     expect(document.components.schemas.TaskUpdate?.properties).not.toHaveProperty('agentStatus');
     expect(document.components.schemas.TaskCreate?.properties).toMatchObject({
       agentHarness: { $ref: '#/components/schemas/AgentHarness' },
-      reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' },
+      agentModel: { $ref: '#/components/schemas/CodexModel' },
+      reasoningEffort: { $ref: '#/components/schemas/TaskReasoningEffort' },
     });
 
     const operationIds = Object.values(document.paths)

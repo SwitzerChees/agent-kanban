@@ -94,6 +94,11 @@ describe('task ZIP export', () => {
     expect(bundleJson).toContain('Applied refined brief');
     expect(bundleJson).toContain('Complete archive');
     expect(bundleJson).toContain('Keep the source material together.');
+    expect(bundle.manifest.task).toMatchObject({
+      agentHarness: 'codex',
+      agentModel: 'gpt-5.6-sol',
+      reasoningEffort: 'xhigh',
+    });
     expect(bundleJson).not.toContain('must-never-be-exported');
     expect(bundleJson).not.toContain(path.join(testRoot, 'data', 'uploads'));
 

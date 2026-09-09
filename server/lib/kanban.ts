@@ -8,7 +8,16 @@ import { removeTaskWorktree } from './git-workspaces';
 import { hashPassword } from './security/password';
 import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSource } from './task-description';
 import type { User } from './db/schema';
-import { AGENT_HARNESSES, type AgentHarness, type ReasoningEffort } from './agent-harness';
+import {
+  AGENT_HARNESSES,
+  DEFAULT_AGENT_HARNESS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_TASK_REASONING_EFFORT,
+  isTaskRuntimeSelectionSupported,
+  type AgentHarness,
+  type CodexModel,
+  type TaskReasoningEffort,
+} from './agent-harness';
 import { queueE2eForTaskTransition } from './e2e-tests';
 import { ensureShowroomFolder } from './showroom-files';
 
@@ -779,7 +788,8 @@ type CreateTaskInput = {
   assigneeId?: string | null;
   agentEnabled?: boolean;
   agentHarness?: AgentHarness;
-  reasoningEffort?: ReasoningEffort;
+  agentModel?: CodexModel;
+  reasoningEffort?: TaskReasoningEffort;
   clientRequestId?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
@@ -855,6 +865,10 @@ async function createTaskOnce(
   const position = nextTaskPosition(projectId, columnId, placement.oberthemaId, placement.unterthemaId);
   const taskId = randomUUID();
   const taskKey = nextTaskKey(project.key);
+  const agentHarness = input.agentHarness ?? DEFAULT_AGENT_HARNESS;
+  const agentModel = input.agentModel ?? DEFAULT_CODEX_MODEL;
+  const reasoningEffort = input.reasoningEffort ?? DEFAULT_TASK_REASONING_EFFORT;
+  assertTaskRuntimeSelection(agentHarness, agentModel, reasoningEffort);
 
   let inserted = false;
   try {
@@ -875,8 +889,9 @@ async function createTaskOnce(
       assigneeId,
       agentEnabled: input.agentEnabled ?? false,
       agentStatus: input.agentEnabled && column.key === 'todo' ? 'queued' : 'idle',
-      agentHarness: input.agentHarness ?? 'codex',
-      reasoningEffort: input.reasoningEffort ?? 'xhigh',
+      agentHarness,
+      agentModel,
+      reasoningEffort,
       createdAt: now,
       updatedAt: now,
     }).run();
@@ -970,7 +985,8 @@ export async function updateTask(taskId: string, input: {
   assigneeId?: string | null;
   agentEnabled?: boolean;
   agentHarness?: AgentHarness;
-  reasoningEffort?: ReasoningEffort;
+  agentModel?: CodexModel;
+  reasoningEffort?: TaskReasoningEffort;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
   position?: number;
@@ -993,6 +1009,7 @@ export async function updateTask(taskId: string, input: {
   }
   if (['running', 'waiting_external'].includes(task.agentStatus) && (
     (input.agentHarness !== undefined && input.agentHarness !== task.agentHarness)
+    || (input.agentModel !== undefined && input.agentModel !== task.agentModel)
     || (input.reasoningEffort !== undefined && input.reasoningEffort !== task.reasoningEffort)
   )) {
     throw createError({ statusCode: 409, statusMessage: 'task_running_agent_runtime_locked' });
@@ -1003,6 +1020,10 @@ export async function updateTask(taskId: string, input: {
 
   let nextAgentStatus = input.agentStatus;
   const nextAgentEnabled = input.agentEnabled ?? task.agentEnabled;
+  const nextAgentHarness = input.agentHarness ?? task.agentHarness;
+  const nextAgentModel = input.agentModel ?? task.agentModel;
+  const nextReasoningEffort = input.reasoningEffort ?? task.reasoningEffort;
+  assertTaskRuntimeSelection(nextAgentHarness, nextAgentModel, nextReasoningEffort);
   const placementRequested = input.oberthemaId !== undefined || input.unterthemaId !== undefined;
   const nextPlacement = placementRequested
     ? resolveTaskPlacement(
@@ -1048,6 +1069,7 @@ export async function updateTask(taskId: string, input: {
     assigneeId: nextAssigneeId,
     agentEnabled: input.agentEnabled,
     agentHarness: input.agentHarness,
+    agentModel: input.agentModel,
     reasoningEffort: input.reasoningEffort,
     priority: input.priority,
     position: input.position ?? (placementChanged
@@ -1074,8 +1096,10 @@ export async function updateTask(taskId: string, input: {
     descriptionSourceChanged: input.descriptionSource !== undefined && input.descriptionSource !== task.descriptionSource,
     agentModeChanged: input.agentEnabled !== undefined && input.agentEnabled !== task.agentEnabled,
     agentRuntimeChanged: (input.agentHarness !== undefined && input.agentHarness !== task.agentHarness)
+      || (input.agentModel !== undefined && input.agentModel !== task.agentModel)
       || (input.reasoningEffort !== undefined && input.reasoningEffort !== task.reasoningEffort),
     agentHarness: input.agentHarness ?? task.agentHarness,
+    agentModel: input.agentModel ?? task.agentModel,
     reasoningEffort: input.reasoningEffort ?? task.reasoningEffort,
     assigneeChanged: input.assigneeId !== undefined && nextAssigneeId !== task.assigneeId,
     agentStatus: nextAgentStatus,
@@ -1117,6 +1141,16 @@ export async function updateTask(taskId: string, input: {
     await cleanupCompletedTaskWorktree(task, project.folderPath, user.id);
   }
   return updated ? publicTaskDescription(updated) : updated;
+}
+
+function assertTaskRuntimeSelection(
+  harness: AgentHarness,
+  model: CodexModel,
+  effort: TaskReasoningEffort,
+) {
+  if (!isTaskRuntimeSelectionSupported(harness, model, effort)) {
+    throw createError({ statusCode: 400, statusMessage: 'unsupported_task_agent_runtime' });
+  }
 }
 
 export function queueTaskAgent(taskId: string, user: User, reason: 'api_queue' | 'api_retry' = 'api_queue') {

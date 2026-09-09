@@ -4,14 +4,21 @@ import Fuse from 'fuse.js';
 import { commandPaletteTaskBuckets } from '~/utils/command-palette';
 import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 import { canCompleteReviewedAgentTask } from '~/utils/task-status-transition';
+import {
+  CODEX_MODELS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_TASK_REASONING_EFFORT,
+  taskReasoningEfforts,
+  type AgentHarness,
+  type CodexModel,
+  type TaskReasoningEffort,
+} from '~/shared/agent-runtime';
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'wiki' | 'e2e' | 'showroom' | 'projects' | 'users' | 'backups';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type TaskDescriptionView = TaskDescriptionSource | 'visual';
-type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
-type ReasoningEffort = 'low' | 'medium' | 'xhigh';
 
 interface User {
   id: string;
@@ -130,7 +137,8 @@ interface Task {
   agentEnabled: boolean;
   agentStatus: 'idle' | 'queued' | 'running' | 'waiting_external' | 'failed' | 'done';
   agentHarness: AgentHarness;
-  reasoningEffort: ReasoningEffort;
+  agentModel: CodexModel;
+  reasoningEffort: TaskReasoningEffort;
   attachments: Attachment[];
   tags: string[];
   unreadMentionCount?: number;
@@ -639,16 +647,22 @@ const dictionary = {
     aiExecution: 'Let the AI agent execute this task',
     aiExecutionHelp: 'Off by default. Only enabled tasks are started automatically in To Do.',
     aiRuntime: 'AI runtime',
-    aiRuntimeHelp: 'Used for both refinement and implementation.',
+    aiRuntimeHelp: 'The model applies to implementation and refinements. Effort controls implementation.',
     harness: 'Harness',
+    model: 'Model',
     reasoningEffort: 'Reasoning effort',
     fixedModel: 'Fixed model',
+    modelSol: 'GPT-5.6 Sol (default)',
+    modelAstra: 'GPT-6 Astra',
     harnessCodex: 'Codex',
     harnessOpenCode: 'OpenCode',
     harnessPrimeAgent: 'Prime Agent',
     effortLow: 'Low',
     effortMedium: 'Medium',
+    effortHigh: 'High',
     effortXhigh: 'Extra high',
+    effortMax: 'Maximum',
+    effortUltra: 'Ultra',
     refineWithHarness: 'Refine with {harness}',
     refinementAgentDescription: '{harness} reviews the idea in the current project context and turns it into an implementation-ready brief.',
     refinementAgentIntro: '{harness} compares your idea with the existing application and identifies the integration path, impact, risks, and open decisions.',
@@ -991,16 +1005,22 @@ const dictionary = {
     aiExecution: 'Diesen Task vom KI-Agenten bearbeiten lassen',
     aiExecutionHelp: 'Standardmäßig aus. Nur aktivierte Tasks starten in „Zu erledigen“ automatisch.',
     aiRuntime: 'KI-Laufzeit',
-    aiRuntimeHelp: 'Gilt für Refinement und Umsetzung dieses Tasks.',
+    aiRuntimeHelp: 'Das Modell gilt für Refinement und Umsetzung. Der Aufwand steuert die Umsetzung.',
     harness: 'Harness',
+    model: 'Modell',
     reasoningEffort: 'Reasoning-Aufwand',
     fixedModel: 'Festes Modell',
+    modelSol: 'GPT-5.6 Sol (Standard)',
+    modelAstra: 'GPT-6 Astra',
     harnessCodex: 'Codex',
     harnessOpenCode: 'OpenCode',
     harnessPrimeAgent: 'Prime Agent',
     effortLow: 'Niedrig',
     effortMedium: 'Mittel',
+    effortHigh: 'Hoch',
     effortXhigh: 'Extra hoch',
+    effortMax: 'Maximum',
+    effortUltra: 'Ultra',
     refineWithHarness: 'Mit {harness} refinen',
     refinementAgentDescription: '{harness} prüft die Idee im aktuellen Projektkontext und arbeitet sie zu einem belastbaren Auftrag aus.',
     refinementAgentIntro: '{harness} gleicht deine Idee mit der bestehenden Anwendung ab und benennt Integrationsweg, Auswirkungen, Risiken und offene Entscheidungen.',
@@ -1277,7 +1297,8 @@ const taskForm = reactive({
   assigneeId: UNASSIGNED_ID,
   agentEnabled: false,
   agentHarness: 'codex' as AgentHarness,
-  reasoningEffort: 'xhigh' as ReasoningEffort,
+  agentModel: DEFAULT_CODEX_MODEL as CodexModel,
+  reasoningEffort: DEFAULT_TASK_REASONING_EFFORT as TaskReasoningEffort,
   priority: 'normal' as Task['priority'],
   tags: [] as string[],
 });
@@ -1317,6 +1338,7 @@ function taskDetailsFingerprint() {
     assigneeId: taskForm.assigneeId,
     agentEnabled: taskForm.agentEnabled,
     agentHarness: taskForm.agentHarness,
+    agentModel: taskForm.agentModel,
     reasoningEffort: taskForm.reasoningEffort,
     priority: taskForm.priority,
     tags: [...taskForm.tags].sort((left, right) => left.localeCompare(right)),
@@ -1432,13 +1454,30 @@ const agentHarnessItems = computed(() => [
   { label: t.value.harnessOpenCode, value: 'opencode' },
   { label: t.value.harnessPrimeAgent, value: 'prime-agent' },
 ]);
-const reasoningEffortItems = computed(() => [
-  { label: t.value.effortLow, value: 'low' },
-  { label: t.value.effortMedium, value: 'medium' },
-  { label: t.value.effortXhigh, value: 'xhigh' },
-]);
+const codexModelItems = computed(() => CODEX_MODELS.map(model => ({
+  label: model === 'gpt-6-astra' ? t.value.modelAstra : t.value.modelSol,
+  value: model,
+})));
+const reasoningEffortItems = computed(() => taskReasoningEfforts(taskForm.agentHarness, taskForm.agentModel).map(effort => ({
+  label: {
+    low: t.value.effortLow,
+    medium: t.value.effortMedium,
+    high: t.value.effortHigh,
+    xhigh: t.value.effortXhigh,
+    max: t.value.effortMax,
+    ultra: t.value.effortUltra,
+  }[effort],
+  value: effort,
+})));
 const selectedHarnessLabel = computed(() => agentHarnessItems.value.find((item) => item.value === taskForm.agentHarness)?.label ?? t.value.harnessCodex);
-const selectedHarnessModel = computed(() => taskForm.agentHarness === 'codex' ? 'gpt-5.6-sol' : 'Qwen/Qwen3.8-27B');
+const selectedHarnessModel = computed(() => taskForm.agentHarness === 'codex' ? taskForm.agentModel : 'Qwen/Qwen3.8-27B');
+watch(
+  () => [taskForm.agentHarness, taskForm.agentModel] as const,
+  ([harness, model]) => {
+    const supported = taskReasoningEfforts(harness, model);
+    if (!supported.includes(taskForm.reasoningEffort)) taskForm.reasoningEffort = DEFAULT_TASK_REASONING_EFFORT;
+  },
+);
 const refineTaskLabel = computed(() => t.value.refineWithHarness.replace('{harness}', selectedHarnessLabel.value));
 const taskRefinementLabels = computed(() => ({
   description: t.value.refinementAgentDescription.replace('{harness}', selectedHarnessLabel.value),
@@ -3207,6 +3246,7 @@ function syncTaskFormFromDetail(detailTask: Task, resetDescriptionView = false) 
     assigneeId: detailTask.assigneeId ?? UNASSIGNED_ID,
     agentEnabled: detailTask.agentEnabled,
     agentHarness: detailTask.agentHarness,
+    agentModel: detailTask.agentModel,
     reasoningEffort: detailTask.reasoningEffort,
     priority: detailTask.priority,
     tags: detailTask.tags,
@@ -3269,7 +3309,8 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
     assigneeId: defaultTaskAssigneeId.value,
     agentEnabled: false,
     agentHarness: 'codex',
-    reasoningEffort: 'xhigh',
+    agentModel: DEFAULT_CODEX_MODEL,
+    reasoningEffort: DEFAULT_TASK_REASONING_EFFORT,
     priority: 'normal',
     tags: [],
   });
@@ -3591,6 +3632,7 @@ async function createTaskFromCurrentForm() {
   form.append('assigneeId', taskAssigneeIdForRequest() ?? '');
   form.append('agentEnabled', String(taskForm.agentEnabled));
   form.append('agentHarness', taskForm.agentHarness);
+  form.append('agentModel', taskForm.agentModel);
   form.append('reasoningEffort', taskForm.reasoningEffort);
   form.append('clientRequestId', taskCreateRequestId.value);
   form.append('priority', taskForm.priority);
@@ -3627,6 +3669,7 @@ async function persistExistingTaskDetails(taskId: string) {
         assigneeId,
         agentEnabled: taskForm.agentEnabled,
         agentHarness: taskForm.agentHarness,
+        agentModel: taskForm.agentModel,
         reasoningEffort: taskForm.reasoningEffort,
         tags,
       },
@@ -3645,6 +3688,7 @@ async function persistExistingTaskDetails(taskId: string) {
         assigneeId,
         agentEnabled: taskForm.agentEnabled,
         agentHarness: taskForm.agentHarness,
+        agentModel: taskForm.agentModel,
         reasoningEffort: taskForm.reasoningEffort,
       },
     });
@@ -3743,7 +3787,8 @@ const saveTaskAction = async () => {
         assigneeId: defaultTaskAssigneeId.value,
         agentEnabled: false,
         agentHarness: 'codex',
-        reasoningEffort: 'xhigh',
+        agentModel: DEFAULT_CODEX_MODEL,
+        reasoningEffort: DEFAULT_TASK_REASONING_EFFORT,
         priority: 'normal',
         tags: [],
       });
@@ -8186,6 +8231,17 @@ const humanError = (error: unknown) => {
                           :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                         />
                       </UFormField>
+                      <UFormField v-if="taskForm.agentHarness === 'codex'" :label="t.model" size="sm">
+                        <USelect
+                          v-model="taskForm.agentModel"
+                          data-testid="task-model-select"
+                          class="w-full"
+                          :items="codexModelItems"
+                          size="lg"
+                          icon="i-lucide-brain-circuit"
+                          :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
+                        />
+                      </UFormField>
                       <UFormField :label="t.reasoningEffort" size="sm">
                         <USelect
                           v-model="taskForm.reasoningEffort"
@@ -8197,7 +8253,7 @@ const humanError = (error: unknown) => {
                           :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                         />
                       </UFormField>
-                      <div class="flex items-center justify-between gap-3 rounded-lg bg-zinc-100/80 px-3 py-2 text-xs dark:bg-zinc-800/70">
+                      <div v-if="taskForm.agentHarness !== 'codex'" class="flex items-center justify-between gap-3 rounded-lg bg-zinc-100/80 px-3 py-2 text-xs dark:bg-zinc-800/70">
                         <span class="text-zinc-500 dark:text-zinc-400">{{ t.fixedModel }}</span>
                         <span data-testid="task-model-label" class="min-w-0 truncate font-mono font-medium text-zinc-800 dark:text-zinc-200">{{ selectedHarnessModel }}</span>
                       </div>

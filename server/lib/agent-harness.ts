@@ -1,27 +1,41 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  AGENT_HARNESSES,
+  DEFAULT_AGENT_HARNESS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_REASONING_EFFORT,
+  REASONING_EFFORTS,
+  isAgentHarness,
+  isReasoningEffort,
+} from '../../shared/agent-runtime';
+import type { AgentHarness, ReasoningEffort } from '../../shared/agent-runtime';
 
-export const AGENT_HARNESSES = ['codex', 'opencode', 'prime-agent'] as const;
-export const REASONING_EFFORTS = ['low', 'medium', 'xhigh'] as const;
+export {
+  AGENT_HARNESSES,
+  CODEX_MODELS,
+  DEFAULT_AGENT_HARNESS,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_REASONING_EFFORT,
+  DEFAULT_TASK_REASONING_EFFORT,
+  REASONING_EFFORTS,
+  TASK_REASONING_EFFORTS,
+  TEXT_REFINEMENT_REASONING_EFFORT,
+  VISUAL_REFINEMENT_REASONING_EFFORT,
+  isAgentHarness,
+  isCodexModel,
+  isReasoningEffort,
+  isTaskReasoningEffort,
+  isTaskRuntimeSelectionSupported,
+  taskReasoningEfforts,
+} from '../../shared/agent-runtime';
+export type { AgentHarness, CodexModel, ReasoningEffort, TaskReasoningEffort } from '../../shared/agent-runtime';
 
-export type AgentHarness = typeof AGENT_HARNESSES[number];
-export type ReasoningEffort = typeof REASONING_EFFORTS[number];
-
-export const DEFAULT_AGENT_HARNESS: AgentHarness = 'codex';
-export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'xhigh';
-export const CODEX_MODEL = 'gpt-5.6-sol';
+export const CODEX_MODEL = DEFAULT_CODEX_MODEL;
 export const QWEN_MODEL_PROVIDER = 'homelab-qwen-3-8-27b';
 export const QWEN_MODEL_ID = 'Qwen/Qwen3.8-27B';
 export const QWEN_OPENCODE_MODEL = `${QWEN_MODEL_PROVIDER}/${QWEN_MODEL_ID}`;
-
-export function isAgentHarness(value: unknown): value is AgentHarness {
-  return typeof value === 'string' && AGENT_HARNESSES.includes(value as AgentHarness);
-}
-
-export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return typeof value === 'string' && REASONING_EFFORTS.includes(value as ReasoningEffort);
-}
 
 export function resolveAgentHarness(value: unknown): AgentHarness {
   return isAgentHarness(value) ? value : DEFAULT_AGENT_HARNESS;

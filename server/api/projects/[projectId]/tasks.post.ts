@@ -4,6 +4,7 @@ import { requireUser } from '../../../lib/security/auth';
 import { createTask } from '../../../lib/kanban';
 import { parseTaskUploadParts } from '../../../lib/task-upload';
 import { assertTaskUploadContentLength } from '../../../lib/upload-limits';
+import { AGENT_HARNESSES, CODEX_MODELS, TASK_REASONING_EFFORTS } from '../../../lib/agent-harness';
 
 const jsonTaskSchema = z.object({
   title: z.string().min(1),
@@ -14,8 +15,9 @@ const jsonTaskSchema = z.object({
   unterthemaId: z.string().optional().nullable(),
   assigneeId: z.string().optional().nullable(),
   agentEnabled: z.boolean().optional(),
-  agentHarness: z.enum(['codex', 'opencode', 'prime-agent']).optional(),
-  reasoningEffort: z.enum(['low', 'medium', 'xhigh']).optional(),
+  agentHarness: z.enum(AGENT_HARNESSES).optional(),
+  agentModel: z.enum(CODEX_MODELS).optional(),
+  reasoningEffort: z.enum(TASK_REASONING_EFFORTS).optional(),
   clientRequestId: z.string().min(16).max(128).regex(/^[A-Za-z0-9._:-]+$/).optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   tags: z.array(z.string()).optional(),
@@ -40,6 +42,7 @@ export default defineEventHandler(async (event) => {
       assigneeId: fields.has('assigneeId') ? fields.get('assigneeId') || null : undefined,
       agentEnabled: fields.get('agentEnabled') === 'true',
       agentHarness: fields.get('agentHarness') || undefined,
+      agentModel: fields.get('agentModel') || undefined,
       reasoningEffort: fields.get('reasoningEffort') || undefined,
       clientRequestId: fields.get('clientRequestId') || undefined,
       priority: fields.get('priority') || undefined,

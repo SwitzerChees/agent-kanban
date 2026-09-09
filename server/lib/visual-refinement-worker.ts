@@ -9,7 +9,7 @@ import {
   isTransientAgentCapacityFailure,
   runWithAgentRetries,
 } from './agent-retry';
-import { CODEX_MODEL } from './agent-harness';
+import { VISUAL_REFINEMENT_REASONING_EFFORT } from './agent-harness';
 import { resolveServiceConfig } from './config';
 import { runCodexSession } from './codex';
 import { appDataDir, db, schema } from './db';
@@ -93,6 +93,8 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
   runtimeLogger.info('visual refinement started', {
     refinement_id: context.id,
     task_id: context.taskId,
+    model: context.agentModel,
+    reasoning_effort: VISUAL_REFINEMENT_REASONING_EFFORT,
     worktree: worktree.worktreeRoot,
     branch: worktree.branchName,
   });
@@ -106,7 +108,11 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
         retryDelayMs: visualRefinementRetryDelayMs(),
         shouldRetry: isTransientAgentCapacityFailure,
         run: attempt => runCodexSession({
-          config: { ...config.codex, model: CODEX_MODEL, reasoningEffort: context.reasoningEffort },
+          config: {
+            ...config.codex,
+            model: context.agentModel,
+            reasoningEffort: VISUAL_REFINEMENT_REASONING_EFFORT,
+          },
           workspacePath,
           issue,
           promptTemplate: prompt,

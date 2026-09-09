@@ -9,7 +9,7 @@ import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
 import { syncMasterForRefinement } from './git-workspaces';
 import { runRefinementCodexTurn } from './refinement-codex';
 import { runExternalRefinementTurn } from './external-agent';
-import { CODEX_MODEL } from './agent-harness';
+import { TEXT_REFINEMENT_REASONING_EFFORT } from './agent-harness';
 import { resolveServiceConfig } from './config';
 import { appDataDir } from './db';
 import { storeTaskAttachment } from './kanban';
@@ -353,7 +353,8 @@ export async function processClaimedRefinement(context: RefinementContext, signa
     round: context.round,
     resumed: Boolean(context.threadId),
     harness: context.agentHarness,
-    reasoning_effort: context.reasoningEffort,
+    model: context.agentModel,
+    reasoning_effort: TEXT_REFINEMENT_REASONING_EFFORT,
   });
 
   let persistedThreadId = context.threadId;
@@ -383,8 +384,8 @@ export async function processClaimedRefinement(context: RefinementContext, signa
     ? await runRefinementCodexTurn<unknown>({
         config: {
           ...config.codex,
-          model: CODEX_MODEL,
-          reasoningEffort: context.reasoningEffort,
+          model: context.agentModel,
+          reasoningEffort: TEXT_REFINEMENT_REASONING_EFFORT,
         },
         workspacePath: context.projectFolderPath,
         prompt,
@@ -395,7 +396,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
       })
       : await runExternalRefinementTurn({
         harness: context.agentHarness,
-        reasoningEffort: context.reasoningEffort,
+        reasoningEffort: TEXT_REFINEMENT_REASONING_EFFORT,
         workspacePath: context.projectFolderPath,
         prompt,
         outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,

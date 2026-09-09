@@ -111,6 +111,8 @@ describe('task refinements', () => {
     const task = await kanban.createTask(project.id, {
       title: 'A rough product idea',
       description: 'Add a useful overview.',
+      agentModel: 'gpt-6-astra',
+      reasoningEffort: 'max',
     }, admin);
     await expect(kanban.updateTask(task!.id, { descriptionSource: 'refined' }, admin))
       .rejects.toMatchObject({ statusMessage: 'refined_description_missing' });
@@ -138,7 +140,8 @@ describe('task refinements', () => {
       taskTitle: task!.title,
       taskDescription: task!.description,
       agentHarness: 'codex',
-      reasoningEffort: 'xhigh',
+      agentModel: 'gpt-6-astra',
+      reasoningEffort: 'max',
       projectFolderPath: project.folderPath,
       round: 1,
       threadId: null,

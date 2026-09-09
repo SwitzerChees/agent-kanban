@@ -1,10 +1,16 @@
 import { describe, expect, test } from 'vitest';
 import {
+  CODEX_MODELS,
   CODEX_MODEL,
+  DEFAULT_CODEX_MODEL,
   QWEN_MODEL_ID,
   QWEN_MODEL_PROVIDER,
   QWEN_OPENCODE_MODEL,
+  TEXT_REFINEMENT_REASONING_EFFORT,
+  VISUAL_REFINEMENT_REASONING_EFFORT,
   harnessExecutable,
+  isTaskRuntimeSelectionSupported,
+  taskReasoningEfforts,
 } from '../server/lib/agent-harness';
 import {
   buildExternalArgs,
@@ -41,8 +47,17 @@ describe('agent harness runtime contracts', () => {
     expect(EXTERNAL_REFINEMENT_MAX_ATTEMPTS).toBe(3);
   });
 
-  test('keeps model selection fixed while forwarding only the selected effort', () => {
+  test('keeps Sol as the default and exposes Astra with model-specific Codex efforts', () => {
     expect(CODEX_MODEL).toBe('gpt-5.6-sol');
+    expect(DEFAULT_CODEX_MODEL).toBe('gpt-5.6-sol');
+    expect(CODEX_MODELS).toEqual(['gpt-5.6-sol', 'gpt-6-astra']);
+    expect(taskReasoningEfforts('codex', 'gpt-6-astra')).toEqual([
+      'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+    ]);
+    expect(isTaskRuntimeSelectionSupported('codex', 'gpt-5.6-sol', 'max')).toBe(true);
+    expect(isTaskRuntimeSelectionSupported('prime-agent', 'gpt-6-astra', 'high')).toBe(false);
+    expect(TEXT_REFINEMENT_REASONING_EFFORT).toBe('xhigh');
+    expect(VISUAL_REFINEMENT_REASONING_EFFORT).toBe('medium');
     expect(QWEN_OPENCODE_MODEL).toBe('homelab-qwen-3-8-27b/Qwen/Qwen3.8-27B');
 
     const common = {

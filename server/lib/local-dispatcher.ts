@@ -6,7 +6,12 @@ import { loadWorkflow } from './workflow';
 import { resolveServiceConfig } from './config';
 import { runCodexSession, type CodexSteeringBatch, type CodexUserInput } from './codex';
 import { runExternalAgentSession } from './external-agent';
-import { CODEX_MODEL, type AgentHarness, type ReasoningEffort } from './agent-harness';
+import {
+  isReasoningEffort,
+  type AgentHarness,
+  type CodexModel,
+  type TaskReasoningEffort,
+} from './agent-harness';
 import { prepareTaskWorktree } from './git-workspaces';
 import { runtimeLogger } from './logger';
 import { logTaskActivity } from './kanban';
@@ -323,6 +328,7 @@ class LocalTaskDispatcher {
     logTaskActivity(queued.projectId, queued.id, null, 'codex_started', {
       column: queuedColumn.key,
       harness: queued.agentHarness,
+      model: queued.agentModel,
       reasoningEffort: queued.reasoningEffort,
     });
     notifyVoiceJobStatus(queued.id, 'running');
@@ -383,10 +389,12 @@ class LocalTaskDispatcher {
         task_key: queued.key,
         project: project.key,
         harness: queued.agentHarness,
+        model: queued.agentModel,
         reasoning_effort: queued.reasoningEffort,
       });
       const harnessOptions = {
         harness: queued.agentHarness,
+        model: queued.agentModel,
         reasoningEffort: queued.reasoningEffort,
         config: config.codex,
         workspacePath,
@@ -955,19 +963,24 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
 
 async function runTaskAgentHarness(options: Parameters<typeof runCodexSession>[0] & {
   harness: AgentHarness;
-  reasoningEffort: ReasoningEffort;
+  model: CodexModel;
+  reasoningEffort: TaskReasoningEffort;
 }) {
-  const { harness, reasoningEffort, config, loadSteering, ...common } = options;
+  const { harness, model, reasoningEffort, config, loadSteering, ...common } = options;
   if (harness === 'codex') {
     return runCodexSession({
       ...common,
       loadSteering,
       config: {
         ...config,
-        model: CODEX_MODEL,
+        model,
         reasoningEffort,
       },
     });
+  }
+
+  if (!isReasoningEffort(reasoningEffort)) {
+    throw new Error('unsupported_external_agent_reasoning_effort');
   }
 
   return runExternalAgentSession({

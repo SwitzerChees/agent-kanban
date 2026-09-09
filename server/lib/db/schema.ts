@@ -352,7 +352,8 @@ export const tasks = sqliteTable('tasks', {
   agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
   agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'waiting_external', 'failed', 'done'] }).notNull().default('idle'),
   agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
-  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('xhigh'),
+  agentModel: text('agent_model', { enum: ['gpt-5.6-sol', 'gpt-6-astra'] }).notNull().default('gpt-5.6-sol'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('xhigh'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

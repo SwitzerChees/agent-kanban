@@ -1241,7 +1241,8 @@ components:
         assigneeId: { type: [string, 'null'], format: uuid }
         agentEnabled: { type: boolean, default: false }
         agentHarness: { $ref: '#/components/schemas/AgentHarness' }
-        reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' }
+        agentModel: { $ref: '#/components/schemas/CodexModel' }
+        reasoningEffort: { $ref: '#/components/schemas/TaskReasoningEffort' }
         clientRequestId: { type: string, minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' }
         priority: { $ref: '#/components/schemas/Priority' }
         tags: { type: array, items: { type: string } }
@@ -1257,7 +1258,8 @@ components:
         assigneeId: { type: [string, 'null'], format: uuid }
         agentEnabled: { type: boolean }
         agentHarness: { $ref: '#/components/schemas/AgentHarness' }
-        reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' }
+        agentModel: { $ref: '#/components/schemas/CodexModel' }
+        reasoningEffort: { $ref: '#/components/schemas/TaskReasoningEffort' }
         priority: { $ref: '#/components/schemas/Priority' }
         tags: { type: array, items: { type: string } }
         position: { type: integer }
@@ -1279,6 +1281,14 @@ components:
       type: string
       enum: [codex, opencode, prime-agent]
       default: codex
+    CodexModel:
+      type: string
+      enum: [gpt-5.6-sol, gpt-6-astra]
+      default: gpt-5.6-sol
+    TaskReasoningEffort:
+      type: string
+      enum: [low, medium, high, xhigh, max, ultra]
+      default: xhigh
     ProjectChatConfig:
       type: object
       properties:

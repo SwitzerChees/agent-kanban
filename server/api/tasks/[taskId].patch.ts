@@ -2,6 +2,7 @@ import { getRouterParam, readBody } from 'h3';
 import { z } from 'zod';
 import { requireUser } from '../../lib/security/auth';
 import { updateTask } from '../../lib/kanban';
+import { AGENT_HARNESSES, CODEX_MODELS, TASK_REASONING_EFFORTS } from '../../lib/agent-harness';
 
 const schema = z.object({
   title: z.string().min(1).optional(),
@@ -13,8 +14,9 @@ const schema = z.object({
   unterthemaId: z.string().optional().nullable(),
   assigneeId: z.string().optional().nullable(),
   agentEnabled: z.boolean().optional(),
-  agentHarness: z.enum(['codex', 'opencode', 'prime-agent']).optional(),
-  reasoningEffort: z.enum(['low', 'medium', 'xhigh']).optional(),
+  agentHarness: z.enum(AGENT_HARNESSES).optional(),
+  agentModel: z.enum(CODEX_MODELS).optional(),
+  reasoningEffort: z.enum(TASK_REASONING_EFFORTS).optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   tags: z.array(z.string()).optional(),
   position: z.number().int().optional(),

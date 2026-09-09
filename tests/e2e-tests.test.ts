@@ -179,7 +179,7 @@ function insertTask(oberthemaId: string, unterthemaId: string, columnId: string)
     key: `E2E-${Date.now()}`, title: 'Triggered task', description: null, refinedDescription: null,
     descriptionSource: 'original', priority: 'normal', position: 0, createdBy: admin.id,
     clientRequestId: null, assigneeId: null, agentEnabled: false, agentStatus: 'idle',
-    agentHarness: 'codex', reasoningEffort: 'xhigh', createdAt: now, updatedAt: now,
+    agentHarness: 'codex', agentModel: 'gpt-5.6-sol', reasoningEffort: 'xhigh', createdAt: now, updatedAt: now,
   };
   dbModule.db.insert(dbModule.schema.tasks).values(task).run();
   return task;

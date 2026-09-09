@@ -222,6 +222,29 @@ describe('external agent task controls', () => {
     expect(kanban.queueTaskAgent(task!.id, admin, 'api_retry').task.agentStatus).toBe('queued');
   });
 
+  test('persists Astra selections and rejects efforts unsupported by external harnesses', async () => {
+    const project = await kanban.createProject({
+      name: 'Model Selection Project',
+      key: 'MODELS',
+      folderPath: path.join(testRoot, 'model-workspace'),
+    }, admin);
+    const task = await kanban.createTask(project.id, {
+      title: 'Use additional intelligence',
+      agentModel: 'gpt-6-astra',
+      reasoningEffort: 'high',
+    }, admin);
+
+    expect(task).toMatchObject({
+      agentHarness: 'codex',
+      agentModel: 'gpt-6-astra',
+      reasoningEffort: 'high',
+    });
+    await expect(kanban.updateTask(task.id, { reasoningEffort: 'ultra' }, admin))
+      .resolves.toMatchObject({ agentModel: 'gpt-6-astra', reasoningEffort: 'ultra' });
+    await expect(kanban.updateTask(task.id, { agentHarness: 'opencode' }, admin))
+      .rejects.toMatchObject({ statusMessage: 'unsupported_task_agent_runtime' });
+  });
+
   test('parks external waits without consuming a slot and supports resume, steering, cancel, and Done cleanup', async () => {
     const project = await kanban.createProject({
       name: 'External Wait Project',
@@ -356,7 +379,7 @@ describe('external agent task controls', () => {
       folderPath: path.join(testRoot, 'private-workspace'),
     }, admin);
     const task = await kanban.createTask(project.id, { title: 'Private task' }, admin);
-    expect(task).toMatchObject({ agentHarness: 'codex', reasoningEffort: 'xhigh' });
+    expect(task).toMatchObject({ agentHarness: 'codex', agentModel: 'gpt-5.6-sol', reasoningEffort: 'xhigh' });
     const now = new Date().toISOString();
     const outsider: User = {
       id: 'api-outsider',
