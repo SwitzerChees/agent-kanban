@@ -1,0 +1,85 @@
+// Run only against the dedicated local QA server started with KANBAN_DATA_DIR=.data/showroom-qa/db.
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import Database from 'better-sqlite3';
+const origin = 'http://127.0.0.1:4317';
+const qaRoot = path.resolve('.data/showroom-qa');
+const request = async (url, options = {}, expected = 200) => {
+  const response = await fetch(origin + url, options);
+  const text = await response.text();
+  assert.equal(response.status, expected, url + ': ' + text.slice(0, 250));
+  return { response, data: text ? JSON.parse(text) : null };
+};
+const login = await request('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'showroom-qa@example.com', password: 'showroom-local-qa-only' }) });
+const cookie = login.response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+const headers = { cookie, 'content-type': 'application/json', origin };
+const existing = await request('/api/projects', { headers });
+let project = existing.data.projects?.find(p => p.key === 'SRQA');
+if (!project) project = (await request('/api/projects', { method: 'POST', headers, body: JSON.stringify({ name: 'Northland · Showroom QA', key: 'SRQA', folderPath: path.join(qaRoot, 'repository'), agentConcurrencyLimit: 0, e2eConcurrencyLimit: 0 }) })).data.project;
+const api = '/api/projects/' + project.id + '/showroom';
+await fs.mkdir(path.join(qaRoot, 'repository/showroom/Startseite'), { recursive: true });
+await fs.mkdir(path.join(qaRoot, 'repository/showroom/Checkout'), { recursive: true });
+await fs.mkdir(path.join(qaRoot, 'repository/showroom/Über uns'), { recursive: true });
+await fs.writeFile(path.join(qaRoot, 'repository/showroom/Über uns/erste Ansicht.html'), '<!doctype html><html lang="de"><title>Über uns</title><h1>Hallo</h1></html>');
+await fs.copyFile('tests/fixtures/showroom/home.html', path.join(qaRoot, 'repository/showroom/Startseite/home.html'));
+await fs.copyFile('tests/fixtures/showroom/style.css', path.join(qaRoot, 'repository/showroom/Startseite/style.css'));
+await fs.writeFile(path.join(qaRoot, 'repository/showroom/Startseite/details.html'), '<!doctype html><html lang="de"><head><title>Unser Ansatz</title><link rel="stylesheet" href="style.css"></head><body><main style="padding:60px"><h1>Einfach länger draußen.</h1><p>Weniger Material. Mehr Möglichkeiten.</p><a href="home.html">Zurück zur Startseite</a></main></body></html>');
+await fs.writeFile(path.join(qaRoot, 'repository/showroom/Checkout/cart.html'), '<!doctype html><html lang="de"><title>Merkliste</title><h1>Deine Merkliste</h1></html>');
+const library = (await request(api, { headers })).data;
+assert.equal(library.views.length >= 3, true);
+assert.equal((await fetch(origin + '/showroom-preview/' + library.previewToken + '/%C3%9Cber%20uns/erste%20Ansicht.html')).status, 200);
+await request(api, {}, 401);
+await request(api + '/feedback', {}, 401);
+const share = (await request(api + '/shares', { method: 'POST', headers, body: JSON.stringify({ name: 'Kundenreview · September', category: 'Startseite', expiresInDays: 7 }) })).data;
+const publicApi = '/api/showroom-shares/' + share.token;
+const guest = (await request(publicApi)).data;
+assert.ok(guest.views.length >= 2);
+assert.ok(guest.views.every(view => view.category === 'Startseite'));
+const preview = '/showroom-preview/' + guest.previewToken + '/Startseite/home.html';
+const rendered = await fetch(origin + preview);
+assert.equal(rendered.status, 200);
+assert.match(rendered.headers.get('content-security-policy'), /sandbox allow-scripts/);
+assert.doesNotMatch(rendered.headers.get('content-security-policy'), /allow-same-origin/);
+assert.equal(rendered.headers.get('x-frame-options'), null);
+assert.match(await rendered.text(), /ak-showroom/);
+assert.equal((await fetch(origin + '/showroom-preview/' + guest.previewToken + '/Startseite/style.css')).status, 200);
+assert.equal((await fetch(origin + '/showroom-preview/' + guest.previewToken + '/Checkout/cart.html')).status, 404);
+await request('/api/projects', { headers: { authorization: 'Bearer ' + share.token } }, 401);
+await request(api + '/shares', { method: 'POST', headers: { ...headers, origin: 'null' }, body: '{}' }, 403);
+await request(publicApi + '/feedback', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: '{}' }, 403);
+const feedback = { previewToken: guest.previewToken, viewPath: 'Startseite/home.html', authorName: 'Anna · QA', body: 'Die Hauptaktion sollte früher sichtbar sein.', requestId: randomUUID(), anchor: null };
+const feedbackResult = (await request(publicApi + '/feedback', { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify(feedback) })).data;
+await request(publicApi + '/feedback', { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: JSON.stringify({ ...feedback, authorName: '  ', requestId: randomUUID() }) }, 400);
+const stored = (await request(api + '/feedback', { headers })).data.find(row => row.id === feedbackResult.id);
+assert.equal(stored.authorName, 'Anna · QA');
+assert.equal(stored.viewHash, guest.views.find(view => view.path === 'Startseite/home.html').hash);
+await request(api + '/shares/' + share.share.id, { method: 'DELETE', headers, body: '{}' });
+await request(publicApi, {}, 404);
+assert.equal((await fetch(origin + preview)).status, 404);
+await request(publicApi + '/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...feedback, requestId: randomUUID() }) }, 404);
+// Exercise task -> publish wiring with deterministic local output. No paid agent
+// is launched: this dedicated test project has concurrency 0, and the task is in Backlog.
+const targetPath = 'Startseite/qa-' + randomUUID().slice(0, 8) + '.html';
+const iteration = (await request(api + '/iterations', { method: 'POST', headers, body: JSON.stringify({
+  requestId: randomUUID(), targetPath, brief: 'QA: improve the main CTA',
+  sourcePath: feedback.viewPath, snapshotId: guest.snapshotId, feedbackIds: [feedbackResult.id], start: false,
+}) })).data.iteration;
+const taskTree = path.join(qaRoot, 'db/worktrees', project.id, iteration.taskId, 'tree/showroom/Startseite');
+await fs.mkdir(taskTree, { recursive: true });
+await fs.writeFile(path.join(taskTree, path.basename(targetPath)), (await fs.readFile('tests/fixtures/showroom/home.html', 'utf8')).replace('Northland · Startseite', 'Northland · Neue Iteration'));
+await fs.copyFile('tests/fixtures/showroom/style.css', path.join(taskTree, 'style.css'));
+const qaDb = new Database(path.join(qaRoot, 'db/kanban.sqlite'));
+qaDb.prepare("UPDATE tasks SET agent_status = 'done' WHERE id = ? AND project_id = ? AND agent_status = 'idle'").run(iteration.taskId, project.id);
+qaDb.close();
+const published = (await request(api + '/iterations/' + iteration.id + '/publish', { method: 'POST', headers, body: '{}' })).data;
+assert.equal(published.targetPath, targetPath);
+const updated = (await request(api, { headers })).data;
+assert.ok(updated.views.some(view => view.path === targetPath));
+assert.ok(updated.views.some(view => view.path === feedback.viewPath));
+assert.equal((await request(api + '/feedback', { headers })).data.find(row => row.id === feedbackResult.id).status, 'in_progress');
+const browserShare = (await request(api + '/shares', { method: 'POST', headers, body: JSON.stringify({ name: 'Browserreview', expiresInDays: 7 }) })).data;
+await fs.writeFile(path.join(qaRoot, 'browser-state.json'), JSON.stringify({ projectId: project.id, url: origin + '/s/' + browserShare.token, shareId: browserShare.share.id }), { mode: 0o600 });
+console.log('Showroom HTTP checks passed: auth, scoped assets, sandbox headers, guest feedback, origin checks, revocation.');
+console.log('Browser QA state saved under .data/showroom-qa/browser-state.json');

@@ -362,6 +362,9 @@ function importDatabaseRows(sourcePath: string, manifest: BackupManifest, projec
         `);
       }
       for (const step of COPY_STEPS) copyRows(step.table, step.where, step.columns);
+      // Restoring an older backup must not resurrect links revoked after that backup.
+      sqliteDatabase.prepare(`UPDATE showroom_shares SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE project_id IN (SELECT id FROM selected_import_projects)`).run(new Date().toISOString());
       const foreignKeyErrors = sqliteDatabase.pragma('foreign_key_check') as unknown[];
       if (foreignKeyErrors.length) throw new Error('import_foreign_key_check_failed');
       sqliteDatabase.exec('DROP TABLE selected_import_projects; COMMIT;');
@@ -414,6 +417,11 @@ const COPY_STEPS: Array<{ table: string; where: string; columns?: string[] }> = 
   { table: 'wiki_todo_items', where: `list_id IN (SELECT id FROM backup_import.wiki_todo_lists WHERE project_id IN (${SELECTED}))` },
   { table: 'wiki_images', where: `page_id IN (SELECT id FROM backup_import.wiki_pages WHERE project_id IN (${SELECTED}))` },
   { table: 'tasks', where: `project_id IN (${SELECTED})` },
+  { table: 'showroom_blobs', where: `project_id IN (${SELECTED})` },
+  { table: 'showroom_snapshots', where: `project_id IN (${SELECTED})` },
+  { table: 'showroom_shares', where: `project_id IN (${SELECTED})` },
+  { table: 'showroom_iterations', where: `project_id IN (${SELECTED})` },
+  { table: 'showroom_feedback', where: `project_id IN (${SELECTED})` },
   { table: 'e2e_test_suites', where: `project_id IN (${SELECTED})` },
   { table: 'e2e_test_cases', where: `project_id IN (${SELECTED})` },
   { table: 'e2e_test_case_assets', where: `case_id IN (SELECT id FROM backup_import.e2e_test_cases WHERE project_id IN (${SELECTED}))` },

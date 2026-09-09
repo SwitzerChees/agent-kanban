@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Northland · Startseite</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><a href="home.html" class="logo">northland<span>®</span></a><nav aria-label="Hauptnavigation"><a href="#collection">Kollektion</a><a href="details.html">Unser Ansatz</a><a href="#contact">Kontakt</a></nav><button id="cart" type="button">Merkliste <span id="count">0</span></button></header>
+  <main>
+    <section class="hero" id="intro"><div class="intro"><span class="season">Für draußen gemacht · Kollektion 2026</span><h1>Weniger Alltag.<br>Mehr draußen.</h1><p>Durchdachte Ausrüstung für kleine Auszeiten und große Entdeckungen. Langlebig. Leicht. Bereit für deinen nächsten Weg.</p><button class="cta" id="discover" type="button">Kollektion entdecken <span>↗</span></button><span class="note">Entwickelt in der Schweiz. Gemacht für unterwegs.</span></div><div class="landscape" role="img" aria-label="Abstrakte Berglandschaft mit sonnengelbem Himmel"><span class="sun"></span><div class="mountain back"></div><div class="mountain front"></div><span class="caption">46°35′ N &nbsp; 7°57′ E<br>Einfach losgehen.</span></div></section>
+    <section id="collection" class="collection"><div><span class="season">Deine nächste Auszeit</span><h2>Weniger Gepäck.<br>Mehr Möglichkeiten.</h2></div><div><p>Alles, was du brauchst. Nichts, was dich aufhält.</p><button id="save" type="button">Zur Merkliste hinzufügen</button><p id="saved" role="status"></p></div></section>
+    <section id="contact"><h2>Immer einen Schritt weiter.</h2><p>Dieser Prototyp ist interaktiv. Probiere die Merkliste aus.</p></section>
+  </main>
+  <script>
+    // QA-only diagnostic: verifies the browser-enforced boundary, not just headers.
+    const isolation = {};
+    try { isolation.parent = parent.document.title; } catch { isolation.parent = 'blocked'; }
+    try { isolation.cookies = document.cookie; } catch { isolation.cookies = 'blocked'; }
+    try { isolation.storage = localStorage.length; } catch { isolation.storage = 'blocked'; }
+    parent.postMessage({ source: 'showroom-qa-isolation', isolation }, '*');
+    let count = 0;
+    document.querySelector('#discover').onclick = () => document.querySelector('#collection').scrollIntoView({ behavior: 'smooth' });
+    document.querySelector('#save').onclick = () => { document.querySelector('#count').textContent = String(++count); document.querySelector('#saved').textContent = 'Zur Merkliste hinzugefügt.'; };
+    document.querySelector('#cart').onclick = () => { document.querySelector('#saved').textContent = count + ' Produkte in deiner Merkliste.'; document.querySelector('#collection').scrollIntoView(); };
+  </script>
+</body>
+</html>

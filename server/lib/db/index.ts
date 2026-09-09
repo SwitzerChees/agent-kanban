@@ -7,6 +7,7 @@ import { count } from 'drizzle-orm';
 import * as schema from './schema';
 import { hashPassword } from '../security/password';
 import { runtimeLogger } from '../logger';
+import { showroomSchema } from './showroom-schema';
 
 const dataDir = path.resolve(process.cwd(), process.env.KANBAN_DATA_DIR ?? '.data');
 const dbPath = path.join(dataDir, 'kanban.sqlite');
@@ -1008,6 +1009,7 @@ export function ensureDatabase() {
     GROUP BY tasks.project_id, task_tags.name;
   `);
 
+  sqlite.exec(showroomSchema);
   seedAdmin();
 }
 

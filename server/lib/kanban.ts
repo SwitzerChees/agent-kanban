@@ -10,6 +10,7 @@ import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSourc
 import type { User } from './db/schema';
 import { AGENT_HARNESSES, type AgentHarness, type ReasoningEffort } from './agent-harness';
 import { queueE2eForTaskTransition } from './e2e-tests';
+import { ensureShowroomFolder } from './showroom-files';
 
 const DEFAULT_COLUMNS = [
   { key: 'backlog', nameEn: 'Backlog', nameDe: 'Backlog', position: 0, done: false },
@@ -33,6 +34,7 @@ export async function createProject(input: {
   const now = new Date().toISOString();
   const folderPath = path.resolve(input.folderPath);
   await fs.mkdir(folderPath, { recursive: true });
+  await ensureShowroomFolder(folderPath);
 
   const projectId = randomUUID();
   const oberthemaId = randomUUID();

@@ -85,6 +85,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   showBoard: [];
   showE2e: [];
+  showShowroom: [];
   openSidebar: [];
   openTask: [taskId: string];
   pageChange: [page: { id: string; title: string } | null];
@@ -1673,6 +1674,7 @@ function humanErrorCode(error: unknown) {
           <UIcon name="i-lucide-flask-conical" class="size-3.5" />
           <span class="hidden sm:inline">{{ copy.e2e }}</span>
         </button>
+        <button type="button" role="tab" class="ak-surface-switch-button" aria-label="Showroom" :aria-selected="false" @click="emit('showShowroom')"><UIcon name="i-lucide-panels-top-left" class="size-3.5" /><span class="hidden sm:inline">Showroom</span></button>
       </div>
 
       <UInput v-model="searchQuery" class="ml-1 hidden min-w-36 flex-1 md:block lg:max-w-xs" size="sm" icon="i-lucide-search" :placeholder="copy.search" :aria-label="copy.search" />

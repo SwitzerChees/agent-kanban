@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+@import "./showroom.css";
 
 :root {
   --ak-grid: rgba(24, 24, 27, 0.06);

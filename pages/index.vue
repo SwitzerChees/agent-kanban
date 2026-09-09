@@ -6,7 +6,7 @@ import { compressedImageFileName, compressImageForUpload } from '~/utils/image-u
 import { canCompleteReviewedAgentTask } from '~/utils/task-status-transition';
 
 type Locale = 'en' | 'de';
-type View = 'board' | 'wiki' | 'e2e' | 'projects' | 'users' | 'backups';
+type View = 'board' | 'wiki' | 'e2e' | 'showroom' | 'projects' | 'users' | 'backups';
 type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type TaskDescriptionView = TaskDescriptionSource | 'visual';
@@ -2121,15 +2121,15 @@ const closeSidebarOnMobile = () => {
   if (isMobileViewport.value) closeMobileSidebar();
 };
 
-const syncProjectSurfaceRoute = (surface: Extract<View, 'board' | 'wiki' | 'e2e'>) => {
+const syncProjectSurfaceRoute = (surface: Extract<View, 'board' | 'wiki' | 'e2e' | 'showroom'>) => {
   if (!import.meta.client) return;
   const base = `${window.location.pathname}${window.location.search}`;
-  window.history.replaceState(window.history.state, '', surface === 'board' ? base : `${base}#${surface}`);
+  window.history.replaceState(window.history.state, '', surface === 'board' ? base : `${base}#${surface}${surface === 'showroom' ? '/' + selectedProjectId.value : ''}`);
 };
 
 const projectIdFromSurfaceRoute = () => {
   if (!import.meta.client) return null;
-  const encodedProjectId = window.location.hash.match(/^#(?:wiki|e2e)\/([^/]+)(?:\/|$)/)?.[1];
+  const encodedProjectId = window.location.hash.match(/^#(?:wiki|e2e|showroom)\/([^/]+)(?:\/|$)/)?.[1];
   if (!encodedProjectId) return null;
   try {
     return decodeURIComponent(encodedProjectId);
@@ -2138,7 +2138,7 @@ const projectIdFromSurfaceRoute = () => {
   }
 };
 
-const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki' | 'e2e'>) => {
+const selectProjectSurface = (surface: Extract<View, 'board' | 'wiki' | 'e2e' | 'showroom'>) => {
   activeView.value = surface;
   syncProjectSurfaceRoute(surface);
   closeSidebarOnMobile();
@@ -2452,6 +2452,7 @@ onMounted(async () => {
   await loadSession();
   if (window.location.hash.startsWith('#wiki') && selectedProjectId.value) activeView.value = 'wiki';
   if (window.location.hash.startsWith('#e2e') && selectedProjectId.value) activeView.value = 'e2e';
+  if (window.location.hash.startsWith('#showroom') && selectedProjectId.value) activeView.value = 'showroom';
   startBoardRefresh();
 });
 
@@ -2560,7 +2561,7 @@ const loadBoard = async (projectId: string) => {
 };
 
 const refreshCurrentBoard = async () => {
-  if (!user.value || !['board', 'wiki', 'e2e'].includes(activeView.value) || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value || commandPaletteOpen.value) return;
+  if (!user.value || !['board', 'wiki', 'e2e', 'showroom'].includes(activeView.value) || !selectedProjectId.value || refreshingBoard.value || hierarchyReordering.value || commandPaletteOpen.value) return;
   refreshingBoard.value = true;
   boardClock.value = Date.now();
   try {
@@ -3320,8 +3321,12 @@ const openTaskDetail = async (task: Task) => {
   await establishTaskModalBaseline();
 };
 
-const openWikiTask = (taskId: string) => {
-  const task = board.value?.tasks.find((item) => item.id === taskId);
+const openWikiTask = async (taskId: string) => {
+  let task = board.value?.tasks.find((item) => item.id === taskId);
+  if (!task && selectedProjectId.value) {
+    await loadBoard(selectedProjectId.value);
+    task = board.value?.tasks.find((item) => item.id === taskId);
+  }
   if (!task) return;
   void openTaskDetail(task).catch((error) => {
     errorMessage.value = humanError(error);
@@ -6435,18 +6440,18 @@ const humanError = (error: unknown) => {
               class="ak-project-nav-item group flex w-full items-center rounded-xl text-left transition"
               :class="[
                 sidebarCollapsed ? 'h-11 justify-center px-0' : 'min-h-12 gap-3 px-2 py-1.5',
-                project.id === selectedProjectId && ['board', 'wiki', 'e2e'].includes(activeView)
+                project.id === selectedProjectId && ['board', 'wiki', 'e2e', 'showroom'].includes(activeView)
                   ? 'bg-teal-50 text-teal-950 shadow-[inset_0_0_0_1px_rgba(13,148,136,0.18)] dark:bg-teal-950/45 dark:text-teal-50'
                   : 'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900',
               ]"
-              :aria-current="project.id === selectedProjectId && ['board', 'wiki', 'e2e'].includes(activeView) ? 'page' : undefined"
+              :aria-current="project.id === selectedProjectId && ['board', 'wiki', 'e2e', 'showroom'].includes(activeView) ? 'page' : undefined"
               :aria-label="project.name"
               :title="project.name"
               @click="selectProject(project.id)"
             >
               <span
                 class="grid size-9 shrink-0 place-items-center rounded-lg border text-[10px] font-bold tracking-wide transition"
-                :class="project.id === selectedProjectId && ['board', 'wiki', 'e2e'].includes(activeView)
+                :class="project.id === selectedProjectId && ['board', 'wiki', 'e2e', 'showroom'].includes(activeView)
                   ? 'border-teal-200 bg-white text-teal-700 dark:border-teal-800 dark:bg-teal-950 dark:text-teal-200'
                   : 'border-zinc-200 bg-white text-zinc-500 group-hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400'"
               >
@@ -6724,6 +6729,7 @@ const humanError = (error: unknown) => {
           :sidebar-collapsed="sidebarCollapsed"
           @show-board="selectProjectSurface('board')"
           @show-e2e="selectProjectSurface('e2e')"
+          @show-showroom="selectProjectSurface('showroom')"
           @open-sidebar="openMobileSidebar"
           @open-task="openWikiTask"
           @page-change="activeWikiPage = $event"
@@ -6741,9 +6747,16 @@ const humanError = (error: unknown) => {
           :sidebar-collapsed="sidebarCollapsed"
           @show-board="selectProjectSurface('board')"
           @show-wiki="selectProjectSurface('wiki')"
+          @show-showroom="selectProjectSurface('showroom')"
           @open-sidebar="openMobileSidebar"
         />
 
+        <ProjectShowroom
+          v-else-if="activeView === 'showroom' && board"
+          :project="board.project" :locale="locale" :is-mobile-viewport="isMobileViewport" :sidebar-collapsed="sidebarCollapsed"
+          @show-board="selectProjectSurface('board')" @show-wiki="selectProjectSurface('wiki')" @show-e2e="selectProjectSurface('e2e')"
+          @open-sidebar="openMobileSidebar" @open-task="openWikiTask"
+        />
         <section v-else-if="board" class="flex min-h-0 flex-1 flex-col gap-3">
           <div class="ak-board-toolbar flex min-w-0 shrink-0 items-center gap-2 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <UButton
@@ -6803,6 +6816,7 @@ const humanError = (error: unknown) => {
                 <UIcon name="i-lucide-flask-conical" class="size-3.5" />
                 <span class="hidden sm:inline">{{ projectSurfaceCopy.e2e }}</span>
               </button>
+              <button type="button" role="tab" class="ak-surface-switch-button" aria-label="Showroom" :aria-selected="false" @click="selectProjectSurface('showroom')"><UIcon name="i-lucide-panels-top-left" class="size-3.5" /><span class="hidden sm:inline">Showroom</span></button>
             </div>
 
             <USelect
