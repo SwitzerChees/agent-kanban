@@ -12,10 +12,14 @@ export interface BackupS3Config {
   bucket: string;
   prefix: string;
   endpoint?: string;
+  region?: string;
   forcePathStyle: boolean;
   serverSideEncryption?: ServerSideEncryption;
   kmsKeyId?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
   retentionCount: number;
+  retentionDays?: number;
 }
 
 export function backupS3Config(env: NodeJS.ProcessEnv = process.env): BackupS3Config | null {
@@ -26,6 +30,7 @@ export function backupS3Config(env: NodeJS.ProcessEnv = process.env): BackupS3Co
     bucket,
     prefix: cleanPrefix(env.KANBAN_BACKUP_S3_PREFIX ?? 'agent-kanban'),
     endpoint: env.KANBAN_BACKUP_S3_ENDPOINT?.trim() || undefined,
+    region: env.KANBAN_BACKUP_S3_REGION?.trim() || undefined,
     forcePathStyle: env.KANBAN_BACKUP_S3_FORCE_PATH_STYLE === '1' || env.KANBAN_BACKUP_S3_FORCE_PATH_STYLE === 'true',
     serverSideEncryption: encryption === 'AES256' || encryption === 'aws:kms' ? encryption : undefined,
     kmsKeyId: env.KANBAN_BACKUP_S3_KMS_KEY_ID?.trim() || undefined,
@@ -36,7 +41,7 @@ export function backupS3Config(env: NodeJS.ProcessEnv = process.env): BackupS3Co
 export async function uploadBackupToS3(filePath: string, fileName: string, config = backupS3Config()) {
   if (!config) throw new Error('backup_s3_not_configured');
   const key = [config.prefix, path.basename(fileName)].filter(Boolean).join('/');
-  const client = new S3Client({ endpoint: config.endpoint, forcePathStyle: config.forcePathStyle });
+  const client = createS3Client(config);
   const upload = new Upload({
     client,
     leavePartsOnError: false,
@@ -53,7 +58,13 @@ export async function uploadBackupToS3(filePath: string, fileName: string, confi
   try {
     await upload.done();
     const deletedBackups = await rotateBackups(client, config, key);
-    return { bucket: config.bucket, key, retentionCount: config.retentionCount, deletedBackups };
+    return {
+      bucket: config.bucket,
+      key,
+      retentionCount: config.retentionCount,
+      retentionDays: config.retentionDays ?? null,
+      deletedBackups,
+    };
   } finally {
     client.destroy();
   }
@@ -86,7 +97,13 @@ export async function rotateBackups(client: S3Client, config: BackupS3Config, up
   } while (continuationToken);
 
   objects.sort((left, right) => right.modified - left.modified || right.key.localeCompare(left.key));
-  const stale = objects.slice(config.retentionCount).filter((object) => object.key !== uploadedKey);
+  const retentionCutoff = config.retentionDays
+    ? Date.now() - config.retentionDays * 24 * 60 * 60 * 1000
+    : null;
+  const stale = objects.filter((object, index) => object.key !== uploadedKey && (
+    index >= config.retentionCount
+    || (retentionCutoff !== null && object.modified < retentionCutoff)
+  ));
   for (let offset = 0; offset < stale.length; offset += 1000) {
     const batch = stale.slice(offset, offset + 1000);
     await client.send(new DeleteObjectsCommand({
@@ -95,6 +112,39 @@ export async function rotateBackups(client: S3Client, config: BackupS3Config, up
     }));
   }
   return stale.length;
+}
+
+export async function testS3Connection(config: BackupS3Config) {
+  const client = createS3Client(config);
+  try {
+    await client.send(new ListObjectsV2Command({
+      Bucket: config.bucket,
+      Prefix: config.prefix ? `${config.prefix}/` : undefined,
+      MaxKeys: 1,
+    }));
+    return { ok: true };
+  } finally {
+    client.destroy();
+  }
+}
+
+export function prefixWithDirectory(prefix: string, directory: string) {
+  return [prefix, directory]
+    .map(cleanPrefix)
+    .filter(Boolean)
+    .join('/');
+}
+
+function createS3Client(config: BackupS3Config) {
+  return new S3Client({
+    endpoint: config.endpoint,
+    region: config.region,
+    forcePathStyle: config.forcePathStyle,
+    credentials: config.accessKeyId && config.secretAccessKey ? {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    } : undefined,
+  });
 }
 
 function isManagedBackupKey(key: string, prefix: string) {

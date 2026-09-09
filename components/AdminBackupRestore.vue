@@ -9,6 +9,13 @@ interface BackupScope {
 
 interface BackupCapabilities {
   scope: BackupScope;
+  destinations: Array<{
+    id: string;
+    name: string;
+    bucket: string;
+    prefix: string;
+    retentionCount?: number;
+  }>;
   s3: {
     configured: boolean;
     bucket: string | null;
@@ -138,6 +145,7 @@ const copy = computed(() => props.locale === 'de' ? {
 
 const capabilities = ref<BackupCapabilities | null>(null);
 const destination = ref<'download' | 's3'>('download');
+const manualDestinationId = ref('');
 const backupBusy = ref(false);
 const backupMessage = ref('');
 const errorMessage = ref('');
@@ -162,13 +170,21 @@ const selectedLabel = computed(() => copy.value.selected
   .replace('{selected}', String(selectedProjects.value.length))
   .replace('{total}', String(preview.value?.projects.length ?? 0)));
 
-onMounted(async () => {
+const s3Configured = computed(() => Boolean(capabilities.value?.destinations.length || capabilities.value?.s3.configured));
+const manualDestinationItems = computed(() => capabilities.value?.destinations.map((item) => ({ label: item.name, value: item.id })) ?? []);
+
+onMounted(loadCapabilities);
+
+async function loadCapabilities() {
   try {
     capabilities.value = await $fetch<BackupCapabilities>('/api/admin/backups/capabilities');
+    if (!manualDestinationId.value && capabilities.value.destinations.length) {
+      manualDestinationId.value = capabilities.value.destinations[0]!.id;
+    }
   } catch (error) {
     errorMessage.value = humanError(error);
   }
-});
+}
 
 async function startBackup() {
   backupBusy.value = true;
@@ -176,7 +192,10 @@ async function startBackup() {
   errorMessage.value = '';
   try {
     if (destination.value === 's3') {
-      const result = await $fetch<{ deletedBackups: number }>('/api/admin/backups/s3', { method: 'POST' });
+      const result = await $fetch<{ deletedBackups: number }>('/api/admin/backups/s3', {
+        method: 'POST',
+        body: manualDestinationId.value ? { destinationId: manualDestinationId.value } : {},
+      });
       backupMessage.value = copy.value.uploaded.replace('{deleted}', String(result.deletedBackups));
     } else {
       const response = await fetch('/api/admin/backups/download', { credentials: 'same-origin' });
@@ -342,7 +361,7 @@ function responseFileName(value: string | null) {
       <template #header>
         <div class="flex items-center justify-between gap-3">
           <h2 class="font-semibold">{{ copy.title }}</h2>
-          <UBadge color="primary" variant="soft">{{ copy.ready }}</UBadge>
+          <UBadge class="!bg-teal-100 !text-teal-800 dark:!bg-teal-950 dark:!text-teal-200" color="primary" variant="soft">{{ copy.ready }}</UBadge>
         </div>
       </template>
 
@@ -364,15 +383,16 @@ function responseFileName(value: string | null) {
         </label>
         <label class="flex items-center gap-3 rounded-xl border p-3 transition" :class="[
           destination === 's3' ? 'border-teal-300 bg-teal-50/70 dark:border-teal-800 dark:bg-teal-950/35' : 'border-zinc-200 dark:border-zinc-800',
-          capabilities?.s3.configured ? 'cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-900' : 'cursor-not-allowed opacity-60',
+          s3Configured ? 'cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-900' : 'cursor-not-allowed opacity-60',
         ]">
-          <input v-model="destination" type="radio" value="s3" class="accent-teal-600" :disabled="!capabilities?.s3.configured">
+          <input v-model="destination" type="radio" value="s3" class="accent-teal-600" :disabled="!s3Configured">
           <UIcon name="i-lucide-cloud-upload" class="size-5 text-zinc-500" />
-          <span class="min-w-0"><span class="block text-sm font-semibold">{{ copy.s3 }}</span><span class="block truncate text-xs text-zinc-500 dark:text-zinc-400">{{ capabilities?.s3.configured ? `${capabilities.s3.bucket}/${capabilities.s3.prefix}` : copy.s3Unavailable }}</span><span v-if="capabilities?.s3.retentionCount" class="block text-xs text-zinc-500 dark:text-zinc-400">{{ copy.retention.replace('{count}', String(capabilities.s3.retentionCount)) }}</span></span>
+          <span class="min-w-0"><span class="block text-sm font-semibold">{{ copy.s3 }}</span><span class="block truncate text-xs text-zinc-500 dark:text-zinc-400">{{ s3Configured ? `${capabilities?.destinations.length ?? 0} ${copy.target}` : copy.s3Unavailable }}</span><span v-if="capabilities?.s3.configured && !capabilities.destinations.length && capabilities.s3.retentionCount" class="block text-xs text-zinc-500 dark:text-zinc-400">{{ copy.retention.replace('{count}', String(capabilities.s3.retentionCount)) }}</span></span>
         </label>
+        <USelect v-if="destination === 's3' && manualDestinationItems.length" v-model="manualDestinationId" class="mt-1 w-full" :items="manualDestinationItems" />
       </fieldset>
 
-      <UButton class="mt-5" block size="lg" icon="i-lucide-archive" :loading="backupBusy" :disabled="!capabilities" @click="startBackup">{{ copy.start }}</UButton>
+      <UButton class="mt-5 !bg-teal-700 !text-white hover:!bg-teal-800" block size="lg" icon="i-lucide-archive" :loading="backupBusy" :disabled="!capabilities" @click="startBackup">{{ copy.start }}</UButton>
       <p v-if="backupMessage" class="mt-3 text-center text-xs text-teal-700 dark:text-teal-300" aria-live="polite">{{ backupMessage }}</p>
     </UCard>
 
@@ -380,7 +400,7 @@ function responseFileName(value: string | null) {
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <h2 class="font-semibold">{{ copy.importTitle }}</h2>
-          <UBadge v-if="preview" color="primary" variant="soft" icon="i-lucide-badge-check">{{ copy.valid }}</UBadge>
+          <UBadge v-if="preview" class="!bg-teal-100 !text-teal-800 dark:!bg-teal-950 dark:!text-teal-200" color="primary" variant="soft" icon="i-lucide-badge-check">{{ copy.valid }}</UBadge>
         </div>
       </template>
 
@@ -453,5 +473,7 @@ function responseFileName(value: string | null) {
         <p v-if="importMessage" class="mt-3 text-center text-xs text-teal-700 dark:text-teal-300" aria-live="polite">{{ importMessage }}</p>
       </template>
     </UCard>
+
+    <AdminBackupAutomation :locale="props.locale" @changed="loadCapabilities" />
   </div>
 </template>

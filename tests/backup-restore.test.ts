@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
-import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
@@ -17,6 +17,8 @@ let kanban: typeof import('../server/lib/kanban');
 let backupExport: typeof import('../server/lib/backup/export');
 let backupImport: typeof import('../server/lib/backup/import');
 let s3: typeof import('../server/lib/backup/s3');
+let backupSettings: typeof import('../server/lib/backup/settings');
+let backupScheduler: typeof import('../server/lib/backup/scheduler');
 let admin: User;
 
 beforeAll(async () => {
@@ -25,6 +27,8 @@ beforeAll(async () => {
   backupExport = await import('../server/lib/backup/export');
   backupImport = await import('../server/lib/backup/import');
   s3 = await import('../server/lib/backup/s3');
+  backupSettings = await import('../server/lib/backup/settings');
+  backupScheduler = await import('../server/lib/backup/scheduler');
   admin = dbModule.db.select().from(dbModule.schema.users).get()!;
 });
 
@@ -141,6 +145,104 @@ describe('S3 backup retention', () => {
   test('defaults retention to 30 and accepts an explicit limit', () => {
     expect(s3.backupS3Config({ KANBAN_BACKUP_S3_BUCKET: 'bucket' })?.retentionCount).toBe(30);
     expect(s3.backupS3Config({ KANBAN_BACKUP_S3_BUCKET: 'bucket', KANBAN_BACKUP_S3_RETENTION_COUNT: '12' })?.retentionCount).toBe(12);
+  });
+
+  test('also removes managed backups older than the configured retention days', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-09T12:00:00Z'));
+    const sent: unknown[] = [];
+    const client = {
+      send: vi.fn(async (command: unknown) => {
+        sent.push(command);
+        if (command instanceof ListObjectsV2Command) {
+          return {
+            Contents: [
+              object('daily/agent-kanban-backup-2026-09-09_10-00-00-000Z.zip', 9),
+              object('daily/agent-kanban-backup-2026-09-08_10-00-00-000Z.zip', 8),
+              object('daily/agent-kanban-backup-2026-09-05_10-00-00-000Z.zip', 5),
+            ],
+          };
+        }
+        return {};
+      }),
+    } as unknown as S3Client;
+    try {
+      const deleted = await s3.rotateBackups(client, {
+        bucket: 'bucket', prefix: 'daily', forcePathStyle: false, retentionCount: 100, retentionDays: 2,
+      }, 'daily/agent-kanban-backup-2026-09-09_10-00-00-000Z.zip');
+      expect(deleted).toBe(1);
+      const deletion = sent.find((command) => command instanceof DeleteObjectsCommand) as DeleteObjectsCommand;
+      expect(deletion.input.Delete?.Objects).toEqual([{ Key: 'daily/agent-kanban-backup-2026-09-05_10-00-00-000Z.zip' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('UI-managed backup configuration', () => {
+  test('stores credentials encrypted outside SQLite and never returns them publicly', async () => {
+    const destination = backupSettings.createBackupDestination(backupSettings.destinationInputSchema.parse({
+      name: 'Offsite storage',
+      bucket: 'agent-kanban-test',
+      endpoint: 'https://s3.example.test',
+      region: 'eu-test-1',
+      prefix: 'backups',
+      forcePathStyle: true,
+      serverSideEncryption: 'AES256',
+      accessKeyId: 'AK_TEST_ONLY_NOT_REAL',
+      secretAccessKey: 'SECRET_TEST_ONLY_NOT_REAL',
+    }));
+
+    expect(JSON.stringify(destination)).not.toContain('AK_TEST_ONLY_NOT_REAL');
+    expect(JSON.stringify(backupSettings.listBackupDestinations())).not.toContain('SECRET_TEST_ONLY_NOT_REAL');
+    expect(backupSettings.backupDestinationConfig(destination.id)).toMatchObject({
+      accessKeyId: 'AK_TEST_ONLY_NOT_REAL',
+      secretAccessKey: 'SECRET_TEST_ONLY_NOT_REAL',
+    });
+
+    const keyPath = path.join(process.env.KANBAN_DATA_DIR!, 'secrets', 'backup-config.key');
+    const credentialPath = path.join(process.env.KANBAN_DATA_DIR!, 'secrets', 'backup-destinations', `${destination.id}.json`);
+    expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+    expect(statSync(credentialPath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(credentialPath, 'utf8')).not.toContain('SECRET_TEST_ONLY_NOT_REAL');
+
+    const created = await backupExport.createBackupArchive();
+    const archive = unzipSync(readFileSync(created.path));
+    expect(Object.keys(archive).some((name) => name.includes('secret') || name.includes('backup-config.key'))).toBe(false);
+    await created.cleanup();
+  });
+
+  test('validates five-field cron expressions and persists the calculated next run', () => {
+    expect(backupScheduler.nextBackupRun(
+      '17 */12 * * *',
+      'Europe/Zurich',
+      new Date('2026-09-09T08:00:00Z'),
+    )).toBe('2026-09-09T10:17:00.000Z');
+    expect(() => backupScheduler.nextBackupRun('0 0 0 * * *', 'Europe/Zurich'))
+      .toThrowError(expect.objectContaining({ statusMessage: 'backup_cron_invalid' }));
+
+    const destination = backupSettings.listBackupDestinations()[0]!;
+    const input = backupSettings.scheduleInputSchema.parse({
+      name: 'Twice daily',
+      cronExpression: '17 */12 * * *',
+      timezone: 'Europe/Zurich',
+      destinationId: destination.id,
+      destinationDirectory: '/scheduled/daily/',
+      retentionDays: 28,
+      retentionCount: 30,
+      enabled: true,
+    });
+    const schedule = backupSettings.insertBackupSchedule(
+      input,
+      backupScheduler.nextBackupRun(input.cronExpression, input.timezone),
+    );
+    expect(schedule).toMatchObject({
+      destinationDirectory: 'scheduled/daily',
+      retentionDays: 28,
+      retentionCount: 30,
+      enabled: true,
+    });
+    expect(schedule.nextRunAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
 

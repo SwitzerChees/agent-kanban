@@ -849,6 +849,134 @@ paths:
       operationId: uploadBackupToS3
       summary: Create a backup, upload it to configured S3 storage, and apply retention (admin session only)
       security: [{ cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                destinationId: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backup-destinations:
+    get:
+      tags: [Administration]
+      operationId: listBackupDestinations
+      summary: List UI-managed S3 backup destinations without credentials (admin session only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [Administration]
+      operationId: createBackupDestination
+      summary: Create an encrypted S3 backup destination (admin session only)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BackupDestinationWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backup-destinations/{destinationId}:
+    patch:
+      tags: [Administration]
+      operationId: updateBackupDestination
+      summary: Update an S3 backup destination (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ name: destinationId, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BackupDestinationWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [Administration]
+      operationId: deleteBackupDestination
+      summary: Delete an unused S3 backup destination (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ name: destinationId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backup-destinations/test:
+    post:
+      tags: [Administration]
+      operationId: testBackupDestination
+      summary: Test list access with entered or stored S3 credentials (admin session only)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination]
+              properties:
+                id: { type: string, format: uuid }
+                destination: { $ref: '#/components/schemas/BackupDestinationWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backup-schedules:
+    get:
+      tags: [Administration]
+      operationId: listBackupSchedules
+      summary: List persisted cron backup schedules (admin session only)
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [Administration]
+      operationId: createBackupSchedule
+      summary: Create a cron backup schedule (admin session only)
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BackupScheduleWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backup-schedules/{scheduleId}:
+    patch:
+      tags: [Administration]
+      operationId: updateBackupSchedule
+      summary: Update a cron backup schedule (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ name: scheduleId, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BackupScheduleWrite' }
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    delete:
+      tags: [Administration]
+      operationId: deleteBackupSchedule
+      summary: Delete a cron backup schedule (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ name: scheduleId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { $ref: '#/components/responses/ObjectResponse' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/admin/backup-schedules/{scheduleId}/run:
+    post:
+      tags: [Administration]
+      operationId: runBackupSchedule
+      summary: Queue a scheduled backup immediately (admin session only)
+      security: [{ cookieAuth: [] }]
+      parameters: [{ name: scheduleId, in: path, required: true, schema: { type: string, format: uuid } }]
       responses:
         '200': { $ref: '#/components/responses/ObjectResponse' }
         default: { $ref: '#/components/responses/ErrorResponse' }
@@ -980,6 +1108,33 @@ components:
             type: object
             additionalProperties: true
   schemas:
+    BackupDestinationWrite:
+      type: object
+      required: [name, bucket, region]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        bucket: { type: string, minLength: 1, maxLength: 255 }
+        endpoint: { type: string, format: uri }
+        region: { type: string, minLength: 1, maxLength: 100 }
+        prefix: { type: string, maxLength: 500 }
+        forcePathStyle: { type: boolean, default: false }
+        serverSideEncryption: { type: string, enum: ['', AES256, 'aws:kms'] }
+        kmsKeyId: { type: string, maxLength: 2048 }
+        accessKeyId: { type: string, maxLength: 512, writeOnly: true }
+        secretAccessKey: { type: string, maxLength: 4096, writeOnly: true }
+        clearCredentials: { type: boolean, default: false }
+    BackupScheduleWrite:
+      type: object
+      required: [name, cronExpression, timezone, destinationId, retentionCount, retentionDays]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80 }
+        cronExpression: { type: string, minLength: 1, maxLength: 160, description: Five-field cron expression }
+        timezone: { type: string, minLength: 1, maxLength: 100, description: IANA time zone }
+        destinationId: { type: string, format: uuid }
+        destinationDirectory: { type: string, maxLength: 500 }
+        retentionCount: { type: integer, minimum: 1, maximum: 10000 }
+        retentionDays: { type: integer, minimum: 1, maximum: 36500 }
+        enabled: { type: boolean, default: true }
     ProjectWrite:
       type: object
       properties:

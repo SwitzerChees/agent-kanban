@@ -22,27 +22,46 @@ created before any import is applied.
 
 ## S3 configuration and rotation
 
-S3 upload is enabled when `KANBAN_BACKUP_S3_BUCKET` is present in the service
-environment. AWS credentials use the standard AWS SDK credential chain (for
-example an instance role, web identity, or `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`). Supported settings:
+Administrators can create one or more named S3 destinations directly in
+**Backup & Restore**. Each destination includes bucket, endpoint, region, base
+directory, path-style mode, optional server-side encryption, and credentials.
+The **Test connection** action verifies list access before saving.
+
+Access and secret keys are AES-256-GCM encrypted outside SQLite below
+`.data/secrets/backup-destinations`. The local master key is stored as
+`.data/secrets/backup-config.key`; key and credential files are restricted to
+mode `0600`. Neither credentials nor the master key are included in exported
+backup ZIPs or API responses. Back up the master key separately if the local
+S3 configuration itself must survive a complete server loss. Destinations
+without explicit keys use the standard AWS SDK credential chain (for example
+an instance role or web identity).
+
+Schedules are also configured in **Backup & Restore**. They use a five-field
+cron expression and an IANA time zone, and can be enabled, paused, edited,
+deleted, or run immediately. The next and previous run plus the last result are
+shown in the UI. On restart, interrupted runs are marked failed and enabled
+schedules resume from their persisted next-run time.
+
+The legacy environment configuration remains available as a fallback when
+`KANBAN_BACKUP_S3_BUCKET` is present:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `KANBAN_BACKUP_S3_BUCKET` | unset | Destination bucket; enables S3 upload |
 | `KANBAN_BACKUP_S3_PREFIX` | `agent-kanban` | Object-key prefix |
-| `AWS_REGION` | SDK default | AWS region |
+| `KANBAN_BACKUP_S3_REGION` | SDK default | AWS region |
 | `KANBAN_BACKUP_S3_ENDPOINT` | unset | Custom S3-compatible endpoint |
 | `KANBAN_BACKUP_S3_FORCE_PATH_STYLE` | `false` | Use path-style bucket URLs |
 | `KANBAN_BACKUP_S3_SSE` | unset | `AES256` or `aws:kms` server-side encryption |
 | `KANBAN_BACKUP_S3_KMS_KEY_ID` | unset | KMS key ID when `aws:kms` is selected |
 | `KANBAN_BACKUP_S3_RETENTION_COUNT` | `30` | Number of newest managed backups to keep |
 
-Rotation runs after every successful S3 upload. It lists the configured
-prefix, orders managed backups by modification time, and deletes objects older
-than the configured retention count in batches of up to 1,000. It only manages
-files whose basename matches `agent-kanban-backup-YYYY-MM-DD_….zip`; unrelated
-objects and nested keys below the prefix are never deleted.
+Rotation runs after every successful S3 upload. A schedule has both retention
+days and a maximum count; a managed backup is deleted when either limit is
+exceeded. Deletions are batched in groups of up to 1,000. Rotation only manages
+files whose basename matches `agent-kanban-backup-YYYY-MM-DD_….zip` directly in
+the selected destination directory. Unrelated objects and nested keys are
+never deleted.
 
 The S3 identity needs `s3:PutObject`, `s3:ListBucket`, and `s3:DeleteObject`
 for the configured bucket and prefix. Add KMS permissions as required when
