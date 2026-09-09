@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useRefinementAnswers } from '../composables/useRefinementAnswers';
+
 export type TaskRefinementStatus =
   | 'idle'
   | 'queued'
@@ -283,7 +285,6 @@ const t = computed<TaskRefinementLabels>(() => ({
   ...props.labels,
 }));
 const brief = ref(props.initialBrief);
-const answers = reactive<Record<string, string>>({});
 const newRunOpen = ref(false);
 const pendingStartFromRunId = ref<string | null>(null);
 const startRequestPending = ref(false);
@@ -292,6 +293,7 @@ const createRequestPending = ref(false);
 const activeRun = computed(() => props.currentRun || props.latest || props.runs[0] || null);
 const activeStatus = computed(() => props.status || activeRun.value?.status || 'idle');
 const activeQuestions = computed(() => props.questions ?? activeRun.value?.questions ?? []);
+const answers = useRefinementAnswers(() => activeRun.value?.id ?? null, () => activeQuestions.value);
 const activeResult = computed(() => props.result ?? activeRun.value?.resultMarkdown ?? '');
 const activeVisuals = computed(() => props.visuals ?? activeRun.value?.visuals ?? []);
 const activeError = computed(() => props.errorMessage || activeRun.value?.errorMessage || '');
@@ -371,16 +373,6 @@ const draftDirty = computed(() => {
     (answers[question.id] || '') !== (question.answer || '')
   ));
 });
-
-watch(activeQuestions, (questions) => {
-  const ids = new Set(questions.map((question) => question.id));
-  for (const answerId of Object.keys(answers)) {
-    if (!ids.has(answerId)) delete answers[answerId];
-  }
-  for (const question of questions) {
-    answers[question.id] = question.answer || '';
-  }
-}, { immediate: true });
 
 watch(() => props.initialBrief, (value) => {
   if (!brief.value.trim()) brief.value = value;
