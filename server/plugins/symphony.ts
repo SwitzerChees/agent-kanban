@@ -4,6 +4,8 @@ import { startRefinementWorker } from '../lib/refinement-worker';
 import { startProjectChatRuntime } from '../lib/project-chat-runtime';
 import { installServerStreamShutdown } from '../lib/server-streams';
 import { startE2eRunDispatcher } from '../lib/e2e-dispatcher';
+import { startBackupScheduler } from '../lib/backup/scheduler';
+import { stopWikiCollaboration } from '../lib/wiki-collaboration';
 
 export default defineNitroPlugin((nitroApp) => {
   ensureDatabase();
@@ -12,12 +14,15 @@ export default defineNitroPlugin((nitroApp) => {
   const refinementWorker = startRefinementWorker();
   const projectChat = startProjectChatRuntime();
   const e2eDispatcher = startE2eRunDispatcher();
+  const backupScheduler = startBackupScheduler();
   nitroApp.hooks.hook('close', async () => {
+    stopWikiCollaboration();
     await Promise.all([
       taskDispatcher.stop(),
       refinementWorker.stop(),
       projectChat.stop(),
       e2eDispatcher.stop(),
+      backupScheduler.stop(),
     ]);
   });
 });

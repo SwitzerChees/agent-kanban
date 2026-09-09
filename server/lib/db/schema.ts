@@ -1,4 +1,4 @@
-import { integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
+import { blob, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -136,6 +136,14 @@ export const wikiPages = sqliteTable('wiki_pages', {
   createdBy: text('created_by').notNull().references(() => users.id),
   updatedBy: text('updated_by').notNull().references(() => users.id),
   createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const wikiCollaborationDocuments = sqliteTable('wiki_collaboration_documents', {
+  pageId: text('page_id').primaryKey().references(() => wikiPages.id, { onDelete: 'cascade' }),
+  state: blob('state', { mode: 'buffer' }).notNull(),
+  generation: text('generation').notNull(),
+  sourceUpdatedAt: text('source_updated_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
 
@@ -367,6 +375,17 @@ export const taskAgentRuns = sqliteTable('task_agent_runs', {
   completedAt: text('completed_at'),
 });
 
+export const taskCompletionNotifications = sqliteTable('task_completion_notifications', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  agentRunId: text('agent_run_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  deliveredAt: text('delivered_at'),
+}, (table) => ({
+  runUser: uniqueIndex('idx_task_completion_notifications_run_user').on(table.agentRunId, table.userId),
+}));
+
 export const taskRefinements = sqliteTable('task_refinements', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
@@ -513,6 +532,7 @@ export type E2eTestCaseAsset = typeof e2eTestCaseAssets.$inferSelect;
 export type E2eTestRun = typeof e2eTestRuns.$inferSelect;
 export type E2eTestRunArtifact = typeof e2eTestRunArtifacts.$inferSelect;
 export type WikiPage = typeof wikiPages.$inferSelect;
+export type WikiCollaborationDocument = typeof wikiCollaborationDocuments.$inferSelect;
 export type WikiTodoList = typeof wikiTodoLists.$inferSelect;
 export type WikiTodoItem = typeof wikiTodoItems.$inferSelect;
 export type WikiImage = typeof wikiImages.$inferSelect;
@@ -529,6 +549,7 @@ export type Unterthema = typeof unterthemen.$inferSelect;
 export type Swimlane = typeof swimlanes.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type TaskAgentRun = typeof taskAgentRuns.$inferSelect;
+export type TaskCompletionNotification = typeof taskCompletionNotifications.$inferSelect;
 export type TaskRefinement = typeof taskRefinements.$inferSelect;
 export type TaskRefinementComment = typeof taskRefinementComments.$inferSelect;
 export type TaskRefinementVisualComment = typeof taskRefinementVisualComments.$inferSelect;

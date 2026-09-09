@@ -13,7 +13,8 @@ const dbPath = path.join(dataDir, 'kanban.sqlite');
 
 fs.mkdirSync(dataDir, { recursive: true });
 
-const sqlite = new Database(dbPath);
+export const sqliteDatabase = new Database(dbPath);
+const sqlite = sqliteDatabase;
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('busy_timeout = 5000');
 sqlite.pragma('foreign_keys = ON');
@@ -56,6 +57,39 @@ export function ensureDatabase() {
       revoked_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS backup_s3_destinations (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      bucket TEXT NOT NULL,
+      endpoint TEXT,
+      region TEXT NOT NULL,
+      prefix TEXT NOT NULL DEFAULT '',
+      force_path_style INTEGER NOT NULL DEFAULT 0,
+      server_side_encryption TEXT,
+      kms_key_id TEXT,
+      credentials_configured INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS backup_schedules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      cron_expression TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      destination_id TEXT NOT NULL REFERENCES backup_s3_destinations(id) ON DELETE RESTRICT,
+      destination_directory TEXT NOT NULL DEFAULT '',
+      retention_count INTEGER NOT NULL DEFAULT 30,
+      retention_days INTEGER NOT NULL DEFAULT 28,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      next_run_at TEXT,
+      last_run_at TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       key TEXT NOT NULL UNIQUE,
@@ -79,6 +113,14 @@ export function ensureDatabase() {
       created_by TEXT NOT NULL REFERENCES users(id),
       updated_by TEXT NOT NULL REFERENCES users(id),
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS wiki_collaboration_documents (
+      page_id TEXT PRIMARY KEY REFERENCES wiki_pages(id) ON DELETE CASCADE,
+      state BLOB NOT NULL,
+      generation TEXT NOT NULL,
+      source_updated_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -385,6 +427,15 @@ export function ensureDatabase() {
       completed_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS task_completion_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      agent_run_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS task_refinements (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -523,6 +574,8 @@ export function ensureDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
     CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id, revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_backup_schedules_due ON backup_schedules(enabled, next_run_at);
+    CREATE INDEX IF NOT EXISTS idx_backup_schedules_destination ON backup_schedules(destination_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_column ON tasks(column_id);
     CREATE INDEX IF NOT EXISTS idx_oberthemen_project ON oberthemen(project_id);
     CREATE INDEX IF NOT EXISTS idx_unterthemen_oberthema ON unterthemen(oberthema_id);
@@ -551,6 +604,10 @@ export function ensureDatabase() {
     CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity(task_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_task_agent_runs_task ON task_agent_runs(task_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_task_agent_runs_resume ON task_agent_runs(status, resume_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_task_completion_notifications_run_user
+      ON task_completion_notifications(agent_run_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_task_completion_notifications_pending
+      ON task_completion_notifications(user_id, delivered_at, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_task_agent_runs_active
       ON task_agent_runs(task_id)
       WHERE status IN ('running', 'waiting_external');
@@ -599,6 +656,12 @@ export function ensureDatabase() {
   }
   if (!projectColumns.some((column) => column.name === 'e2e_concurrency_limit')) {
     sqlite.exec('ALTER TABLE projects ADD COLUMN e2e_concurrency_limit INTEGER NOT NULL DEFAULT 2;');
+  }
+
+  const wikiCollaborationColumns = sqlite.prepare('PRAGMA table_info(wiki_collaboration_documents)').all() as Array<{ name: string }>;
+  if (!wikiCollaborationColumns.some((column) => column.name === 'generation')) {
+    sqlite.exec("ALTER TABLE wiki_collaboration_documents ADD COLUMN generation TEXT NOT NULL DEFAULT '';");
+    sqlite.exec("UPDATE wiki_collaboration_documents SET generation = lower(hex(randomblob(16))) WHERE generation = '';");
   }
 
   const e2eCaseColumns = new Set(
@@ -1052,6 +1115,19 @@ export function appDataDir(...parts: string[]) {
   const target = path.join(dataDir, ...parts);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   return target;
+}
+
+export function appDataRoot() {
+  return dataDir;
+}
+
+export function databasePath() {
+  return dbPath;
+}
+
+export async function snapshotDatabase(destination: string) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  await sqlite.backup(destination);
 }
 
 function seedAdmin() {

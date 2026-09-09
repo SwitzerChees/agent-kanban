@@ -32,6 +32,7 @@ import {
 import { loadWorkflow } from './workflow';
 import { processClaimedVisualRefinement } from './visual-refinement-worker';
 import type { CodexRuntimeEvent } from './types';
+import { isMaintenanceMode } from './maintenance';
 
 const MAX_QUESTION_ROUNDS = 3;
 const MAX_GENERATED_VISUALS = 2;
@@ -225,7 +226,7 @@ export class RefinementWorker {
   }
 
   private tick() {
-    if (this.stopped || this.dispatching) return;
+    if (this.stopped || this.dispatching || isMaintenanceMode()) return;
     this.dispatching = true;
     try {
       const recovered = requeueStaleRefinements();

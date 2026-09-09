@@ -7,6 +7,7 @@ import { canonicalizeWikiReferences } from '../../utils/wiki-references';
 import { appDataDir, db, schema } from './db';
 import { getProject } from './kanban';
 import type { User, WikiPage } from './db/schema';
+import { publishWikiPageInvalidation } from './wiki-collaboration-events';
 
 const MAX_PAGES_PER_PROJECT = 500;
 const MAX_WIKI_TITLE_LENGTH = 200;
@@ -129,7 +130,9 @@ export function updateWikiPage(pageId: string, input: UpdateWikiPageInput, user:
       createdAt: updates.updatedAt!,
     }).run();
   });
-  return listWikiPages(page.projectId, user).find((item) => item.id === pageId)!;
+  const updated = listWikiPages(page.projectId, user).find((item) => item.id === pageId)!;
+  publishWikiPageInvalidation(pageId);
+  return updated;
 }
 
 export function moveWikiPage(pageId: string, input: MoveWikiPageInput, user: User) {
@@ -324,6 +327,7 @@ export function deleteWikiPage(pageId: string, user: User) {
       createdAt: now,
     }).run();
   });
+  publishWikiPageInvalidation(pageId);
   for (const image of images) {
     try {
       rmSync(image.storagePath, { force: true });
