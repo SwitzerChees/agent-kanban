@@ -7793,7 +7793,7 @@ const humanError = (error: unknown) => {
               id="task-panel-task"
               role="tabpanel"
               aria-labelledby="task-tab-task"
-              class="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_19rem]"
+              class="grid min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_19rem]"
             >
               <div class="min-w-0 p-4 sm:p-6">
                 <template v-if="hasAgentActivity">
@@ -7807,7 +7807,7 @@ const humanError = (error: unknown) => {
                     </div>
                   </div>
 
-                  <div class="grid gap-6">
+                  <div class="grid min-w-0 grid-cols-1 gap-6">
                     <div>
                       <p class="mb-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400">{{ t.title }}</p>
                       <h3 class="text-lg font-semibold leading-7 text-zinc-950 dark:text-white">{{ taskForm.title }}</h3>
@@ -7879,7 +7879,7 @@ const humanError = (error: unknown) => {
                 </template>
 
                 <template v-else>
-                  <div class="grid gap-5">
+                  <div class="grid min-w-0 grid-cols-1 gap-5">
                     <UFormField :label="t.title" required size="lg">
                       <UInput
                         v-model="taskForm.title"

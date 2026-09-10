@@ -286,6 +286,12 @@ button:focus-visible,
   box-shadow: inset 0 0 0 2px rgb(45 212 191 / 0.55);
 }
 
+.ak-markdown-editor,
+.ak-markdown-readonly {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .ak-markdown-editor [data-slot="content"] {
   cursor: text;
   min-width: 0;
@@ -302,6 +308,40 @@ button:focus-visible,
 .ak-markdown-editor .ProseMirror,
 .ak-markdown-readonly .ProseMirror {
   outline: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Inline paths and URLs must wrap instead of setting the form's minimum width. */
+.ak-markdown-readonly .ProseMirror {
+  overflow-x: auto;
+}
+
+.ak-markdown-editor .ProseMirror :not(pre) > code,
+.ak-markdown-readonly .ProseMirror :not(pre) > code {
+  display: inline;
+  overflow-wrap: anywhere;
+}
+
+/* Preserve code formatting and keep wide blocks scrollable inside the editor. */
+.ak-markdown-editor .ProseMirror pre,
+.ak-markdown-readonly .ProseMirror pre,
+.ak-markdown-editor .ProseMirror .tableWrapper,
+.ak-markdown-readonly .ProseMirror .tableWrapper {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.ak-markdown-editor .ProseMirror pre,
+.ak-markdown-readonly .ProseMirror pre {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.ak-markdown-editor .ProseMirror pre code,
+.ak-markdown-readonly .ProseMirror pre code {
+  white-space: inherit;
 }
 
 .ak-markdown-editor .ProseMirror a,
