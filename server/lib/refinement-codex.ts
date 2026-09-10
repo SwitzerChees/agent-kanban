@@ -115,6 +115,12 @@ export function buildRefinementSecurityConfig(): Record<string, unknown> {
     allow_login_shell: false,
     web_search: 'disabled',
     check_for_update_on_startup: false,
+    // The worker already loads project instructions into every prompt. Codex
+    // resume has no environments override and otherwise reloads AGENTS.md via
+    // a local sandbox helper, which cannot initialize on restricted hosts.
+    // Disable that duplicate discovery on both start and resume; keep the
+    // read-only permission profile and network isolation unchanged.
+    project_doc_max_bytes: 0,
     mcp_servers: {},
     apps: {
       _default: {
