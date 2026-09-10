@@ -368,6 +368,8 @@ export const taskAgentRuns = sqliteTable('task_agent_runs', {
   browserSessionName: text('browser_session_name'),
   waitKind: text('wait_kind', { enum: ['ci', 'deployment', 'rate_limit', 'other'] }),
   waitReason: text('wait_reason'),
+  waitTarget: text('wait_target'),
+  waitResult: text('wait_result'),
   resumeAt: text('resume_at'),
   waitCount: integer('wait_count').notNull().default(0),
   createdAt: text('created_at').notNull(),

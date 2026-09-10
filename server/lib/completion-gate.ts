@@ -1,4 +1,6 @@
-import { execFile } from 'node:child_process';
+import { loadProjectQuality, type ProjectQuality } from './project-quality';
+import { probeGitHubWait, runQualityCommand, type CommandRunner } from './github-quality';
+export type { CommandResult, CommandRunner } from './github-quality';
 
 export interface CompletionGateInput {
   workspacePath: string;
@@ -6,6 +8,7 @@ export interface CompletionGateInput {
   hasAgentBrowserEvidence: boolean;
   taskIdentifier?: string | null;
   taskTitle?: string | null;
+  qualityPolicy?: ProjectQuality | null;
 }
 
 export interface CompletionGateResult {
@@ -15,23 +18,20 @@ export interface CompletionGateResult {
   metadata: Record<string, unknown>;
 }
 
-export interface CommandResult {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-}
-
-export type CommandRunner = (command: string, args: string[], cwd: string) => Promise<CommandResult>;
-
 const MAIN_BRANCHES = new Set(['main', 'master']);
 
 export async function checkAgentsCompletionGate(
   input: CompletionGateInput,
-  runCommand: CommandRunner = defaultRunCommand,
+  runCommand: CommandRunner = runQualityCommand,
 ): Promise<CompletionGateResult> {
   const content = input.agentsContent ?? '';
-  const requiresPullRequest = /pull request|\bpr\b/i.test(content) && /merge|merged|master|main/i.test(content);
-  const requiresAgentBrowser = /agent-browser/i.test(content);
+  let policy: ProjectQuality | null;
+  try { policy = input.qualityPolicy === undefined ? await loadProjectQuality(input.workspacePath) : input.qualityPolicy; }
+  catch { return { ok: false, message: 'Invalid .agent-kanban-quality.json', prompt: 'Repair the invalid project quality policy before finishing.', metadata: {} }; }
+  const requiresPullRequest = policy?.pullRequest ?? (/pull request|\bpr\b/i.test(content) && /merge|merged|master|main/i.test(content));
+  const requiresAgentBrowser = policy ? policy.browser === 'required' : content.split('\n').some(line =>
+    /agent-browser/i.test(line) && /must|required|muss|muessen|müssen|verpflichtend/i.test(line)
+    && !/\b(no|not|never|only|keine?|nicht|niemals|nur)\b/i.test(line));
 
   if (!requiresPullRequest && !requiresAgentBrowser) {
     return passed({ skipped: true });
@@ -68,7 +68,7 @@ export async function checkAgentsCompletionGate(
           issues.push(`The task is on '${branchName}' and no merged task Pull Request could be verified. AGENTS.md requires a dedicated task branch and PR workflow.`);
         }
       } else {
-        const pr = await runCommand('gh', ['pr', 'view', '--json', 'state,mergedAt,url,headRefName,baseRefName'], input.workspacePath);
+        const pr = await runCommand('gh', ['pr', 'view', '--json', policy ? 'number,state,mergedAt,url,headRefName,headRefOid,baseRefName,mergeCommit' : 'state,mergedAt,url,headRefName,baseRefName'], input.workspacePath);
         if (!pr.ok) {
           metadata.pullRequestError = pr.stderr.trim() || pr.stdout.trim();
           issues.push('No GitHub Pull Request could be verified for the current branch.');
@@ -84,6 +84,24 @@ export async function checkAgentsCompletionGate(
               : 'The GitHub Pull Request is not merged yet.');
           }
         }
+      }
+    }
+  }
+
+  if (policy && requiresPullRequest) {
+    const pr = metadata.pullRequest as { number?: number; state?: string; headRefOid?: string; mergeCommit?: { oid: string } } | undefined;
+    const head = await runCommand('git', ['rev-parse', 'HEAD'], input.workspacePath);
+    if (!pr?.headRefOid || !head.ok || head.stdout.trim() !== pr.headRefOid) {
+      issues.push('The task checkout must match the verified PR head commit; no stale PR or unpushed changes may complete.');
+    } else if (pr.state === 'MERGED' && pr.number) {
+      for (const kind of ['ci', 'deployment'] as const) {
+        const workflow = kind === 'ci' ? policy.ciWorkflow : policy.deploymentWorkflow;
+        if (!workflow) continue;
+        const commit = kind === 'ci' ? pr.headRefOid : pr.mergeCommit?.oid;
+        if (!commit) { issues.push('Merged commit identity is missing.'); continue; }
+        const evidence = await probeGitHubWait({ kind, workflow, commit, branch: policy.deploymentBranch, pullRequest: pr.number, createdAt: new Date().toISOString() }, input.workspacePath, runCommand);
+        metadata[kind] = evidence;
+        if (evidence.status !== 'success') issues.push(`${kind} for ${commit} is ${evidence.status}${evidence.url ? `: ${evidence.url}` : ''}. Wait for the matching workflow or repair its failure.`);
       }
     }
   }
@@ -171,16 +189,4 @@ function parseJsonArray(value: string): Array<Record<string, unknown>> {
   } catch {
     return [];
   }
-}
-
-function defaultRunCommand(command: string, args: string[], cwd: string): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    execFile(command, args, { cwd, timeout: 30_000 }, (error, stdout, stderr) => {
-      resolve({
-        ok: !error,
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-      });
-    });
-  });
 }

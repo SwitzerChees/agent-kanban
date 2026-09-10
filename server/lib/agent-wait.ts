@@ -18,8 +18,9 @@ export function agentWaitInstructions() {
     '- You remain responsible for this task from implementation through PR, CI, deployment, and required E2E verification.',
     '- If all productive work is complete for now and only an external system is pending, do not poll continuously.',
     '- End your response with exactly one machine-readable wait request:',
-    '<agent-kanban-wait>{"kind":"ci","reason":"Short factual reason","resumeAfterSeconds":300}</agent-kanban-wait>',
+    '<agent-kanban-wait>{"kind":"ci","reason":"Short factual reason","resumeAfterSeconds":60}</agent-kanban-wait>',
     `- kind must be one of: ${AGENT_WAIT_KINDS.join(', ')}. resumeAfterSeconds must be between ${MIN_WAIT_SECONDS} and ${MAX_WAIT_SECONDS}.`,
+    '- For projects with .agent-kanban-quality.json, CI and deployment are observed server-side every 15 seconds and resume immediately on success or failure. Include the PR/run URL in the reason. The timer is a fallback, not a mandatory pause.',
     '- Use this only for genuinely external waiting. Never use it for work, tests, fixes, commits, or reviews you can perform now.',
     '- After Agent Kanban resumes this same session, verify the external condition yourself and continue the full workflow.',
   ].join('\n');
