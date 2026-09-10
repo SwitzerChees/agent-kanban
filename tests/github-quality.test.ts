@@ -50,6 +50,12 @@ describe('commit-bound GitHub quality', () => {
   it('uses the latest attempt, including a failing rerun', async () => {
     expect(await probeGitHubWait(target, '/repo', runner({ ci: [workflow(head, 'failure'), workflow()] }))).toMatchObject({ status: 'failure' });
   });
+  it('does not reuse green evidence after a later rerun or rollback', async () => {
+    const rerun = { ...workflow(head, 'failure'), updatedAt: '2026-09-11T00:00:00Z' };
+    expect(await probeGitHubWait(target, '/repo', runner({ ci: [workflow(), rerun] }))).toMatchObject({ status: 'failure' });
+    const deployment = { ...target, kind: 'deployment' as const, commit: merge, workflow: 'cd-test.yml' };
+    expect(await probeGitHubWait(deployment, '/repo', runner({ deployment: [workflow(next), workflow(merge)], comparison: 'behind' }))).toEqual({ status: 'pending' });
+  });
   it('requires both CI and TEST success and a clean matching PR checkout', async () => {
     const input = { workspacePath: '/repo', agentsContent: '', qualityPolicy: policy, hasAgentBrowserEvidence: false };
     expect((await checkAgentsCompletionGate(input, runner())).ok).toBe(true);
