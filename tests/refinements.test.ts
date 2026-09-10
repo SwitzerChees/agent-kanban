@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import type { User } from '../server/lib/db/schema';
+import { parseRefinementInput } from '../server/lib/refinement-input';
 
 const testRoot = mkdtempSync(path.join(tmpdir(), 'agent-kanban-refinements-'));
 process.env.KANBAN_DATA_DIR = path.join(testRoot, 'data');
@@ -42,14 +43,17 @@ describe('task refinements', () => {
       title: 'Redesign the task dialog',
       description: 'Make the refinement workflow consistent.',
     }, admin);
-    const run = refinements.createTaskRefinement(task!.id, {
+    const brief = 'Show a calm desktop and mobile proposal.\n'.repeat(3000) + 'Keep the complete goal.';
+    const run = refinements.createTaskRefinement(task!.id, parseRefinementInput({
       kind: 'visual',
-      brief: 'Show a calm desktop and mobile proposal.',
+      brief,
       visualSettings: { desktop: true, mobile: true, states: false },
-    }, admin);
+    }), admin);
+    expect(run.brief).toBe(brief);
     expect(run).toMatchObject({ kind: 'visual', visualMode: 'force', visualSettings: { desktop: true, mobile: true, states: false } });
 
     const claim = refinements.claimNextQueuedRefinement();
+    expect(claim?.brief).toBe(brief);
     expect(claim).toMatchObject({ id: run.id, kind: 'visual', visualSettings: { desktop: true, mobile: true, states: false } });
     const screenArtifactId = randomUUID();
     const baselineArtifactId = randomUUID();

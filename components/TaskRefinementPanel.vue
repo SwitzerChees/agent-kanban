@@ -542,7 +542,6 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
             class="w-full"
             :placeholder="t.briefPlaceholder"
             :rows="3"
-            :maxlength="4000"
             size="xl"
             autoresize
             :disabled="props.busy"
@@ -553,7 +552,7 @@ const statusLabel = (status: TaskRefinementRun['status']) => {
 
         <div class="mt-4 flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div class="space-y-1 text-xs text-zinc-500 dark:text-zinc-400">
-            <p>{{ brief.length }}/4000 · {{ t.shortcutHint }}</p>
+            <p>{{ t.shortcutHint }}</p>
             <p v-if="props.taskReady" class="inline-flex items-center gap-1.5">
               <UIcon name="i-lucide-save" class="size-3.5 shrink-0" />
               {{ props.createOnStart || createRequestPending ? t.createOnStartHint : t.saveOnStartHint }}
