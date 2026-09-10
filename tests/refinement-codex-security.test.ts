@@ -20,6 +20,7 @@ describe('refinement Codex security contract', () => {
       network: { enabled: false },
     });
     expect(config.web_search).toBe('disabled');
+    expect(config.project_doc_max_bytes).toBe(0);
     expect(config.mcp_servers).toEqual({});
     expect(config.apps._default).toMatchObject({
       enabled: false,

@@ -58,17 +58,17 @@ export async function probeGitHubWait(target: GitHubWaitTarget, cwd: string, run
   else args.push('--branch', target.branch, '--event', 'push');
   const runs = await qualityJson<WorkflowRun[]>(args, cwd, run);
   if (!Array.isArray(runs)) return { status: 'unknown' };
-  // TEST deployments may coalesce pending commits. Accept only an explicitly
-  // verified descendant, never simply the newest green deployment.
-  let candidate: WorkflowRun | undefined;
-  for (const item of runs) {
-    if (item.headSha === target.commit) { candidate = item; break; }
-    if (target.kind !== 'deployment') continue;
+  // A rerun updates an existing run, so creation order alone can hide a newer failure.
+  runs.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  let candidate = target.kind === 'ci' ? runs.find(item => item.headSha === target.commit) : runs[0];
+  // Only the latest deployment may prove what is serving now. Never fall back
+  // to an older green run after a rollback or a newer failed deployment.
+  if (candidate && target.kind === 'deployment' && candidate.headSha !== target.commit) {
     const repo = await qualityJson<{ nameWithOwner: string }>(['repo', 'view', '--json', 'nameWithOwner'], cwd, run);
-    if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo.nameWithOwner) || !/^[a-f0-9]{40}$/.test(item.headSha)) return { status: 'unknown' };
-    const comparison = await qualityJson<{ status: string }>(['api', `repos/${repo.nameWithOwner}/compare/${target.commit}...${item.headSha}`], cwd, run);
-    if (comparison?.status === 'ahead' || comparison?.status === 'identical') { candidate = item; break; }
+    if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo.nameWithOwner) || !/^[a-f0-9]{40}$/.test(candidate.headSha)) return { status: 'unknown' };
+    const comparison = await qualityJson<{ status: string }>(['api', `repos/${repo.nameWithOwner}/compare/${target.commit}...${candidate.headSha}`], cwd, run);
     if (!comparison) return { status: 'unknown' };
+    if (comparison.status !== 'ahead' && comparison.status !== 'identical') candidate = undefined;
   }
   if (!candidate) return { status: 'pending' };
   return {
