@@ -25,16 +25,18 @@ describe('visual refinement worker resilience', () => {
     expect(instructions).toContain('Do not run repository-wide lint, typecheck, test, audit, or production-build suites');
     expect(instructions).toContain('stop temporary development servers as soon as the screenshots and manifest are complete');
 
+    const brief = 'Show desktop and mobile.\n'.repeat(5000) + 'Final requirement.';
     const prompt = visualWorker.buildVisualRefinementPrompt({
       version: 1,
       taskKey: 'VISUAL-1',
       taskTitle: 'Calm task view',
       taskDescription: 'Render a real proposal.',
-      brief: 'Show desktop and mobile.',
+      brief,
       visualSettings: { desktop: true, mobile: true, states: false },
       visualFeedbackComments: [],
     } as unknown as Parameters<typeof visualWorker.buildVisualRefinementPrompt>[0], '/workspace/manifest.json', '/workspace/artifacts');
     expect(prompt).toContain('as soon as the first complete target screenshot set exists');
+    expect(prompt).toContain(brief);
     expect(prompt).toContain('do not postpone it until after optional checks');
 
     expect(visualWorker.visualRefinementRetryDelayMs({})).toBe(10_000);

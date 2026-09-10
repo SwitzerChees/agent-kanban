@@ -6021,6 +6021,7 @@ const humanError = (error: unknown) => {
     oberthema_not_empty: { en: 'Move or delete its tasks before deleting this parent topic.', de: 'Verschiebe oder lösche die Aufgaben, bevor du dieses Oberthema löschst.' },
     unterthema_not_empty: { en: 'Move or delete its tasks before deleting this sub-topic.', de: 'Verschiebe oder lösche die Aufgaben, bevor du dieses Unterthema löschst.' },
     refinement_already_active: { en: 'This task already has a refinement in progress.', de: 'Für diese Aufgabe läuft bereits ein Refinement.' },
+    refinement_invalid_input: { en: 'Please check the refinement settings and try again.', de: 'Bitte prüfe die Refinement-Angaben und versuche es erneut.' },
     refinement_not_awaiting_input: { en: 'This refinement is not waiting for answers.', de: 'Dieses Refinement wartet aktuell nicht auf Antworten.' },
     refinement_not_completed: { en: 'The refinement is not completed yet.', de: 'Das Refinement ist noch nicht abgeschlossen.' },
     refinement_not_cancellable: { en: 'This refinement can no longer be cancelled.', de: 'Dieses Refinement kann nicht mehr abgebrochen werden.' },
