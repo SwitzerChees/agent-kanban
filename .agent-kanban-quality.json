@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "pullRequest": true,
+  "ciWorkflow": "ci.yml",
+  "browser": "on-request"
+}

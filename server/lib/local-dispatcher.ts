@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, lte, max, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, max, or } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { appDataDir, db, schema } from './db';
@@ -21,6 +21,9 @@ import { activeTaskDescription } from './task-description';
 import type { CodexRuntimeEvent, Issue } from './types';
 import { notifyVoiceJobProgress, notifyVoiceJobStatus } from './voice-agent';
 import { agentWaitInstructions } from './agent-wait';
+import { loadProjectQuality } from './project-quality';
+import { captureGitHubWait, probeGitHubWait, type GitHubWaitTarget } from './github-quality';
+import { completedBrowserEvidence } from './browser-evidence';
 import {
   configuredAgentRetries,
   isRetryableAgentFailure,
@@ -58,13 +61,16 @@ export function abortLocalTask(taskId: string) {
   return dispatcher?.abortTask(taskId) ?? false;
 }
 
-class LocalTaskDispatcher {
+export class LocalTaskDispatcher {
+  constructor(private readonly probeWorkflow = probeGitHubWait) {}
   private timer: NodeJS.Timeout | null = null;
   private runningTasks = new Map<string, AbortController>();
   private runningPromises = new Set<Promise<void>>();
   private started = false;
   private stopping = false;
   private stalledTasks = new Set<string>();
+  private checkingWaits = false;
+  private waitCheckedAt = new Map<string, number>();
 
   start() {
     if (this.started) return;
@@ -115,7 +121,7 @@ class LocalTaskDispatcher {
 
   private async tick() {
     if (isMaintenanceMode()) return;
-    this.wakeDueExternalWaits();
+    void this.wakeDueExternalWaits().catch(error => runtimeLogger.warn('external wait observer failed', { error: error instanceof Error ? error.message : String(error) }));
     this.checkStalledTasks();
     const queuedRows = db.select({ task: schema.tasks, column: schema.columns })
       .from(schema.tasks)
@@ -196,26 +202,48 @@ class LocalTaskDispatcher {
     }
   }
 
-  private wakeDueExternalWaits() {
-    const now = new Date().toISOString();
-    const dueRuns = db.select().from(schema.taskAgentRuns)
-      .where(and(
-        eq(schema.taskAgentRuns.status, 'waiting_external'),
-        lte(schema.taskAgentRuns.resumeAt, now),
-      ))
-      .all();
-    for (const run of dueRuns) {
-      const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, run.taskId)).get();
-      if (!task || !task.agentEnabled || task.agentStatus !== 'waiting_external') continue;
-      db.update(schema.tasks).set({ agentStatus: 'queued', updatedAt: now })
-        .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.agentStatus, 'waiting_external')))
-        .run();
-      logTaskActivity(task.projectId, task.id, null, 'agent_wait_resumed', {
-        runId: run.id,
-        waitKind: run.waitKind,
-        waitCount: run.waitCount,
-      });
-    }
+  async wakeDueExternalWaits() {
+    if (this.checkingWaits || this.stopping) return;
+    this.checkingWaits = true;
+    try {
+      const runs = db.select().from(schema.taskAgentRuns)
+        .where(eq(schema.taskAgentRuns.status, 'waiting_external')).all();
+      const activeIds = new Set(runs.map(run => run.id));
+      for (const id of this.waitCheckedAt.keys()) if (!activeIds.has(id)) this.waitCheckedAt.delete(id);
+      for (const run of runs) {
+        const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, run.taskId)).get();
+        if (!task?.agentEnabled || task.agentStatus !== 'waiting_external') continue;
+        const nowMs = Date.now();
+        let ready = Boolean(run.resumeAt && Date.parse(run.resumeAt) <= nowMs);
+        let evidence: Awaited<ReturnType<typeof probeGitHubWait>> | null = null;
+        if (run.waitTarget) {
+          if (nowMs - (this.waitCheckedAt.get(run.id) ?? 0) < 15_000) continue;
+          this.waitCheckedAt.set(run.id, nowMs);
+          try {
+            const target = JSON.parse(run.waitTarget) as GitHubWaitTarget;
+            evidence = await this.probeWorkflow(target, appDataDir('worktrees', task.projectId, task.id, 'tree'));
+            // A pending workflow stays parked without burning an agent turn.
+            // An unavailable API falls back to the requested timer; long waits
+            // eventually return control for diagnosis even if still pending.
+            ready = evidence.status === 'success' || evidence.status === 'failure'
+              || (evidence.status === 'unknown' && ready)
+              || nowMs - Date.parse(target.createdAt) > 45 * 60_000;
+          } catch { /* malformed old target: keep the timer fallback */ }
+        }
+        if (!ready || this.stopping) continue;
+        const now = new Date().toISOString();
+        const changed = db.update(schema.tasks).set({ agentStatus: 'queued', updatedAt: now })
+          .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.agentStatus, 'waiting_external'), eq(schema.tasks.agentEnabled, true))).run();
+        if (!changed.changes) continue;
+        db.update(schema.taskAgentRuns).set({ waitResult: evidence ? JSON.stringify(evidence) : null, updatedAt: now })
+          .where(eq(schema.taskAgentRuns.id, run.id)).run();
+        logTaskActivity(task.projectId, task.id, null, 'agent_wait_resumed', {
+          runId: run.id, waitKind: run.waitKind, waitCount: run.waitCount,
+          source: evidence ? 'github' : 'timer', evidence,
+          detectionDelayMs: evidence?.completedAt ? Math.max(0, Date.now() - Date.parse(evidence.completedAt)) : null,
+        });
+      }
+    } finally { this.checkingWaits = false; }
   }
 
   private checkStalledTasks() {
@@ -346,12 +374,14 @@ class LocalTaskDispatcher {
       issue.branch_name = taskWorktree.branchName;
       const agentsContext = await loadAgentsContext(taskWorktree.projectPath, taskWorktree.worktreeRoot);
       const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : taskWorktree.projectPath;
+      const qualityPolicy = await loadProjectQuality(workspacePath);
       const agentsPromptPrefix = buildAgentsPromptPrefix(agentsContext);
       const taskPromptPrefix = [
         agentsPromptPrefix,
         agentRuntimeSafetyInstructions(),
         agentCompletionHandoffInstructions(),
         agentWaitInstructions(),
+        agentRun.waitResult ? `Server-observed external workflow result (verify failures before continuing): ${agentRun.waitResult}` : null,
       ]
         .filter(Boolean)
         .join('\n\n---\n\n');
@@ -417,7 +447,10 @@ class LocalTaskDispatcher {
             notifyVoiceJobProgress(queued.id, event.message);
             return;
           }
-          const browserEvidence = agentBrowserEvidenceMessage(event);
+          if (event.event === 'completion_gate_passed' || event.event === 'completion_gate_failed') {
+            logTaskActivity(queued.projectId, queued.id, null, 'quality_gate_checked', { result: event.event, evidence: event.raw });
+          }
+          const browserEvidence = completedBrowserEvidence(event);
           if (browserEvidence && !agentBrowserEvidenceLogged) {
             agentBrowserEvidenceLogged = true;
             logTaskActivity(queued.projectId, queued.id, null, 'codex_browser_evidence', {
@@ -488,6 +521,7 @@ class LocalTaskDispatcher {
         completionCheck: async () => checkAgentsCompletionGate({
           workspacePath,
           agentsContent: agentsContext.content,
+          qualityPolicy,
           hasAgentBrowserEvidence: hasAgentBrowserEvidence(queued.id, runStartedAt),
           taskIdentifier: queued.key,
           taskTitle: queued.title,
@@ -544,6 +578,7 @@ class LocalTaskDispatcher {
       if (controller.signal.aborted) throw new Error('turn_cancelled');
       await closeTaskBrowserSession(browserSession);
       if (result.waitRequest) {
+        const waitTarget = await captureGitHubWait(result.waitRequest.kind, workspacePath, qualityPolicy);
         const now = new Date();
         const resumeAt = new Date(now.getTime() + result.waitRequest.resumeAfterSeconds * 1000).toISOString();
         const parked = db.update(schema.tasks).set({
@@ -565,6 +600,8 @@ class LocalTaskDispatcher {
           nativeSessionId: result.nativeSessionId,
           waitKind: result.waitRequest.kind,
           waitReason: result.waitRequest.reason,
+          waitTarget: waitTarget ? JSON.stringify(waitTarget) : null,
+          waitResult: null,
           resumeAt,
           waitCount: agentRun.waitCount + 1,
           currentUnitName: null,
@@ -574,6 +611,7 @@ class LocalTaskDispatcher {
         logTaskActivity(queued.projectId, queued.id, null, 'agent_waiting_external', {
           runId: agentRun.id,
           kind: result.waitRequest.kind,
+          target: waitTarget,
           reason: result.waitRequest.reason,
           resumeAt,
         });
@@ -733,6 +771,8 @@ function ensureTaskAgentRun(task: typeof schema.tasks.$inferSelect) {
     browserSessionName: null,
     waitKind: null,
     waitReason: null,
+    waitTarget: null,
+    waitResult: null,
     resumeAt: null,
     waitCount: 0,
     createdAt: now,
@@ -1161,12 +1201,6 @@ function hasAgentBrowserEvidence(taskId: string, after: string) {
     ))
     .get()?.value ?? 0;
   return value > 0;
-}
-
-function agentBrowserEvidenceMessage(event: { message?: string | null }) {
-  const message = event.message?.trim();
-  if (!message || !message.toLowerCase().includes('agent-browser')) return null;
-  return message.slice(0, 1000);
 }
 
 function defaultTaskPrompt() {
