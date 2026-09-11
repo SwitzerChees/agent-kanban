@@ -1,9 +1,8 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type { WikiTodoListRecord } from '~/utils/wiki-todos';
 
-export function useWikiTodoLists(projectId: () => string) {
+export function useWikiTodoLists(projectId: () => string, liveConnected: () => boolean) {
   const lists = ref<WikiTodoListRecord[]>([]);
-  let source: EventSource | null = null;
   let controller: AbortController | null = null;
   let generation = 0;
   let mounted = false;
@@ -41,17 +40,12 @@ export function useWikiTodoLists(projectId: () => string) {
     generation += 1;
     controller?.abort();
     controller = null;
-    source?.close();
-    source = null;
   }
 
   function connect() {
     disconnect();
     lists.value = [];
     refreshFailed = false;
-    source = new EventSource(`/api/projects/${projectId()}/wiki/todo-lists/events`);
-    source.addEventListener('ready', refreshQuietly);
-    source.addEventListener('changed', refreshQuietly);
     refreshQuietly();
   }
 
@@ -60,9 +54,10 @@ export function useWikiTodoLists(projectId: () => string) {
     mounted = true;
     connect();
     document.addEventListener('visibilitychange', onVisibility);
-    // Keep lists usable when a proxy or connection interrupts SSE.
+    // Live invalidations share the Wiki stream. Do not allocate another SSE
+    // connection: two tabs would exhaust the HTTP/1 connection pool.
     fallback = setInterval(() => {
-      if (!document.hidden && (refreshFailed || source?.readyState !== EventSource.OPEN)) refreshQuietly();
+      if (!document.hidden && (refreshFailed || !liveConnected())) refreshQuietly();
     }, 5_000);
   });
   onBeforeUnmount(() => {

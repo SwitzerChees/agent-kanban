@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PageEventSource } from '~/utils/page-event-source';
 type Locale = 'en' | 'de';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
 type ReasoningEffort = 'low' | 'medium' | 'xhigh';
@@ -226,7 +227,7 @@ const resizing = ref(false);
 const dragging = ref(false);
 const dockSize = reactive({ width: 448, height: 736 });
 const dockPosition = reactive<{ x: number | null; y: number | null }>({ x: null, y: null });
-let stream: EventSource | null = null;
+let stream: PageEventSource | null = null;
 let streamFrame: number | null = null;
 let scrollFrame: number | null = null;
 let lastStreamPaint = 0;
@@ -578,7 +579,7 @@ async function activateChat(item: ProjectChatHistoryItem) {
 function connectStream() {
   closeStream();
   if (!import.meta.client || !chat.value) return;
-  stream = new EventSource(`/api/project-chats/${chat.value.id}/events?after=${latestEventId.value}`);
+  stream = new PageEventSource(() => `/api/project-chats/${chat.value!.id}/events?after=${latestEventId.value}`);
   stream.addEventListener('open', () => {
     reconnecting.value = false;
   });
@@ -592,7 +593,7 @@ function connectStream() {
     toolActivities.value = [];
   });
   stream.addEventListener('activity', (event) => {
-    const payload = eventPayload(event);
+    const payload = eventPayload(event as MessageEvent);
     updateEventCursor(event, payload);
     const activity = payload.activity;
     currentActivity.value = payload.phase === 'preparing'

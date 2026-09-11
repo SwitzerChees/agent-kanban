@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PageEventSource } from '~/utils/page-event-source';
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
 import { commandPaletteTaskBuckets } from '~/utils/command-palette';
@@ -1242,8 +1243,8 @@ const annotationWidth = ref(5);
 const drawingStroke = ref<AnnotationStroke | null>(null);
 const annotationColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'];
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
-let taskEventSource: EventSource | null = null;
-let completionEventSource: EventSource | null = null;
+let taskEventSource: PageEventSource | null = null;
+let completionEventSource: PageEventSource | null = null;
 let completionToastTimer: ReturnType<typeof setTimeout> | null = null;
 let completionAudioContext: AudioContext | null = null;
 const completionClaimsInFlight = new Set<number>();
@@ -2458,7 +2459,7 @@ const startCompletionNotificationStream = () => {
   if (!import.meta.client || !user.value) return;
   completionAlertsEnabled.value = localStorage.getItem(completionAlertPreferenceKey()) === 'true';
   syncCompletionNotificationPermission();
-  completionEventSource = new EventSource('/api/notifications/events');
+  completionEventSource = new PageEventSource('/api/notifications/events');
   completionEventSource.addEventListener('task_completed', (event) => {
     try {
       const notification = JSON.parse((event as MessageEvent).data) as unknown;
@@ -3407,7 +3408,7 @@ const refreshTaskDetailFromActivity = (taskId: string) => {
 const openTaskEventStream = (taskId: string) => {
   closeTaskEventStream();
   if (!import.meta.client) return;
-  taskEventSource = new EventSource(`/api/tasks/${taskId}/events`);
+  taskEventSource = new PageEventSource(`/api/tasks/${taskId}/events`);
   taskEventSource.addEventListener('activity', () => {
     if (selectedTaskId.value === taskId) void refreshTaskDetailFromActivity(taskId);
   });

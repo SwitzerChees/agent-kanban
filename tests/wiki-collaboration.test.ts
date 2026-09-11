@@ -233,3 +233,39 @@ function expectStatusMessage(action: () => unknown, statusMessage: string) {
   }
   throw new Error(`Expected ${statusMessage}`);
 }
+
+test('delivers project TODO invalidations through existing Wiki streams across pages', async () => {
+  const todos = await import('../server/lib/wiki-todos');
+  const { publishWikiTodoChange } = await import('../server/lib/wiki-todo-events');
+  const pageA = wiki.createWikiPage(projectId, { title: 'TODO page A', content: '' }, admin);
+  const pageB = wiki.createWikiPage(projectId, { title: 'TODO page B', content: '' }, member);
+  const sessionA = collaboration.createWikiCollaborationSession(pageA.id, 'todo-client-a', admin);
+  const sessionB = collaboration.createWikiCollaborationSession(pageB.id, 'todo-client-b', member);
+  const receivedA: string[] = [];
+  const receivedB: string[] = [];
+  const unsubA = collaboration.subscribeWikiCollaboration(pageA.id, sessionA.sessionId, admin, {
+    send: (event) => receivedA.push(event), close: () => {},
+  });
+  const unsubB = collaboration.subscribeWikiCollaboration(pageB.id, sessionB.sessionId, member, {
+    send: (event) => receivedB.push(event), close: () => {},
+  });
+  try {
+    const list = todos.createWikiTodoList(projectId, { name: 'Wiki stream TODOs' }, admin);
+    const item = todos.addWikiTodoItem(list.id, { text: 'Shared work' }, member);
+    todos.updateWikiTodoItem(item.id, { text: 'Updated work', expectedUpdatedAt: item.updatedAt }, admin);
+    expect(receivedA.filter((name) => name === 'todo_changed')).toHaveLength(3);
+    expect(receivedB.filter((name) => name === 'todo_changed')).toHaveLength(3);
+    publishWikiTodoChange('unrelated-project');
+    expect(receivedA.filter((name) => name === 'todo_changed')).toHaveLength(3);
+    unsubA();
+    todos.deleteWikiTodoItem(item.id, {}, member);
+    expect(receivedA.filter((name) => name === 'todo_changed')).toHaveLength(3);
+    expect(receivedB.filter((name) => name === 'todo_changed')).toHaveLength(4);
+    collaboration.stopWikiCollaboration();
+    publishWikiTodoChange(projectId);
+    expect(receivedB.filter((name) => name === 'todo_changed')).toHaveLength(4);
+  } finally {
+    unsubA();
+    unsubB();
+  }
+});

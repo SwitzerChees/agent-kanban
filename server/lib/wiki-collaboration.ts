@@ -13,6 +13,7 @@ import { db, schema } from './db';
 import type { User, WikiPage } from './db/schema';
 import { getProject } from './kanban';
 import { registerWikiPageInvalidation } from './wiki-collaboration-events';
+import { subscribeWikiTodoChanges } from './wiki-todo-events';
 
 const SESSION_TTL_MS = 15_000;
 const ROOM_TTL_MS = 60_000;
@@ -72,6 +73,7 @@ interface CollaborationRoom {
   lastActiveAt: number;
   activityTimer: ReturnType<typeof setTimeout> | null;
   activityUser: User | null;
+  unsubscribeTodos: () => void;
 }
 
 const rooms = new Map<string, CollaborationRoom>();
@@ -322,7 +324,9 @@ function getOrCreateRoom(page: WikiPage) {
     lastActiveAt: Date.now(),
     activityTimer: null,
     activityUser: null,
+    unsubscribeTodos: () => {},
   };
+  room.unsubscribeTodos = subscribeWikiTodoChanges(page.projectId, () => broadcast(room, 'todo_changed', {}));
   rooms.set(page.id, room);
   persistRoom(room);
   return room;
@@ -539,6 +543,7 @@ function flushActivity(room: CollaborationRoom) {
 }
 
 function disposeRoom(room: CollaborationRoom) {
+  room.unsubscribeTodos();
   flushActivity(room);
   for (const subscriber of room.subscribers.values()) subscriber.close();
   room.subscribers.clear();

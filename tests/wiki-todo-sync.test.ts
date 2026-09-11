@@ -9,20 +9,12 @@ vi.mock('vue', async (original) => ({
   onBeforeUnmount: (fn: () => void) => { lifecycle.unmount = fn; },
 }));
 
-class Source extends EventTarget {
-  static OPEN = 1;
-  static instances: Source[] = [];
-  readyState = 1;
-  close = vi.fn();
-  constructor(public url: string) { super(); Source.instances.push(this); }
-}
 let requests: Array<{ url: string; signal: AbortSignal; resolve: (value: unknown) => void; reject: (error: Error) => void }>;
 
 beforeEach(() => {
   vi.useFakeTimers();
   requests = [];
-  Source.instances = [];
-  vi.stubGlobal('EventSource', Source);
+  vi.stubGlobal('EventSource', vi.fn(() => { throw new Error('TODOs must share the Wiki connection'); }));
   vi.stubGlobal('document', Object.assign(new EventTarget(), { hidden: false }));
   vi.stubGlobal('$fetch', (url: string, options: { signal: AbortSignal }) => new Promise((resolve, reject) => {
     requests.push({ url, signal: options.signal, resolve, reject });
@@ -36,11 +28,10 @@ afterEach(() => {
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
 
 test('refreshes on live changes and reconnects and ignores late stale responses', async () => {
-  const { lists } = useWikiTodoLists(() => 'project-a');
+  const { lists, refresh } = useWikiTodoLists(() => 'project-a', () => true);
   lifecycle.mount();
-  const source = Source.instances[0]!;
-  source.dispatchEvent(new Event('ready'));
-  source.dispatchEvent(new Event('changed'));
+  void refresh();
+  void refresh();
   expect(requests).toHaveLength(3);
   expect(requests[0]!.signal.aborted).toBe(true);
   requests[2]!.resolve({ lists: [{ id: 'newest' }] });
@@ -49,18 +40,17 @@ test('refreshes on live changes and reconnects and ignores late stale responses'
   requests[1]!.resolve({ lists: [{ id: 'also-stale' }] });
   await settle();
   expect(lists.value).toEqual([{ id: 'newest' }]);
-  source.dispatchEvent(new Event('ready'));
+  void refresh();
   requests[3]!.resolve({ lists: [{ id: 'after-reconnect' }] });
   await settle();
   expect(lists.value).toEqual([{ id: 'after-reconnect' }]);
 });
 
-test('aborts old project requests and closes streams on navigation and unmount', async () => {
+test('aborts old project requests on navigation and unmount', async () => {
   const id = ref('project-a');
-  const { lists } = useWikiTodoLists(() => id.value);
+  const { lists } = useWikiTodoLists(() => id.value, () => true);
   lifecycle.mount();
   id.value = 'project-b';
-  expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
   expect(requests[0]!.signal.aborted).toBe(true);
   expect(requests[1]!.url).toContain('/project-b/');
   requests[0]!.resolve({ lists: [{ id: 'wrong-project' }] });
@@ -68,18 +58,19 @@ test('aborts old project requests and closes streams on navigation and unmount',
   expect(lists.value).toEqual([]);
   lifecycle.unmount();
   expect(requests[1]!.signal.aborted).toBe(true);
-  expect(Source.instances[1]!.close).toHaveBeenCalledOnce();
   requests[1]!.resolve({ lists: [{ id: 'after-unmount' }] });
   await settle();
   expect(lists.value).toEqual([]);
 });
 
 test('polls while disconnected and catches up when a hidden tab becomes visible', () => {
-  useWikiTodoLists(() => 'project-a');
+  let connected = true;
+  useWikiTodoLists(() => 'project-a', () => connected);
   lifecycle.mount();
+  expect(EventSource).not.toHaveBeenCalled();
   vi.advanceTimersByTime(5_000);
   expect(requests).toHaveLength(1);
-  Source.instances[0]!.readyState = 0;
+  connected = false;
   vi.advanceTimersByTime(5_000);
   expect(requests).toHaveLength(2);
   Object.assign(document, { hidden: true });
@@ -91,7 +82,7 @@ test('polls while disconnected and catches up when a hidden tab becomes visible'
 });
 
 test('retries a failed snapshot even when the event stream remains connected', async () => {
-  const { lists } = useWikiTodoLists(() => 'project-a');
+  const { lists } = useWikiTodoLists(() => 'project-a', () => true);
   lifecycle.mount();
   requests[0]!.reject(new Error('Temporary network failure'));
   await settle();

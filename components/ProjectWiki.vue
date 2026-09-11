@@ -264,7 +264,10 @@ const copy = computed(() => props.locale === 'de' ? {
 });
 
 const pages = ref<WikiPage[]>([]);
-const { lists: todoLists, refresh: fetchTodoLists } = useWikiTodoLists(() => props.project.id);
+const { lists: todoLists, refresh: fetchTodoLists } = useWikiTodoLists(
+  () => props.project.id,
+  () => collaborationHandle.value?.isConnected() ?? false,
+);
 const wikiImages = ref<WikiImageRecord[]>([]);
 const selectedPageId = ref<string | null>(null);
 const searchQuery = ref('');
@@ -839,6 +842,9 @@ async function connectWikiCollaboration(pageId: string | null) {
 
   try {
     const handle = await openWikiCollaboration(pageId, {
+      onTodoChange: () => {
+        if (generation === collaborationLoadGeneration) void refreshTodoLists();
+      },
       onStatus: (status) => {
         if (generation === collaborationLoadGeneration) collaborationStatus.value = status;
       },

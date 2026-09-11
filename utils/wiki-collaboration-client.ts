@@ -1,3 +1,4 @@
+import { PageEventSource } from './page-event-source';
 import * as Y from 'yjs';
 import { WIKI_COLLABORATION_META } from './wiki-collaboration-document';
 import type { WikiCollaborationLease } from './wiki-collaboration-blocks';
@@ -29,6 +30,7 @@ export interface WikiCollaborationPresence {
 export interface WikiCollaborationHandle {
   document: Y.Doc;
   sessionId: string;
+  isConnected: () => boolean;
   setTitle: (title: string) => void;
   setPresence: (editing: boolean, blockId?: string | null) => void;
   flush: () => Promise<void>;
@@ -41,6 +43,7 @@ interface WikiCollaborationOptions {
   onPage: (page: WikiCollaborationPageUpdate) => void;
   onTitle: (title: string) => void;
   onReload: () => void;
+  onTodoChange?: () => void;
 }
 
 interface SessionResponse extends WikiCollaborationPresence {
@@ -173,8 +176,11 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
     }, PRESENCE_DEBOUNCE_MS);
   };
 
-  const source = new EventSource(`/api/wiki-pages/${pageId}/collaboration/events?sessionId=${encodeURIComponent(session.sessionId)}`);
+  const source = new PageEventSource(`/api/wiki-pages/${pageId}/collaboration/events?sessionId=${encodeURIComponent(session.sessionId)}`);
+  source.addEventListener('todo_changed', () => { if (!closed) options.onTodoChange?.(); });
   source.addEventListener('ready', () => {
+    // Reload TODOs after every connection, including changes missed offline.
+    options.onTodoChange?.();
     if (!queuedUpdates.length) options.onStatus('connected');
   });
   source.addEventListener('sync', (event) => {
@@ -212,6 +218,7 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
   return {
     document,
     sessionId: session.sessionId,
+    isConnected: () => !closed && source.readyState === EventSource.OPEN,
     setTitle(title) {
       if (String(titleMap.get('title') ?? '') === title) return;
       titleMap.set('title', title);
