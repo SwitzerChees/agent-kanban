@@ -207,3 +207,64 @@ function expectStatusMessage(action: () => unknown, statusMessage: string) {
   }
   throw new Error(`Expected ${statusMessage}`);
 }
+
+describe('live TODO collaboration', () => {
+  test('publishes committed changes to the owning project only and unsubscribes cleanly', async () => {
+    const events = await import('../server/lib/wiki-todo-events');
+    const snapshots: string[][] = [];
+    let unrelated = 0;
+    const unsubscribe = events.subscribeWikiTodoChanges(projectId, () => {
+      snapshots.push(wikiTodos.listWikiTodoLists(projectId, member).flatMap((list) => list.items.map((item) => item.text)));
+    });
+    const unsubscribeOther = events.subscribeWikiTodoChanges('another-project', () => unrelated++);
+    try {
+      const list = wikiTodos.createWikiTodoList(projectId, { name: 'Live changes' }, admin);
+      const item = wikiTodos.addWikiTodoItem(list.id, { text: 'Live created' }, member);
+      const edited = wikiTodos.updateWikiTodoItem(item.id, { text: 'Live edited', expectedUpdatedAt: item.updatedAt }, admin);
+      const moved = wikiTodos.moveWikiTodoItem(item.id, { position: 0, expectedUpdatedAt: edited.updatedAt }, member);
+      wikiTodos.deleteWikiTodoItem(item.id, { expectedUpdatedAt: moved.item.updatedAt }, admin);
+      expect(snapshots).toHaveLength(5);
+      expect(snapshots[1]).toContain('Live created');
+      expect(snapshots[2]).toContain('Live edited');
+      expect(snapshots[4]).not.toContain('Live edited');
+      expect(unrelated).toBe(0);
+      expectStatusMessage(() => wikiTodos.addWikiTodoItem(list.id, { text: 'Forbidden' }, outsider), 'project_forbidden');
+      expect(snapshots).toHaveLength(5);
+      unsubscribe();
+      wikiTodos.addWikiTodoItem(list.id, { text: 'After unsubscribe' }, admin);
+      expect(snapshots).toHaveLength(5);
+    } finally {
+      unsubscribe();
+      unsubscribeOther();
+    }
+  });
+
+  test('allows separate item edits but rejects simultaneous stale writes even within one millisecond', async () => {
+    const { vi } = await import('vitest');
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-11T10:00:00Z'));
+    try {
+      const list = wikiTodos.createWikiTodoList(projectId, { name: 'Concurrent edits' }, admin);
+      const first = wikiTodos.addWikiTodoItem(list.id, { text: 'First' }, admin);
+      const second = wikiTodos.addWikiTodoItem(list.id, { text: 'Second' }, member);
+      const updated = wikiTodos.updateWikiTodoItem(first.id, { text: 'First edited', expectedUpdatedAt: first.updatedAt }, admin);
+      expect(updated.updatedAt).not.toBe(first.updatedAt);
+      expect(wikiTodos.updateWikiTodoItem(second.id, { text: 'Second edited', expectedUpdatedAt: second.updatedAt }, member).text).toBe('Second edited');
+      expectStatusMessage(() => wikiTodos.updateWikiTodoItem(first.id, { text: 'Stale overwrite', expectedUpdatedAt: first.updatedAt }, member), 'wiki_todo_item_stale');
+      expectStatusMessage(() => wikiTodos.deleteWikiTodoItem(first.id, { expectedUpdatedAt: first.updatedAt }, member), 'wiki_todo_item_stale');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('keeps the original completion day on repeated completion and text edits, resetting it on reopen', () => {
+    const list = wikiTodos.createWikiTodoList(projectId, { name: 'Completion history' }, admin);
+    const item = wikiTodos.addWikiTodoItem(list.id, { text: 'Previously done' }, admin);
+    const yesterday = '2026-09-10T10:00:00.000Z';
+    dbModule.db.update(dbModule.schema.wikiTodoItems).set({ completed: true, completedAt: yesterday }).where(eq(dbModule.schema.wikiTodoItems.id, item.id)).run();
+    expect(wikiTodos.updateWikiTodoItem(item.id, { completed: true }, member).completedAt).toBe(yesterday);
+    expect(wikiTodos.updateWikiTodoItem(item.id, { text: 'Edited after completion' }, member).completedAt).toBe(yesterday);
+    expect(wikiTodos.updateWikiTodoItem(item.id, { completed: false }, member).completedAt).toBeNull();
+    expect(wikiTodos.updateWikiTodoItem(item.id, { completed: true }, member).completedAt).not.toBe(yesterday);
+  });
+});

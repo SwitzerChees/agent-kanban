@@ -8,7 +8,7 @@ import type {
   WikiReferenceTask,
 } from './wiki-references';
 
-export type WikiTodoFilter = 'all' | 'active' | 'completed' | 'week' | 'month';
+export type WikiTodoFilter = 'current' | 'all' | 'active' | 'completed' | 'week' | 'month';
 
 export interface WikiTodoItemRecord {
   id: string;
@@ -98,6 +98,15 @@ export function filterWikiTodoItems(
   filter: WikiTodoFilter,
   now = new Date(),
 ) {
+  if (filter === 'current') {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+    return items.filter((item) => {
+      if (!item.completed) return true;
+      const completedAt = item.completedAt ? Date.parse(item.completedAt) : NaN;
+      return completedAt >= start && completedAt < end;
+    });
+  }
   if (filter === 'active') return items.filter((item) => !item.completed);
   if (filter === 'completed') return items.filter((item) => item.completed);
   if (filter === 'week' || filter === 'month') {
@@ -118,6 +127,7 @@ function renderTodoList(
 ): DOMOutputSpec {
   const copy = locale === 'de' ? {
     missing: 'Diese TODO-Liste ist nicht mehr verfügbar.',
+    current: 'Aktuell',
     all: 'Alle',
     active: 'Offen',
     completed: 'Erledigt',
@@ -129,6 +139,7 @@ function renderTodoList(
     summary: (active: number, total: number) => `${active} offen · ${total} gesamt`,
   } : {
     missing: 'This TODO list is no longer available.',
+    current: 'Current',
     all: 'All',
     active: 'Active',
     completed: 'Completed',
@@ -151,7 +162,7 @@ function renderTodoList(
 
   const visibleItems = filterWikiTodoItems(list.items, filter);
   const activeCount = list.items.filter((item) => !item.completed).length;
-  const filterButtons = (['all', 'active', 'completed', 'week', 'month'] as const).map((value) => [
+  const filterButtons = (['current', 'all', 'active', 'completed', 'week', 'month'] as const).map((value) => [
     'button',
     {
       type: 'button',
@@ -192,7 +203,6 @@ function renderTodoList(
         placeholder: copy.placeholder,
         'aria-label': copy.placeholder,
         'aria-autocomplete': 'list',
-        'aria-expanded': 'false',
         'data-wiki-todo-reference-input': id,
       }, ''],
       ['button', { type: 'submit' }, copy.add],

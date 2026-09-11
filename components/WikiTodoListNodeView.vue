@@ -18,10 +18,30 @@ const list = computed(() => options.value.getList(listId.value));
 const locale = computed(() => options.value.getLocale());
 const members = computed(() => options.value.getMembers?.() ?? []);
 const tasks = computed(() => options.value.getTasks?.() ?? []);
-const filter = ref<WikiTodoFilter>('all');
+const filter = ref<WikiTodoFilter>('current');
+const today = ref(new Date());
+let dayTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshDay() {
+  if (dayTimer) clearTimeout(dayTimer);
+  today.value = new Date();
+  const now = today.value;
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  dayTimer = setTimeout(refreshDay, midnight.getTime() - now.getTime() + 50);
+}
+onMounted(() => {
+  refreshDay();
+  document.addEventListener('visibilitychange', refreshDay);
+});
+onBeforeUnmount(() => {
+  if (dayTimer) clearTimeout(dayTimer);
+  document.removeEventListener('visibilitychange', refreshDay);
+});
 const collapsed = ref(false);
 const newText = ref('');
-const editingItemId = ref<string | null>(null);
+const editingItem = ref<WikiTodoItemRecord | null>(null);
+const editingItemId = computed(() => editingItem.value?.id ?? null);
+const latestEditingItem = computed(() => list.value?.items.find((item) => item.id === editingItemId.value));
+const editConflict = computed(() => Boolean(editingItem.value && latestEditingItem.value?.updatedAt !== editingItem.value.updatedAt));
 const editingText = ref('');
 const busyItems = ref(new Set<string>());
 const creating = ref(false);
@@ -31,6 +51,11 @@ const dropTarget = ref<{ itemId: string; placement: 'before' | 'after' } | null>
 
 const copy = computed(() => locale.value === 'de' ? {
   missing: 'Diese TODO-Liste ist nicht mehr verfügbar.',
+  current: 'Aktuell',
+  conflict: 'Dieser Eintrag wurde inzwischen geändert. Dein Entwurf bleibt erhalten.',
+  deleted: 'Dieser Eintrag wurde inzwischen gelöscht. Du kannst deinen Entwurf noch kopieren.',
+  latest: 'Aktueller Text:',
+  useLatest: 'Aktuelle Version übernehmen',
   all: 'Alle',
   active: 'Offen',
   completed: 'Erledigt',
@@ -53,6 +78,11 @@ const copy = computed(() => locale.value === 'de' ? {
   summary: (active: number, total: number) => `${active} offen · ${total} gesamt`,
 } : {
   missing: 'This TODO list is no longer available.',
+  current: 'Current',
+  conflict: 'This item changed in the meantime. Your draft has been kept.',
+  deleted: 'This item was deleted in the meantime. You can still copy your draft.',
+  latest: 'Current text:',
+  useLatest: 'Use current version',
   all: 'All',
   active: 'Active',
   completed: 'Completed',
@@ -75,11 +105,18 @@ const copy = computed(() => locale.value === 'de' ? {
   summary: (active: number, total: number) => `${active} active · ${total} total`,
 });
 
-const filters = computed(() => (['all', 'active', 'completed', 'week', 'month'] as const).map((value) => ({
+const filters = computed(() => (['current', 'all', 'active', 'completed', 'week', 'month'] as const).map((value) => ({
   value,
   label: copy.value[value],
 })));
-const visibleItems = computed(() => filterWikiTodoItems(list.value?.items ?? [], filter.value));
+const visibleItems = computed(() => {
+  const items = list.value?.items ?? [];
+  const visible = new Set(filterWikiTodoItems(items, filter.value, today.value).map((item) => item.id));
+  // Keep a draft mounted even when a remote completion or deletion hides its row.
+  const result = items.filter((item) => visible.has(item.id) || item.id === editingItemId.value);
+  if (editingItem.value && !latestEditingItem.value) result.push(editingItem.value);
+  return result;
+});
 const activeCount = computed(() => list.value?.items.filter((item) => !item.completed).length ?? 0);
 
 function textParts(text: string) {
@@ -93,19 +130,19 @@ function itemLabel(item: WikiTodoItemRecord) {
 function startEditing(item: WikiTodoItemRecord) {
   if (busyItems.value.has(item.id)) return;
   error.value = '';
-  editingItemId.value = item.id;
+  editingItem.value = { ...item };
   editingText.value = wikiTodoEditableText(item.text, options.value.resolveReference);
 }
 
 function cancelEditing() {
-  editingItemId.value = null;
+  editingItem.value = null;
   editingText.value = '';
   error.value = '';
 }
 
 async function saveItem(item: WikiTodoItemRecord) {
   const text = editingText.value.trim();
-  if (!text || !options.value.updateItem) return;
+  if (!text || !options.value.updateItem || !editingItem.value || editConflict.value || busyItems.value.has(item.id)) return;
   if (text === wikiTodoEditableText(item.text, options.value.resolveReference).trim()) {
     cancelEditing();
     return;
@@ -113,7 +150,7 @@ async function saveItem(item: WikiTodoItemRecord) {
   setBusy(item.id, true);
   error.value = '';
   try {
-    await options.value.updateItem(item, text);
+    await options.value.updateItem(editingItem.value, text);
     cancelEditing();
   } catch {
     error.value = copy.value.failed;
@@ -123,11 +160,11 @@ async function saveItem(item: WikiTodoItemRecord) {
 }
 
 async function removeItem(item: WikiTodoItemRecord) {
-  if (!options.value.deleteItem || busyItems.value.has(item.id) || !window.confirm(copy.value.deleteConfirm)) return;
+  if (!options.value.deleteItem || editConflict.value || !editingItem.value || busyItems.value.has(item.id) || !window.confirm(copy.value.deleteConfirm)) return;
   setBusy(item.id, true);
   error.value = '';
   try {
-    await options.value.deleteItem(item);
+    await options.value.deleteItem(editingItem.value);
     cancelEditing();
   } catch {
     error.value = copy.value.failed;
@@ -317,7 +354,7 @@ function formatDate(value: string) {
           <input
             type="checkbox"
             :checked="item.completed"
-            :disabled="busyItems.has(item.id)"
+            :disabled="busyItems.has(item.id) || editingItemId === item.id"
             :aria-label="itemLabel(item)"
             @mousedown.stop
             @click.stop
@@ -338,10 +375,15 @@ function formatDate(value: string) {
               @submit="saveItem(item)"
               @cancel="cancelEditing"
             />
+            <div v-if="editConflict" class="ak-wiki-todo-conflict" role="status">
+              <p>{{ latestEditingItem ? copy.conflict : copy.deleted }}</p>
+              <p v-if="latestEditingItem" class="ak-wiki-todo-conflict-text"><strong>{{ copy.latest }}</strong> {{ itemLabel(latestEditingItem) }}</p>
+              <button v-if="latestEditingItem" type="button" @mousedown.stop @click.stop="startEditing(latestEditingItem)">{{ copy.useLatest }}</button>
+            </div>
             <div class="ak-wiki-todo-edit-actions">
-              <button type="button" class="is-danger" :disabled="busyItems.has(item.id)" @mousedown.stop @click.stop="removeItem(item)">{{ copy.delete }}</button>
+              <button type="button" class="is-danger" :disabled="busyItems.has(item.id) || editConflict" @mousedown.stop @click.stop="removeItem(item)">{{ copy.delete }}</button>
               <button type="button" @mousedown.stop @click.stop="cancelEditing">{{ copy.cancel }}</button>
-              <button type="submit" class="is-primary" :disabled="!editingText.trim() || busyItems.has(item.id)" @mousedown.stop>{{ copy.save }}</button>
+              <button type="submit" class="is-primary" :disabled="!editingText.trim() || busyItems.has(item.id) || editConflict" @mousedown.stop>{{ copy.save }}</button>
             </div>
           </form>
 
@@ -522,6 +564,10 @@ li:hover .ak-wiki-todo-move-button,
 li:hover .ak-wiki-todo-edit-button,
 .ak-wiki-todo-edit-button:focus-visible { opacity: 1; }
 .ak-wiki-todo-edit { grid-column: 3 / -1; min-width: 0; }
+.ak-wiki-todo-conflict { margin-top: 0.5rem; border-radius: 0.375rem; background: rgb(254 243 199); padding: 0.625rem; color: rgb(120 53 15); font-size: 0.75rem; }
+.ak-wiki-todo-conflict p { margin: 0 0 0.375rem; }
+.ak-wiki-todo-conflict-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+:global(.dark) .ak-wiki-todo-conflict { background: rgb(69 26 3); color: rgb(253 230 138); }
 .ak-wiki-todo-edit-actions { display: flex; justify-content: flex-end; gap: 0.375rem; margin-top: 0.5rem; }
 .ak-wiki-todo button.is-danger { margin-right: auto; color: rgb(220 38 38); }
 .ak-wiki-todo button.is-danger:hover:not(:disabled) { background: rgb(254 226 226); color: rgb(185 28 28); }

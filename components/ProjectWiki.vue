@@ -264,7 +264,7 @@ const copy = computed(() => props.locale === 'de' ? {
 });
 
 const pages = ref<WikiPage[]>([]);
-const todoLists = ref<WikiTodoListRecord[]>([]);
+const { lists: todoLists, refresh: fetchTodoLists } = useWikiTodoLists(() => props.project.id);
 const wikiImages = ref<WikiImageRecord[]>([]);
 const selectedPageId = ref<string | null>(null);
 const searchQuery = ref('');
@@ -391,7 +391,7 @@ const AccessibleTable = Table.extend({
 
 const WikiTodoList = createWikiTodoListExtension({
   getList: (id) => todoLists.value.find((list) => list.id === id),
-  getFilter: () => 'all',
+  getFilter: () => 'current',
   getLocale: () => props.locale,
   resolveReference: (attrs) => resolveWikiReference(attrs, props.members, props.tasks, pages.value),
   getMembers: () => props.members,
@@ -918,12 +918,11 @@ async function loadPages() {
   errorMessage.value = null;
   editing.value = false;
   try {
-    const [response, todoResponse] = await Promise.all([
+    const [response] = await Promise.all([
       $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`),
-      $fetch<{ lists: WikiTodoListRecord[] }>(`/api/projects/${props.project.id}/wiki/todo-lists`),
+      fetchTodoLists(),
     ]);
     pages.value = response.pages;
-    todoLists.value = todoResponse.lists;
     const routeMatch = import.meta.client
       ? window.location.hash.match(/^#wiki\/([^/]+)\/([^/]+)$/)
       : null;
@@ -1023,12 +1022,11 @@ async function savePage() {
 async function refreshPages() {
   if (editing.value && dirty.value) return;
   try {
-    const [response, todoResponse] = await Promise.all([
+    const [response] = await Promise.all([
       $fetch<{ pages: WikiPage[] }>(`/api/projects/${props.project.id}/wiki/pages`),
-      $fetch<{ lists: WikiTodoListRecord[] }>(`/api/projects/${props.project.id}/wiki/todo-lists`),
+      fetchTodoLists(),
     ]);
     pages.value = response.pages;
-    todoLists.value = todoResponse.lists;
     selectedPageId.value = pages.value.some((page) => page.id === selectedPageId.value)
       ? selectedPageId.value
       : pages.value[0]?.id ?? null;
@@ -1200,7 +1198,7 @@ async function createWikiTodoList(payload: { name: string; editor: { chain: () =
       method: 'POST',
       body: { name: payload.name },
     });
-    todoLists.value.push(response.list);
+    await refreshTodoLists();
     payload.editor.chain().focus().insertContent([
       { type: 'wikiTodoList', attrs: { id: response.list.id, label: response.list.name } },
       { type: 'paragraph' },
@@ -1221,7 +1219,7 @@ async function toggleWikiTodoItem(current: WikiTodoItemRecord, completed: boolea
       method: 'PATCH',
       body: { completed, expectedUpdatedAt: current.updatedAt },
     });
-    updateWikiTodoItemState(response.item);
+    await refreshTodoLists();
     return response.item;
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -1237,7 +1235,7 @@ async function updateWikiTodoItemText(current: WikiTodoItemRecord, text: string)
       method: 'PATCH',
       body: { text, expectedUpdatedAt: current.updatedAt },
     });
-    updateWikiTodoItemState(response.item);
+    await refreshTodoLists();
     return response.item;
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -1253,11 +1251,7 @@ async function moveWikiTodoItem(current: WikiTodoItemRecord, position: number) {
       method: 'POST',
       body: { position, expectedUpdatedAt: current.updatedAt },
     });
-    todoLists.value = todoLists.value.map((list) => list.id !== current.listId ? list : {
-      ...list,
-      updatedAt: response.item.updatedAt,
-      items: response.items,
-    });
+    await refreshTodoLists();
     return response.item;
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -1273,11 +1267,7 @@ async function deleteWikiTodoItem(current: WikiTodoItemRecord) {
       method: 'DELETE',
       body: { expectedUpdatedAt: current.updatedAt },
     });
-    todoLists.value = todoLists.value.map((list) => list.id !== current.listId ? list : {
-      ...list,
-      updatedAt: new Date().toISOString(),
-      items: list.items.filter((item) => item.id !== current.id),
-    });
+    await refreshTodoLists();
   } catch (error) {
     errorMessage.value = humanError(error);
     await refreshTodoLists();
@@ -1292,11 +1282,7 @@ async function createWikiTodoItem(listId: string, text: string) {
       method: 'POST',
       body: { text },
     });
-    todoLists.value = todoLists.value.map((list) => list.id !== listId ? list : {
-      ...list,
-      updatedAt: response.item.updatedAt,
-      items: [...list.items, response.item],
-    });
+    await refreshTodoLists();
     return response.item;
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -1304,18 +1290,9 @@ async function createWikiTodoItem(listId: string, text: string) {
   }
 }
 
-function updateWikiTodoItemState(item: WikiTodoItemRecord) {
-  todoLists.value = todoLists.value.map((list) => list.id !== item.listId ? list : {
-    ...list,
-    updatedAt: item.updatedAt,
-    items: list.items.map((current) => current.id === item.id ? item : current),
-  });
-}
-
 async function refreshTodoLists() {
   try {
-    const response = await $fetch<{ lists: WikiTodoListRecord[] }>(`/api/projects/${props.project.id}/wiki/todo-lists`);
-    todoLists.value = response.lists;
+    await fetchTodoLists();
   } catch (error) {
     errorMessage.value = humanError(error);
   }

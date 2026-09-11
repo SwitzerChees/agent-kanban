@@ -200,7 +200,6 @@ defineExpose({ focus });
       :placeholder="props.placeholder"
       :aria-label="props.label"
       :aria-controls="menuOpen ? menuId : undefined"
-      :aria-expanded="menuOpen"
       aria-autocomplete="list"
       rows="2"
       maxlength="2000"

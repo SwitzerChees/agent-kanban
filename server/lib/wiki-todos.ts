@@ -4,6 +4,7 @@ import { createError } from 'h3';
 import { canonicalizeWikiReferences } from '../../utils/wiki-references';
 import { db, schema } from './db';
 import { getProject } from './kanban';
+import { publishWikiTodoChange } from './wiki-todo-events';
 import type { User, WikiTodoItem, WikiTodoList } from './db/schema';
 
 const MAX_LISTS_PER_PROJECT = 100;
@@ -73,6 +74,7 @@ export function createWikiTodoList(projectId: string, input: CreateWikiTodoListI
     }
     throw error;
   }
+  publishWikiTodoChange(projectId);
   return decorateLists([list as WikiTodoList])[0]!;
 }
 
@@ -104,6 +106,7 @@ export function addWikiTodoItem(listId: string, input: CreateWikiTodoItemInput, 
       .where(eq(schema.wikiTodoLists.id, listId)).run();
     tx.insert(schema.activity).values(activity(list.projectId, user.id, 'wiki_todo_item_created', { listId, itemId: item.id }, now)).run();
   });
+  publishWikiTodoChange(list.projectId);
   return item as WikiTodoItem;
 }
 
@@ -117,7 +120,7 @@ export function updateWikiTodoItem(itemId: string, input: UpdateWikiTodoItemInpu
   if (input.text === undefined && input.completed === undefined) {
     throw createError({ statusCode: 400, statusMessage: 'wiki_todo_item_update_required' });
   }
-  const now = new Date().toISOString();
+  const now = nextRevision(item.updatedAt);
   const updates: Partial<typeof schema.wikiTodoItems.$inferInsert> = {
     updatedBy: user.id,
     updatedAt: now,
@@ -125,13 +128,14 @@ export function updateWikiTodoItem(itemId: string, input: UpdateWikiTodoItemInpu
   if (input.text !== undefined) updates.text = normalizeItemText(list.projectId, input.text);
   if (input.completed !== undefined) {
     updates.completed = input.completed;
-    updates.completedAt = input.completed ? now : null;
+    updates.completedAt = input.completed ? (item.completed ? item.completedAt : now) : null;
   }
   db.transaction((tx) => {
-    tx.update(schema.wikiTodoItems).set(updates).where(and(
+    const updated = tx.update(schema.wikiTodoItems).set(updates).where(and(
       eq(schema.wikiTodoItems.id, itemId),
       eq(schema.wikiTodoItems.updatedAt, item.updatedAt),
     )).run();
+    if (!updated.changes) throw createError({ statusCode: 409, statusMessage: 'wiki_todo_item_stale' });
     tx.update(schema.wikiTodoLists).set({ updatedBy: user.id, updatedAt: now })
       .where(eq(schema.wikiTodoLists.id, list.id)).run();
     tx.insert(schema.activity).values(activity(list.projectId, user.id, 'wiki_todo_item_updated', {
@@ -140,6 +144,7 @@ export function updateWikiTodoItem(itemId: string, input: UpdateWikiTodoItemInpu
       fields: Object.keys(input).filter((field) => field !== 'expectedUpdatedAt'),
     }, now)).run();
   });
+  publishWikiTodoChange(list.projectId);
   return db.select().from(schema.wikiTodoItems).where(eq(schema.wikiTodoItems.id, itemId)).get()!;
 }
 
@@ -176,6 +181,7 @@ export function moveWikiTodoItem(itemId: string, input: MoveWikiTodoItemInput, u
     }, now)).run();
   });
 
+  publishWikiTodoChange(list.projectId);
   const items = decorateLists([list])[0]!.items;
   return {
     item: items.find((candidate) => candidate.id === itemId)!,
@@ -204,6 +210,7 @@ export function deleteWikiTodoItem(itemId: string, input: DeleteWikiTodoItemInpu
       itemId,
     }, now)).run();
   });
+  publishWikiTodoChange(list.projectId);
   return { id: itemId, listId: list.id };
 }
 
