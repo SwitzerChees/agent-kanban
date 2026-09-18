@@ -8,11 +8,11 @@ Dieser Prototyp ergänzt `docs/task-showroom-unification-concept.md`. Er enthäl
 
 ## Durchklicken
 
-1. Im initialen Task **Einladung** öffnen; Desktop/Mobil, Einladungsformular und Feedback ausprobieren.
+1. Im Szenario **Task mit Showroom** die Ansicht **Einladung** öffnen; Desktop/Mobil, Einladungsformular und Feedback ausprobieren.
 2. **Als Vorgabe festhalten** → **Vorgabe festhalten** zeigt die unveränderliche Referenz im Auftrag.
 3. **Vorgabe öffnen** → **Neue Iteration** → **Iteration starten**: V3 entsteht, V2 bleibt die Umsetzungsvorgabe.
 4. **Verknüpfen** zeigt Ordner- und Einzelansichtsauswahl mit Suche, Mehrfachauswahl und Versionsbindung.
-5. Szenario **Task ohne Entwurf** → **Im Showroom entwerfen** zeigt Erstellung, lokale Validierung und simulierten Lauf.
+5. Szenario **Task ohne Entwurf** → Tab **Showroom** → **Im Showroom entwerfen** zeigt Erstellung, lokale Validierung und simulierten Lauf.
 6. **Im Projekt bereitstellen** zeigt die Auswirkungen auf bestehende Freigaben.
 7. Szenario **Task mit Altbestand** zeigt die Übernahme von App-Screens und der bisherigen Vorgabe.
 
@@ -29,3 +29,7 @@ Mit agent-browser in Chromium geprüft:
 - Keine Laufzeitfehler im Browser. Fragment unter 1 MB und Browser-Vorschau auch im Sandbox-iframe geöffnet.
 
 Keine Produktionscode-Änderung, kein Nuxt-Build und kein Service-Neustart notwendig. Der Prototyp demonstriert UI-Verhalten; persistente Versionen, Berechtigungen, echte Agenten, Publish-Transaktionen und die Datenmigration sind Gegenstand des Umsetzungskonzepts.
+
+## Überarbeitung nach Feedback
+
+Unter Auftrag bleibt nur **Mit KI ausarbeiten**. Visuelle Aktionen liegen im dauerhaften Showroom-Tab. Die Erstellung fragt weder Ordner noch Ansichten ab; beide werden automatisch aus dem Task und Brief abgeleitet. Im lokalen Prototyp demonstrieren die drei Beispielansichten das simulierte Agent-Ergebnis. Startansicht ist nun der Auftrag eines Tasks ohne Entwurf.

@@ -4,7 +4,7 @@ Stand: 18. September 2026. Konzept und klickbarer Prototyp; keine produktive Fea
 
 ## Produktentscheidung
 
-Der Showroom wird die gemeinsame Quelle für visuelle Entwürfe, Vorschau, Versionen und Feedback. Der Task ist Arbeitskontext und verknüpft Showroom-Inhalte. Ein dauerhafter Task-Tab **Showroom** ersetzt den temporären Tab **Visueller Entwurf**. In **Auftrag** steht eine kompakte Zusammenfassung mit Einstieg und der freigegebenen Umsetzungsvorgabe. Das Text-Refinement bleibt bestehen.
+Der Showroom wird die gemeinsame Quelle für visuelle Entwürfe, Vorschau, Versionen und Feedback. Der Task ist Arbeitskontext und verknüpft Showroom-Inhalte. Ein dauerhafter Task-Tab **Showroom** ersetzt den temporären Tab **Visueller Entwurf**. Unter **Auftrag** bleibt unten ausschliesslich die Aktion **Mit KI ausarbeiten** im Bereich **Idee ausarbeiten**. Visuelle Erstellung und Verknüpfung liegen ausschliesslich im dauerhaften Tab **Showroom**; der visuelle Einstieg/Leerzustand entfällt unter Auftrag. Eine bereits festgehaltene Umsetzungsvorgabe bleibt dort als Ergebnis sichtbar. Das bestehende Text-Refinement wird über **Mit KI ausarbeiten** gestartet.
 
 Die Vereinigung ist sinnvoll, aber kein blosses Umbenennen: Das aktuelle visuelle Refinement verändert und rendert die echte Anwendung; der Showroom enthält eigenständige HTML-Prototypen. Neue Entwürfe nutzen standardmässig den Showroom-Prototyp. Bestehende App-Screens bleiben als gekennzeichnete Bildansichten erhalten. Ein späterer App-Capture-Modus kann dieselbe Showroom-Ablage und Review-Oberfläche verwenden, bleibt technisch aber ein eigener Renderer. Eine HTML-Demo gilt nicht als Nachweis einer funktionierenden App-Implementierung.
 
@@ -23,11 +23,11 @@ Die Vereinigung ist sinnvoll, aber kein blosses Umbenennen: Das aktuelle visuell
 
 ### Task ohne Verknüpfungen
 
-Im Auftrag: **Im Showroom entwerfen** und **Bestehendes verknüpfen**. Der Showroom-Tab zeigt dieselben zwei klaren Einstiege. Bei einem noch nicht gespeicherten Task zuerst Titel validieren und Task speichern, danach den Entwurf anlegen. Fehlschläge verändern weder Eingaben noch Verknüpfungen.
+Im Auftrag steht nur **Mit KI ausarbeiten**. Der dauerhafte Showroom-Tab enthält die beiden visuellen Einstiege **Im Showroom entwerfen** und **Bestehendes verknüpfen**. Bei einem noch nicht gespeicherten Task zuerst Titel validieren und Task speichern, danach den Entwurf anlegen. Fehlschläge verändern weder Eingaben noch Verknüpfungen.
 
 ### Neu erstellen
 
-Dialog mit Brief aus dem Task, Ansichten/Zuständen, Desktop/Mobil, Agent-Auswahl und Zielordner. Standard: ein taskbezogener Ordner unter `showroom/`, editierbar und kollisionsgeprüft. Bestehende Verknüpfungen können als Quellen ausgewählt werden; sie geben keine automatische Schreibfreigabe auf fremde Entwürfe.
+Dialog mit Brief aus dem Task, Desktop/Mobil und Agent-Auswahl. **Keine Eingabefelder für Showroom-Ordner oder Ansichten.** Das System erzeugt automatisch einen taskbezogenen Ordner aus Task-Key und einem kurzen Titel-Slug, prüft Kollisionen und reserviert bei Bedarf einen eindeutigen Suffix. Die stabile Task-Zuordnung bleibt auch bei späterer Umbenennung erhalten; Iterationen verwenden denselben Ordner und die nächste freie Version. Die KI bestimmt passende Ansichten, Zustände und Dateinamen anhand von Auftrag, Brief und Referenzen; das Ergebnismanifest benennt die tatsächlich erzeugten Ansichten. Nutzende müssen weder Ordnernamen noch eine Screen-Liste vorab definieren. Bestehende Verknüpfungen können als Quellen ausgewählt werden; sie geben keine automatische Schreibfreigabe auf fremde Entwürfe.
 
 **Entwurf starten** erzeugt einen Showroom-Lauf am vorhandenen Task. Ein eigener Kanban-Task entsteht nur, wenn man im Showroom ausdrücklich eine neue Aufgabe anlegt. Nach erfolgreicher Validierung erscheinen die Ansichten als interner Entwurf in beiden Oberflächen. Ein Lauf kann mehrere HTML-Ansichten liefern. Warte-, Fehler-, Rückfrage-, Abbruch- und Retry-Zustände behalten den letzten gültigen Stand sichtbar.
 
@@ -122,11 +122,14 @@ Veröffentlichung validiert ALLE HTML-Dateien und abhängigen Assets vorab, rese
 ## Umsetzung in vier Schritten
 
 1. **Katalog und Verknüpfung:** stabile Identitäten, rekursiver Picker, persistenter Task-Tab, gemeinsamer Viewer, Rücklinks und Missing-State. Bestehende Showroom-Dateien sofort nutzbar.
-2. **Gemeinsame Entwurfsläufe:** Task-Start, mehrere Ansichten, versionierte lokale Ausgabe, interner Snapshot-Import, gemeinsamer Lease, Feedback-Iteration und gebündeltes Publish.
+2. **Gemeinsame Entwurfsläufe:** Task-Start ausschliesslich über den Showroom-Tab, automatische Ordner-/Versionszuordnung und Ansichtsplanung, mehrere Ansichten, versionierte lokale Ausgabe, interner Snapshot-Import, gemeinsamer Lease, Feedback-Iteration und gebündeltes Publish.
 3. **Vorgaben und Übergabe:** explizite Auswahl, eingefrorene Spezifikation, Änderungsanzeige, Resume und Agent-Auftrag aus genau der freigegebenen Revision.
 4. **Altdaten und Ablösung:** idempotente Migration, Kompatibilität, Export/Backup/Import einschliesslich aller neuen Beziehungen, laufende Jobs drainen und altes UI entfernen.
 
 ## Abnahme
+
+- Unter Auftrag ist **Mit KI ausarbeiten** die einzige Entwurfsaktion; kein visueller Leerzustand und kein zweiter Einstieg. Showroom bleibt als Tab auch bei null Verknüpfungen sichtbar.
+- Erstellung erfordert weder Ordnernamen noch eine Ansichtsliste. System/KI leiten beide ab; Retry und Iteration verwenden die persistierte Zuordnung und vermeiden Kollisionen.
 
 - Neue Erstellung im existierenden Task erzeugt genau einen Lauf und keinen unerwarteten zweiten Task; drei Ansichten werden zusammen sichtbar, Status des Implementierungs-Tasks bleibt erhalten.
 - Ordnerlink enthält später hinzugefügte Ansichten und Unterordner; Einzelansichtslink enthält keine Nachbaransichten. Ordner+Einzelansicht ergibt keine Doppelung.
