@@ -173,7 +173,7 @@ const copy = computed(() => props.locale === 'de' ? {
   live: 'Live synchronisiert',
   connecting: 'Live-Verbindung wird aufgebaut …',
   syncing: 'Änderungen werden synchronisiert …',
-  offline: 'Offline · Änderungen ausstehend',
+  offline: 'Offline · lokal weiterarbeiten',
   activeHere: 'Auf dieser Seite aktiv',
   editingHere: 'bearbeiten gerade',
 } : {
@@ -258,7 +258,7 @@ const copy = computed(() => props.locale === 'de' ? {
   live: 'Synced live',
   connecting: 'Connecting live collaboration …',
   syncing: 'Syncing changes …',
-  offline: 'Offline · changes pending',
+  offline: 'Offline · keep working locally',
   activeHere: 'Active on this page',
   editingHere: 'currently editing',
 });
@@ -1694,7 +1694,7 @@ function humanErrorCode(error: unknown) {
         <UButton v-if="selectedPage && !editing" class="hidden lg:inline-flex" color="neutral" variant="ghost" size="sm" :icon="copied ? 'i-lucide-check' : 'i-lucide-share-2'" @click="copyPageLink">{{ copied ? copy.copied : copy.share }}</UButton>
         <UButton v-if="selectedPage && !editing" color="neutral" variant="soft" size="sm" icon="i-lucide-pencil-line" :disabled="collaborationLoading" :aria-label="copy.edit" @click="startEditing"><span class="hidden sm:inline">{{ copy.edit }}</span></UButton>
         <template v-if="selectedPage && editing">
-          <UButton v-if="collaborationActive" color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim() || collaborationStatus === 'offline'" :aria-label="copy.done" @click="savePageAction"><span class="hidden sm:inline">{{ copy.done }}</span></UButton>
+          <UButton v-if="collaborationActive" color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim()" :aria-label="copy.done" @click="savePageAction"><span class="hidden sm:inline">{{ copy.done }}</span></UButton>
           <template v-else>
             <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-x" :disabled="saving" :aria-label="copy.cancel" @click="cancelEditing"><span class="hidden lg:inline">{{ copy.cancel }}</span></UButton>
             <UButton color="primary" variant="solid" size="sm" icon="i-lucide-check" :loading="saving" :disabled="!draftTitle.trim()" :aria-label="copy.save" @click="savePageAction"><span class="hidden sm:inline">{{ copy.save }}</span></UButton>
