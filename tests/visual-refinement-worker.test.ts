@@ -23,7 +23,7 @@ describe('visual refinement worker resilience', () => {
     const instructions = visualWorker.visualRuntimeInstructions();
     expect(instructions).toContain('Always reuse the injected `AGENT_BROWSER_SESSION`');
     expect(instructions).toContain('Do not run repository-wide lint, typecheck, test, audit, or production-build suites');
-    expect(instructions).toContain('stop temporary development servers as soon as the screenshots and manifest are complete');
+    expect(instructions).toContain('stop temporary servers as soon as the views and manifest are complete');
 
     const brief = 'Show desktop and mobile.\n'.repeat(5000) + 'Final requirement.';
     const prompt = visualWorker.buildVisualRefinementPrompt({
@@ -35,13 +35,34 @@ describe('visual refinement worker resilience', () => {
       visualSettings: { desktop: true, mobile: true, states: false },
       visualFeedbackComments: [],
     } as unknown as Parameters<typeof visualWorker.buildVisualRefinementPrompt>[0], '/workspace/manifest.json', '/workspace/artifacts');
-    expect(prompt).toContain('as soon as the first complete target screenshot set exists');
+    expect(prompt).toContain('as soon as the first complete set of views exists');
     expect(prompt).toContain(brief);
     expect(prompt).toContain('do not postpone it until after optional checks');
+    expect(prompt).toContain('VISUAL-1-calm-task-view/v1/view-name.html'.toLowerCase());
 
     expect(visualWorker.visualRefinementRetryDelayMs({})).toBe(10_000);
     expect(visualWorker.visualRefinementRetryDelayMs({ KANBAN_REFINEMENT_RETRY_DELAY_MS: '1' })).toBe(1_000);
     expect(visualWorker.visualRefinementRetryDelayMs({ KANBAN_REFINEMENT_RETRY_DELAY_MS: '999999' })).toBe(60_000);
+  });
+
+  test('accepts only HTML views inside the generated Showroom version', async () => {
+    const workspace = path.join(testRoot, 'showroom-workspace');
+    const manifestPath = path.join(workspace, '.agent-kanban/visual-refinements/run-3/manifest.json');
+    mkdirSync(path.dirname(manifestPath), { recursive: true });
+    mkdirSync(path.join(workspace, 'showroom/visual-1-calm-task-view/v1'), { recursive: true });
+    writeFileSync(path.join(workspace, 'showroom/visual-1-calm-task-view/v1/index.html'), '<title>Prototype</title>');
+    writeFileSync(manifestPath, JSON.stringify({
+      summary: 'A calm task view', implementationNotes: [],
+      views: [{ title: 'Task', path: 'visual-1-calm-task-view/v1/index.html' }],
+    }));
+    await expect(visualWorker.readShowroomVisualManifest(manifestPath, workspace, 'visual-1-calm-task-view', 1))
+      .resolves.toMatchObject({ views: [{ title: 'Task' }] });
+    writeFileSync(manifestPath, JSON.stringify({
+      summary: 'Invalid', implementationNotes: [],
+      views: [{ title: 'Task', path: 'other/index.html' }],
+    }));
+    await expect(visualWorker.readShowroomVisualManifest(manifestPath, workspace, 'visual-1-calm-task-view', 1))
+      .rejects.toThrow('showroom_view_path_invalid');
   });
 
   test('recovers complete target screenshots after an interrupted agent session', async () => {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ShowroomAnchor, ShowroomFeedback, ShowroomLibrary, ShowroomView } from '../shared/showroom';
-const props = defineProps<{ library: ShowroomLibrary; initialView: ShowroomView; endpoint: string; locale: 'de' | 'en'; guest?: boolean; focusFeedback?: ShowroomFeedback | null }>();
+const props = defineProps<{ library: ShowroomLibrary; initialView: ShowroomView; endpoint: string; locale: 'de' | 'en'; guest?: boolean; focusFeedback?: ShowroomFeedback | null; taskId?: string }>();
 const emit = defineEmits<{ close: []; saved: [] }>();
 const de = computed(() => props.locale === 'de');
 const say = (german: string, english: string) => de.value ? german : english;
@@ -61,7 +61,7 @@ async function save() {
   try {
     await $fetch(props.endpoint + '/feedback', { method: 'POST', body: {
       previewToken: props.library.previewToken, viewPath: current.value.path, authorName: name.value.trim() || 'Team',
-      body: body.value, anchor: anchor.value, requestId: requestId.value,
+      body: body.value, anchor: anchor.value, requestId: requestId.value, taskId: props.taskId || null,
     } });
     if (props.guest) { try { localStorage.setItem('ak_showroom_guest_name', name.value.trim()); } catch {} }
     drafts.delete(current.value.path);

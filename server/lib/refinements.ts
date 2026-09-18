@@ -43,6 +43,7 @@ export interface RefinementVisual {
   height?: number | null;
   baselineAttachmentId?: string | null;
   baselineArtifactId?: string | null;
+  showroomPath?: string | null;
 }
 
 export interface RefinementVisualComment {

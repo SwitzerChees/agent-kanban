@@ -23,3 +23,20 @@ export interface ShowroomIteration {
   id: string; sourcePath: string | null; targetPath: string; taskId: string | null;
   taskKey: string | null; taskStatus: string | null; createdAt: string;
 }
+export interface TaskShowroomLink {
+  id: string; taskId: string; projectId: string; kind: 'category' | 'view'; targetPath: string;
+  mode: 'follow' | 'pinned'; snapshotId: string | null; createdAt: string;
+}
+export interface TaskShowroomSpec {
+  id: string; taskId: string; projectId: string; version: number; snapshotId: string;
+  entries: Array<{ path: string; title: string; hash: string }>;
+  notes: string; createdAt: string; active: boolean;
+}
+export interface TaskShowroomData {
+  library: ShowroomLibrary;
+  links: TaskShowroomLink[];
+  linkedViews: ShowroomView[];
+  feedback: ShowroomFeedback[];
+  specs: TaskShowroomSpec[];
+  activeRun: null | { id: string; version: number; status: string; error: string | null; brief: string | null };
+}

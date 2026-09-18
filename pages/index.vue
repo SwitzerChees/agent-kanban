@@ -17,7 +17,7 @@ import {
 
 type Locale = 'en' | 'de';
 type View = 'board' | 'wiki' | 'e2e' | 'showroom' | 'projects' | 'users' | 'backups';
-type TaskTab = 'activity' | 'task' | 'refinement' | 'visual' | 'comments';
+type TaskTab = 'activity' | 'task' | 'refinement' | 'showroom' | 'comments';
 type TaskDescriptionSource = 'original' | 'refined';
 type TaskDescriptionView = TaskDescriptionSource | 'visual';
 
@@ -599,7 +599,7 @@ const dictionary = {
     todoAutomationShort: 'AI tasks start automatically',
     activityTab: 'Progress',
     taskTab: 'Task brief',
-    visualRefinementTab: 'Visual proposal',
+    visualRefinementTab: 'Showroom',
     refinementTab: 'Refinement',
     refineTask: 'Refine with Codex',
     refinementCtaHint: 'Turn the current idea into an implementation-ready brief. Open changes are saved when refinement starts.',
@@ -957,7 +957,7 @@ const dictionary = {
     todoAutomationShort: 'KI-Aufgaben starten automatisch',
     activityTab: 'Fortschritt',
     taskTab: 'Auftrag',
-    visualRefinementTab: 'Visueller Entwurf',
+    visualRefinementTab: 'Showroom',
     refinementTab: 'Refinement',
     refineTask: 'Mit Codex refinen',
     refinementCtaHint: 'Die Idee mit Projekt- und Codekontext ausarbeiten. Offene Änderungen werden beim Start automatisch gespeichert.',
@@ -1479,7 +1479,7 @@ watch(
     if (!supported.includes(taskForm.reasoningEffort)) taskForm.reasoningEffort = DEFAULT_TASK_REASONING_EFFORT;
   },
 );
-const refineTaskLabel = computed(() => t.value.refineWithHarness.replace('{harness}', selectedHarnessLabel.value));
+const refineTaskLabel = computed(() => locale.value === 'de' ? 'Mit KI ausarbeiten' : 'Develop with AI');
 const taskRefinementLabels = computed(() => ({
   description: t.value.refinementAgentDescription.replace('{harness}', selectedHarnessLabel.value),
   intro: t.value.refinementAgentIntro.replace('{harness}', selectedHarnessLabel.value),
@@ -2017,8 +2017,8 @@ const taskTabs = computed(() => [
   ...(textRefinementOpen.value
     ? [{ key: 'refinement' as const, label: t.value.refinementTab, icon: 'i-lucide-file-pen-line' }]
     : []),
-  ...(visualRefinementOpen.value
-    ? [{ key: 'visual' as const, label: t.value.visualRefinementTab, icon: 'i-lucide-panels-top-left' }]
+  ...(selectedTaskId.value
+    ? [{ key: 'showroom' as const, label: t.value.visualRefinementTab, icon: 'i-lucide-panels-top-left' }]
     : []),
   ...(selectedTaskId.value && (editingTask.value?.agentEnabled || hasAgentActivity.value)
     ? [{ key: 'activity' as const, label: t.value.activityTab, icon: 'i-lucide-activity' }]
@@ -2919,7 +2919,7 @@ function openTaskVisualRefinementTab() {
   errorMessage.value = null;
   visualRefinementOpen.value = true;
   selectedVisualRefinementId.value = visualTaskRefinements.value.find((run) => !run.appliedAt)?.id ?? visualTaskRefinements.value[0]?.id ?? null;
-  activeTaskTab.value = 'visual';
+  activeTaskTab.value = 'showroom';
 }
 
 async function applyTaskVisualRefinement(runId: string) {
@@ -2946,7 +2946,7 @@ async function applyTaskVisualRefinement(runId: string) {
 function resumeTaskVisualRefinement(runId: string) {
   selectedVisualRefinementId.value = runId;
   visualRefinementOpen.value = true;
-  activeTaskTab.value = 'visual';
+  activeTaskTab.value = 'showroom';
 }
 
 function resumeTaskRefinement() {
@@ -2970,7 +2970,7 @@ async function startTaskVisualRefinement(payload: { brief: string; visualSetting
     taskRefinements.value = [response.refinement, ...taskRefinements.value.filter((run) => run.id !== response.refinement.id)];
     selectedVisualRefinementId.value = response.refinement.id;
     visualRefinementOpen.value = true;
-    activeTaskTab.value = 'visual';
+    activeTaskTab.value = 'showroom';
     scheduleRefinementPolling();
   } catch (error) {
     errorMessage.value = humanError(error);
@@ -3049,7 +3049,7 @@ async function startTaskRefinement(payload: { brief: string; visualMode: 'auto';
         selectedRefinementId.value = recoveredRun.id;
         textRefinementOpen.value = recoveredRun.kind === 'text';
         visualRefinementOpen.value = recoveredRun.kind === 'visual';
-        activeTaskTab.value = recoveredRun.kind === 'visual' ? 'visual' : 'refinement';
+        activeTaskTab.value = recoveredRun.kind === 'visual' ? 'showroom' : 'refinement';
         refinementDraftDirty.value = false;
         scheduleRefinementPolling();
         return;
@@ -3350,7 +3350,7 @@ const openTaskDetail = async (task: Task) => {
     if (latestRefinement.kind === 'visual') {
       selectedVisualRefinementId.value = latestRefinement.id;
       visualRefinementOpen.value = true;
-      activeTaskTab.value = 'visual';
+      activeTaskTab.value = 'showroom';
     } else {
       selectedRefinementId.value = latestRefinement.id;
       textRefinementOpen.value = true;
@@ -8027,18 +8027,11 @@ const humanError = (error: unknown) => {
                       <p class="text-sm font-semibold text-zinc-950 dark:text-zinc-100">{{ locale === 'de' ? 'Idee ausarbeiten' : 'Develop this idea' }}</p>
                     </div>
                   </div>
-                  <div class="mt-4 grid gap-2 sm:grid-cols-2">
-                    <button type="button" class="flex min-h-12 items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskRefinementTab">
+                  <div class="mt-4">
+                    <button type="button" class="flex min-h-12 w-full items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskRefinementTab">
                       <UIcon name="i-lucide-file-pen-line" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
                       <span class="min-w-0">
                         <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ refineTaskLabel }}</span>
-                      </span>
-                      <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
-                    </button>
-                    <button type="button" class="flex min-h-12 items-center gap-3 rounded-lg bg-white px-3.5 py-2.5 text-left ring-1 ring-teal-200 transition hover:ring-teal-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-950 dark:ring-teal-900 dark:hover:ring-teal-700" @click="openTaskVisualRefinementTab">
-                      <UIcon name="i-lucide-panels-top-left" class="size-5 shrink-0 text-teal-700 dark:text-teal-300" />
-                      <span class="min-w-0">
-                        <span class="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ t.visualRefinementCta }}</span>
                       </span>
                       <UIcon name="i-lucide-chevron-right" class="ml-auto size-4 shrink-0 text-zinc-400" />
                     </button>
@@ -8358,28 +8351,17 @@ const humanError = (error: unknown) => {
             </section>
 
             <section
-              v-if="visualRefinementOpen"
-              id="task-panel-visual"
+              v-if="selectedTaskId && activeTaskTab === 'showroom'"
+              id="task-panel-showroom"
               role="tabpanel"
-              aria-labelledby="task-tab-visual"
+              aria-labelledby="task-tab-showroom"
               class="min-w-0"
-              :class="activeTaskTab === 'visual' ? '' : 'hidden'"
             >
-              <TaskVisualRefinementPanel
+              <TaskShowroomPanel
+                :key="selectedTaskId"
+                :task-id="selectedTaskId"
                 :locale="locale"
-                :runs="visualRefinementPanelRuns"
-                :current-run="selectedVisualRefinementPanelRun"
                 :initial-brief="taskForm.description"
-                :busy="refinementBusy || taskSubmitting"
-                :task-ready="Boolean(taskForm.title.trim())"
-                :can-comment="selectedTaskVisualRefinement?.id === latestCompletedVisualRefinement?.id && !activeTaskRefinement"
-                @start="startTaskVisualRefinement"
-                @apply="applyTaskVisualRefinement"
-                @iterate="iterateTaskVisualRefinement"
-                @select-run="selectedVisualRefinementId = $event"
-                @add-comment="createVisualRefinementComment"
-                @update-comment="updateVisualRefinementComment"
-                @request-task-details="focusTaskTitleForRefinement"
               />
             </section>
 

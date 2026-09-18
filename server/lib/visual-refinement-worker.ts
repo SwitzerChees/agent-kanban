@@ -29,6 +29,7 @@ import {
 } from './task-harness-sandbox';
 import type { Issue } from './types';
 import { loadWorkflow } from './workflow';
+import { hydrateTaskShowroomWorktree, publishTaskShowroomBundle, taskShowroomCategory } from './task-showroom';
 
 const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024;
 
@@ -51,6 +52,17 @@ const manifestSchema = z.object({
 
 type VisualManifest = z.infer<typeof manifestSchema>;
 
+const showroomManifestSchema = z.object({
+  summary: z.string().trim().min(1).max(5000),
+  implementationNotes: z.array(z.string().trim().min(1).max(2000)).max(20).default([]),
+  views: z.array(z.object({
+    title: z.string().trim().min(1).max(200),
+    path: z.string().trim().min(1).max(400),
+  }).strict()).min(1).max(12),
+}).strict();
+
+type ShowroomVisualManifest = z.infer<typeof showroomManifestSchema>;
+
 export async function processClaimedVisualRefinement(context: RefinementContext, signal: AbortSignal) {
   const worktree = await prepareTaskWorktree({
     projectPath: context.projectFolderPath,
@@ -68,7 +80,11 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
   const workspacePath = agentsContext.path ? path.dirname(agentsContext.path) : worktree.projectPath;
   const artifactDirectory = path.join(workspacePath, '.agent-kanban', 'visual-refinements', context.id);
   const manifestPath = path.join(artifactDirectory, 'manifest.json');
+  const version = context.version ?? 1;
+  const category = taskShowroomCategory(context.taskKey, context.taskTitle);
+  const showroomDirectory = path.join(workspacePath, 'showroom', category, `v${version}`);
   await mkdir(artifactDirectory, { recursive: true });
+  await hydrateTaskShowroomWorktree(context.projectFolderPath, workspacePath);
 
   const workflow = await loadWorkflow();
   const config = resolveServiceConfig(workflow);
@@ -88,7 +104,7 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
     created_at: null,
     updated_at: null,
   };
-  const prompt = buildVisualRefinementPrompt(context, manifestPath, artifactDirectory);
+  const prompt = buildVisualRefinementPrompt(context, manifestPath, showroomDirectory);
 
   runtimeLogger.info('visual refinement started', {
     refinement_id: context.id,
@@ -135,8 +151,8 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
           shouldContinue: () => false,
           completionCheck: async () => {
             try {
-              await readVisualManifest(manifestPath, workspacePath);
-              return { ok: true, message: 'visual refinement manifest and screenshots verified' };
+              await readShowroomVisualManifest(manifestPath, workspacePath, category, version);
+              return { ok: true, message: 'showroom prototype manifest and HTML views verified' };
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
               return {
@@ -145,7 +161,7 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
                 prompt: [
                   'The visual refinement is not complete yet.',
                   `Fix this validation problem: ${message}`,
-                  `Then write the required manifest to ${manifestPath} and ensure every screenshot path exists.`,
+                  `Then write the required manifest to ${manifestPath} and ensure every listed Showroom HTML view exists.`,
                 ].join('\n'),
               };
             }
@@ -173,20 +189,36 @@ export async function processClaimedVisualRefinement(context: RefinementContext,
       });
     } catch (error) {
       if (signal.aborted) throw error;
-      const recovered = await recoverVisualManifest(manifestPath, artifactDirectory, workspacePath);
-      if (!recovered) throw error;
-      runtimeLogger.warn('visual refinement recovered after agent session failure', {
+      await readShowroomVisualManifest(manifestPath, workspacePath, category, version).catch(() => { throw error; });
+      runtimeLogger.warn('showroom refinement completed despite an interrupted agent session', {
         refinement_id: context.id,
         task_id: context.taskId,
-        artifacts: recovered.artifacts.length,
         error: error instanceof Error ? error.message : String(error),
       });
     }
 
-    const manifest = await readVisualManifest(manifestPath, workspacePath);
-    const visuals = await persistVisualArtifacts(context, manifest, workspacePath);
+    const manifest = await readShowroomVisualManifest(manifestPath, workspacePath, category, version);
+    await publishTaskShowroomBundle({
+      taskId: context.taskId,
+      projectId: context.projectId,
+      projectFolderPath: context.projectFolderPath,
+      taskKey: context.taskKey,
+      taskTitle: context.taskTitle,
+      requestedBy: context.requestedBy,
+      version,
+      worktreeRoot: workspacePath,
+      viewPaths: manifest.views.map(view => view.path),
+    });
+    const visuals: RefinementVisual[] = manifest.views.map(view => ({
+      fileName: path.basename(view.path),
+      mimeType: 'text/html',
+      title: view.title,
+      route: view.path,
+      showroomPath: view.path,
+      createdAt: new Date().toISOString(),
+    }));
     completeRefinement(context.id, {
-      resultMarkdown: renderVisualRefinementMarkdown(manifest),
+      resultMarkdown: renderShowroomRefinementMarkdown(manifest),
       complexity: visuals.length > 3 ? 'complex' : 'moderate',
       visuals,
       threadId: context.threadId,
@@ -221,7 +253,7 @@ export function buildVisualRefinementPrompt(context: RefinementContext, manifest
       }).join('\n')
     : '- No previous visual feedback; create the first proposal.';
   return [
-    `Create visual refinement V${context.version ?? 1} for ${context.taskKey}: ${context.taskTitle}`,
+    `Create Showroom prototype V${context.version ?? 1} for ${context.taskKey}: ${context.taskTitle}`,
     '',
     'Task context:',
     context.taskDescription?.trim() || '(no task description)',
@@ -229,30 +261,27 @@ export function buildVisualRefinementPrompt(context: RefinementContext, manifest
     'Visual goal:',
     context.brief?.trim() || context.taskDescription?.trim() || context.taskTitle,
     '',
-    'Requested captures:',
+    'Requested responsive coverage:',
     requestedViews,
     '',
-    'Feedback to incorporate:',
+    'Earlier task feedback to incorporate:',
     feedback,
     '',
-    'Work directly in this persistent task-owned worktree. Inspect the real application, implement a focused UI proposal using its existing design system, run the application, and use agent-browser to capture the resulting real UI. This is a proposal branch: never merge, deploy, or restart production.',
-    'When useful, capture the unchanged baseline before editing so the review can compare before and after. Keep the UI calm and concise, preserve unrelated worktree changes, and validate the rendered result at the requested viewports.',
+    'Create a focused, interactive UI prototype as standalone HTML in the project Showroom. Inspect the real application and its existing design system for context, but do not modify the application itself. Infer the useful views, view names, navigation, and states from the task; the user must not have to specify folders or filenames.',
+    'Each HTML view must work directly in the Showroom iframe, use only local CSS, JavaScript, and assets, and remain useful at the requested desktop and mobile widths. Do not use external APIs, CDNs, remote fonts, analytics, storage, authentication, or network requests. Preserve all existing files and earlier versions.',
     '',
-    `Save screenshots below ${artifactDirectory}.`,
-    `Write the manifest exactly to ${manifestPath} as soon as the first complete target screenshot set exists. Keep it valid and update it immediately when a screenshot changes; do not postpone it until after optional checks.`,
+    `Create the complete prototype bundle below ${artifactDirectory}.`,
+    `Write the manifest exactly to ${manifestPath} as soon as the first complete set of views exists. Keep it valid and update it immediately when a view changes; do not postpone it until after optional checks.`,
     'The manifest must be strict JSON with this shape:',
     '{',
-    '  "summary": "Short description of the approved visual direction",',
+    '  "summary": "Short description of the visual direction",',
     '  "implementationNotes": ["Concrete visible behavior or implementation note"],',
-    '  "artifacts": [{',
-    '    "title": "View name", "caption": "What this screen demonstrates",',
-    '    "route": "/real/route", "viewport": "1440 × 900", "width": 1440, "height": 900,',
-    '    "screenshotPath": "absolute or workspace-relative .png/.jpg/.webp path",',
-    '    "baselinePath": "optional absolute or workspace-relative baseline path, otherwise null"',
+    '  "views": [{',
+    `    "title": "View name", "path": "${taskShowroomCategory(context.taskKey, context.taskTitle)}/v${context.version ?? 1}/view-name.html"`,
     '  }]',
     '}',
     '',
-    'Do not finish until the screenshots exist and the manifest parses as strict JSON.',
+    'Every view path must be relative to showroom/, remain inside the exact generated category/version directory, and end in .html. Do not finish until every listed view and its local assets exist and the manifest parses as strict JSON.',
   ].join('\n');
 }
 
@@ -261,12 +290,38 @@ export function visualRuntimeInstructions() {
     'Visual refinement runtime:',
     '- You are in the task-owned isolated worktree. Never edit or operate on the main checkout.',
     '- Preserve all existing changes. Never reset, clean, force-checkout, merge, deploy, or restart production.',
-    '- Start the proposal app on a free non-production port. Never bind port 3000 and never stop the production service.',
-    '- Use agent-browser for browser interaction and screenshots of the real running application. Always reuse the injected `AGENT_BROWSER_SESSION`; do not create a second named browser session. If the direct agent-browser wrapper is unavailable, use `npx --yes agent-browser`; on hosts where Chromium reports no usable sandbox, launch the browser with `--args "--no-sandbox"`.',
-    '- Keep generated evidence inside the requested visual-refinement artifact directory.',
-    '- The rendered proposal and its manifest are the deliverable. Do not run repository-wide lint, typecheck, test, audit, or production-build suites for a visual refinement. Use only lightweight checks needed to render and inspect the changed screens.',
-    '- Close the browser session and stop temporary development servers as soon as the screenshots and manifest are complete. Never keep them running during an optional memory-intensive command.',
+    '- Build only the requested standalone Showroom HTML bundle. Never bind port 3000 and never stop the production service.',
+    '- You may use agent-browser to inspect the prototype at desktop and mobile widths. Always reuse the injected `AGENT_BROWSER_SESSION`; do not create a second named browser session.',
+    '- Keep generated Showroom files and the requested manifest inside the task worktree.',
+    '- The interactive Showroom bundle and its manifest are the deliverable. Do not run repository-wide lint, typecheck, test, audit, or production-build suites. Use only lightweight checks needed to inspect the standalone views.',
+    '- Close the browser session and stop temporary servers as soon as the views and manifest are complete.',
   ].join('\n');
+}
+
+export async function readShowroomVisualManifest(
+  manifestPath: string,
+  workspacePath: string,
+  category: string,
+  version: number,
+): Promise<ShowroomVisualManifest> {
+  const manifestFile = await safeWorkspaceFile(manifestPath, workspacePath, false);
+  let value: unknown;
+  try {
+    value = JSON.parse(await readFile(manifestFile, 'utf8'));
+  } catch (error) {
+    throw new Error(`visual_manifest_invalid_json:${error instanceof Error ? error.message : String(error)}`);
+  }
+  const manifest = showroomManifestSchema.parse(value);
+  const prefix = `${category}/v${version}/`;
+  const uniquePaths = new Set<string>();
+  for (const view of manifest.views) {
+    if (!view.path.startsWith(prefix) || !/\.html?$/i.test(view.path) || uniquePaths.has(view.path)) {
+      throw new Error(`showroom_view_path_invalid:${view.path}`);
+    }
+    uniquePaths.add(view.path);
+    await safeWorkspaceFile(path.join(workspacePath, 'showroom', view.path), workspacePath, false);
+  }
+  return manifest;
 }
 
 export async function readVisualManifest(manifestPath: string, workspacePath: string): Promise<VisualManifest> {
@@ -512,6 +567,22 @@ function renderVisualRefinementMarkdown(manifest: VisualManifest) {
   ];
   if (manifest.implementationNotes.length) {
     sections.push('', '### Umsetzungshinweise', '', ...manifest.implementationNotes.map((note) => `- ${note}`));
+  }
+  return sections.join('\n').trim();
+}
+
+function renderShowroomRefinementMarkdown(manifest: ShowroomVisualManifest) {
+  const sections = [
+    '## Showroom-Entwurf',
+    '',
+    manifest.summary,
+    '',
+    '### Ansichten',
+    '',
+    ...manifest.views.map(view => `- **${view.title}** · \`${view.path}\``),
+  ];
+  if (manifest.implementationNotes.length) {
+    sections.push('', '### Umsetzungshinweise', '', ...manifest.implementationNotes.map(note => `- ${note}`));
   }
   return sections.join('\n').trim();
 }

@@ -4,7 +4,7 @@ import { createError } from 'h3';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema, sqliteDatabase as sql } from './db';
-import { createTask, getProject, logTaskActivity } from './kanban';
+import { authorizeTaskAccess, createTask, getProject, logTaskActivity } from './kanban';
 import type { User } from './db/schema';
 import type { ShowroomAnchor, ShowroomFeedback, ShowroomIteration, ShowroomLibrary, ShowroomShare, ShowroomView } from '../../shared/showroom';
 import { createShowroomFolder, digest, readShowroomFiles, showroomCategory, showroomPath } from './showroom-files';
@@ -160,7 +160,7 @@ export const anchorInput = z.object({
 export const feedbackInput = z.object({
   previewToken: z.string().length(43), viewPath: z.string().max(400),
   authorName: z.string().trim().min(1).max(80), body: z.string().trim().min(1).max(10000),
-  anchor: anchorInput.nullable().default(null), requestId: z.string().uuid(),
+  anchor: anchorInput.nullable().default(null), requestId: z.string().uuid(), taskId: z.string().uuid().nullable().default(null),
 });
 export function addShowroomFeedback(projectId: string, input: z.infer<typeof feedbackInput>, user?: User, share?: ShareRow) {
   const parsed = feedbackInput.parse(input);
@@ -170,14 +170,22 @@ export function addShowroomFeedback(projectId: string, input: z.infer<typeof fee
   if (cap.projectId !== projectId || (user ? cap.userId !== user.id : cap.shareId !== share!.id)) fail('showroom_preview_forbidden', 403);
   const asset = showroomAsset(parsed.previewToken, parsed.viewPath);
   if (!isHtml(parsed.viewPath)) fail('showroom_invalid_view');
+  if (parsed.taskId) {
+    if (!user) fail('showroom_task_feedback_forbidden', 403);
+    const target = authorizeTaskAccess(parsed.taskId, user);
+    if (target.task.projectId !== projectId) fail('showroom_task_feedback_forbidden', 403);
+  }
   const existing = one<{ id: string }>('SELECT id FROM showroom_feedback WHERE project_id = ? AND request_id = ?', projectId, parsed.requestId);
   if (existing) return { id: existing.id };
   if (one<{ count: number }>('SELECT COUNT(*) count FROM showroom_feedback WHERE project_id = ?', projectId).count >= 10000) fail('showroom_feedback_limit', 413);
   const id = randomUUID();
-  sql.prepare('INSERT INTO showroom_feedback VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)')
+  sql.prepare(`INSERT INTO showroom_feedback
+    (id, project_id, snapshot_id, view_path, view_hash, share_id, author_name, body, anchor, status, task_id, request_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)`)
     .run(id, projectId, asset.snapshotId, parsed.viewPath, asset.hash, share?.id ?? null,
-      user?.name ?? parsed.authorName, parsed.body, parsed.anchor ? JSON.stringify(parsed.anchor) : null, 'open', parsed.requestId, now());
-  logTaskActivity(projectId, null, user?.id ?? null, 'showroom_feedback_created', { id, viewPath: parsed.viewPath, shareId: share?.id ?? null });
+      user?.name ?? parsed.authorName, parsed.body, parsed.anchor ? JSON.stringify(parsed.anchor) : null,
+      parsed.taskId, parsed.requestId, now());
+  logTaskActivity(projectId, parsed.taskId, user?.id ?? null, 'showroom_feedback_created', { id, viewPath: parsed.viewPath, shareId: share?.id ?? null });
   return { id };
 }
 export function listShowroomFeedback(projectId: string, user: User): ShowroomFeedback[] {

@@ -35,4 +35,24 @@ CREATE TABLE IF NOT EXISTS showroom_feedback (
  UNIQUE(project_id, request_id)
 );
 CREATE INDEX IF NOT EXISTS showroom_feedback_project ON showroom_feedback(project_id, created_at);
+CREATE TABLE IF NOT EXISTS task_showroom_links (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL CHECK(kind IN ('category', 'view')),
+ target_path TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'follow' CHECK(mode IN ('follow', 'pinned')),
+ snapshot_id TEXT REFERENCES showroom_snapshots(id) ON DELETE SET NULL,
+ created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+ UNIQUE(task_id, kind, target_path)
+);
+CREATE INDEX IF NOT EXISTS idx_task_showroom_links_task ON task_showroom_links(task_id, created_at);
+CREATE TABLE IF NOT EXISTS task_showroom_specs (
+ id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ version INTEGER NOT NULL, snapshot_id TEXT NOT NULL REFERENCES showroom_snapshots(id),
+ entries_json TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+ created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+ active INTEGER NOT NULL DEFAULT 1,
+ UNIQUE(task_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_task_showroom_specs_task ON task_showroom_specs(task_id, version DESC);
 `;
