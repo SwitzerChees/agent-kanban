@@ -5,7 +5,6 @@ import * as Y from 'yjs';
 import {
   createWikiCollaborationDocument,
   serializeWikiCollaborationDocument,
-  WIKI_COLLABORATION_META,
 } from '../../utils/wiki-collaboration-document';
 import type { WikiCollaborationLease } from '../../utils/wiki-collaboration-blocks';
 import { canonicalizeWikiReferences } from '../../utils/wiki-references';
@@ -169,12 +168,11 @@ export function applyWikiCollaborationUpdate(pageId: string, sessionId: string, 
   }
 
   const snapshot = serializeWikiCollaborationDocument(candidate);
-  const title = snapshot.title.trim() || page.title;
-  if (title.length > MAX_WIKI_TITLE_LENGTH) {
+  if (snapshot.title.length > MAX_WIKI_TITLE_LENGTH) {
     candidate.destroy();
     throw createError({ statusCode: 413, statusMessage: 'wiki_title_too_long' });
   }
-  if (snapshot.title !== title) candidate.getMap<string>(WIKI_COLLABORATION_META).set('title', title);
+  const title = snapshot.title.trim() || page.title;
   const content = normalizeCollaborationContent(page.projectId, snapshot.content);
   if (content.length > MAX_WIKI_CONTENT_LENGTH) {
     candidate.destroy();

@@ -101,6 +101,26 @@ describe('collaborative wiki documents', () => {
       .toContain('Then deploy together.');
   });
 
+  test('preserves title whitespace in the live draft while storing a normalized page title', () => {
+    const page = wiki.createWikiPage(projectId, { title: 'Release', content: '' }, admin);
+    const session = collaboration.createWikiCollaborationSession(page.id, 'title-draft-client', admin);
+    const document = decodeDocument(session.state);
+    const stateVector = Y.encodeStateVector(document);
+    document.getMap<string>(WIKI_COLLABORATION_META).set('title', 'Release notes ');
+
+    const response = collaboration.applyWikiCollaborationUpdate(
+      page.id,
+      session.sessionId,
+      encodeUpdate(Y.encodeStateAsUpdate(document, stateVector)),
+      admin,
+    );
+
+    expect(response.page.title).toBe('Release notes');
+    expect(wiki.getWikiPage(page.id, admin).title).toBe('Release notes');
+    const liveDraft = collaboration.createWikiCollaborationSession(page.id, 'title-draft-observer', member);
+    expect(serializeWikiCollaborationDocument(decodeDocument(liveDraft.state)).title).toBe('Release notes ');
+  });
+
   test('grants one short-lived block lease and releases it when the holder leaves', () => {
     const page = wiki.createWikiPage(projectId, { title: 'Lease page', content: 'One block' }, admin);
     const first = collaboration.createWikiCollaborationSession(page.id, 'lease-first', admin);
