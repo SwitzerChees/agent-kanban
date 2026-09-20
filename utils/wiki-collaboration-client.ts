@@ -1,4 +1,4 @@
-import { PageEventSource } from './page-event-source';
+import { RealtimeChannel, sendRealtimeRequest } from './realtime-channel';
 import * as Y from 'yjs';
 import { WIKI_COLLABORATION_META } from './wiki-collaboration-document';
 import type { WikiCollaborationLease } from './wiki-collaboration-blocks';
@@ -82,13 +82,17 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
   let flushing = false;
   let flushPromise: Promise<void> | null = null;
   let recoveryPromise: Promise<void> | null = null;
-  let source: PageEventSource | null = null;
+  let source: RealtimeChannel | null = null;
   let updateTimer: ReturnType<typeof setTimeout> | null = null;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let updateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let presenceRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  let presencePromise: Promise<void> | null = null;
+  let presenceRevision = 0;
   let queuedUpdates: Uint8Array[] = [];
   let inFlightUpdate: Uint8Array | null = null;
-  let retryDelayMs = RETRY_INITIAL_MS;
+  let updateRetryDelayMs = RETRY_INITIAL_MS;
+  let presenceRetryDelayMs = RETRY_INITIAL_MS;
   let desiredPresence = { editing: false, blockId: null as string | null };
 
   const storedOutbox = loadOutbox(pageId, clientId);
@@ -105,7 +109,8 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
   const requestReload = () => {
     if (closed || reloading) return;
     reloading = true;
-    clearRetry();
+    clearUpdateRetry();
+    clearPresenceRetry();
     options.onReload();
   };
 
@@ -128,24 +133,43 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
     scheduleFlush();
   };
 
-  const clearRetry = () => {
-    if (retryTimer) clearTimeout(retryTimer);
-    retryTimer = null;
+  const clearUpdateRetry = () => {
+    if (updateRetryTimer) clearTimeout(updateRetryTimer);
+    updateRetryTimer = null;
   };
 
-  const resetRetry = () => {
-    clearRetry();
-    retryDelayMs = RETRY_INITIAL_MS;
+  const clearPresenceRetry = () => {
+    if (presenceRetryTimer) clearTimeout(presenceRetryTimer);
+    presenceRetryTimer = null;
   };
 
-  const scheduleRetry = () => {
-    if (retryTimer || closed || closing || reloading) return;
-    const delay = retryDelayMs;
-    retryDelayMs = Math.min(RETRY_MAX_MS, retryDelayMs * 2);
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      if (queuedUpdates.length) void flush();
-      else void sendPresence();
+  const resetUpdateRetry = () => {
+    clearUpdateRetry();
+    updateRetryDelayMs = RETRY_INITIAL_MS;
+  };
+
+  const resetPresenceRetry = () => {
+    clearPresenceRetry();
+    presenceRetryDelayMs = RETRY_INITIAL_MS;
+  };
+
+  const scheduleUpdateRetry = () => {
+    if (updateRetryTimer || closed || closing || reloading || !queuedUpdates.length) return;
+    const delay = updateRetryDelayMs;
+    updateRetryDelayMs = Math.min(RETRY_MAX_MS, updateRetryDelayMs * 2);
+    updateRetryTimer = setTimeout(() => {
+      updateRetryTimer = null;
+      void flush();
+    }, delay);
+  };
+
+  const schedulePresenceRetry = () => {
+    if (presenceRetryTimer || closed || closing || reloading) return;
+    const delay = presenceRetryDelayMs;
+    presenceRetryDelayMs = Math.min(RETRY_MAX_MS, presenceRetryDelayMs * 2);
+    presenceRetryTimer = setTimeout(() => {
+      presenceRetryTimer = null;
+      void sendPresence();
     }, delay);
   };
 
@@ -171,16 +195,17 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
       inFlightUpdate = update;
       persistOutbox();
       try {
-        const response = await $fetch<{ page: WikiCollaborationPageUpdate } & WikiCollaborationPresence>(`/api/wiki-pages/${pageId}/collaboration/updates`, {
-          method: 'POST',
-          body: { sessionId: session.sessionId, update: encodeUpdate(update) },
+        const response = await sendRealtimeRequest<{ page: WikiCollaborationPageUpdate } & WikiCollaborationPresence>('wiki_update', {
+          pageId,
+          sessionId: session.sessionId,
+          update: encodeUpdate(update),
         });
         inFlightUpdate = null;
         persistOutbox();
         options.onPage(response.page);
         applyPresence(response);
-        resetRetry();
-        options.onStatus(queuedUpdates.length ? 'syncing' : 'connected');
+        resetUpdateRetry();
+        options.onStatus(queuedUpdates.length ? 'syncing' : source?.isConnected() ? 'connected' : 'connecting');
       } catch (error) {
         inFlightUpdate = null;
         queuedUpdates.unshift(update);
@@ -188,7 +213,7 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
         options.onStatus('offline');
         if (isSessionExpired(error) && !closing) void recoverSession();
         else if (isCollaborationReset(error)) requestReload();
-        else scheduleRetry();
+        else scheduleUpdateRetry();
       } finally {
         flushing = false;
       }
@@ -197,7 +222,7 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
       await flushPromise;
     } finally {
       flushPromise = null;
-      if (queuedUpdates.length && !closed && !reloading && !retryTimer) scheduleFlush();
+      if (queuedUpdates.length && !closed && !reloading && !updateRetryTimer) scheduleFlush();
     }
   };
 
@@ -210,27 +235,49 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
   };
 
   const sendPresence = async () => {
+    if (recoveryPromise) await recoveryPromise;
     if (closed || closing || reloading) return;
+    if (presencePromise) return presencePromise;
     if (presenceTimer) clearTimeout(presenceTimer);
     presenceTimer = null;
+    const sentRevision = presenceRevision;
+    const presence = { ...desiredPresence };
+    presencePromise = (async () => {
+      try {
+        const response = await sendRealtimeRequest<WikiCollaborationPresence>('wiki_presence', {
+          pageId,
+          sessionId: session.sessionId,
+          ...presence,
+        });
+        applyPresence(response);
+        resetPresenceRetry();
+        if (!queuedUpdates.length && !inFlightUpdate) {
+          options.onStatus(source?.isConnected() ? 'connected' : 'connecting');
+        }
+      } catch (error) {
+        options.onStatus('offline');
+        if (isSessionExpired(error)) void recoverSession();
+        else if (isCollaborationReset(error)) requestReload();
+        else schedulePresenceRetry();
+      }
+    })();
     try {
-      const response = await $fetch<WikiCollaborationPresence>(`/api/wiki-pages/${pageId}/collaboration/presence`, {
-        method: 'PATCH',
-        body: { sessionId: session.sessionId, ...desiredPresence },
-      });
-      applyPresence(response);
-      resetRetry();
-      if (!queuedUpdates.length && !inFlightUpdate) options.onStatus('connected');
-    } catch (error) {
-      options.onStatus('offline');
-      if (isSessionExpired(error)) void recoverSession();
-      else if (isCollaborationReset(error)) requestReload();
-      else scheduleRetry();
+      await presencePromise;
+    } finally {
+      presencePromise = null;
+      if (presenceRevision !== sentRevision && !closed && !closing && !reloading) {
+        if (presenceTimer) clearTimeout(presenceTimer);
+        presenceTimer = setTimeout(() => {
+          presenceTimer = null;
+          void sendPresence();
+        }, 0);
+      }
     }
   };
 
   const setPresence = (editing: boolean, blockId: string | null = null) => {
     desiredPresence = { editing, blockId: editing ? blockId : null };
+    presenceRevision += 1;
     if (presenceTimer) clearTimeout(presenceTimer);
     presenceTimer = setTimeout(() => {
       presenceTimer = null;
@@ -238,14 +285,16 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
     }, PRESENCE_DEBOUNCE_MS);
   };
 
-  const openEventSource = () => {
+  const openRealtimeChannel = () => {
     source?.close();
-    source = new PageEventSource(`/api/wiki-pages/${pageId}/collaboration/events?sessionId=${encodeURIComponent(session.sessionId)}`);
+    source = new RealtimeChannel('wiki', () => ({ pageId, sessionId: session.sessionId }));
     source.addEventListener('todo_changed', () => { if (!closed) options.onTodoChange?.(); });
     source.addEventListener('ready', () => {
       // Reload TODOs after every connection, including changes missed offline.
       options.onTodoChange?.();
-      if (!queuedUpdates.length && !inFlightUpdate) options.onStatus('connected');
+      if (!queuedUpdates.length && !inFlightUpdate) {
+        options.onStatus(source?.isConnected() ? 'connected' : 'connecting');
+      }
     });
     source.addEventListener('sync', (event) => {
       const payload = eventPayload<SessionResponse>(event);
@@ -253,7 +302,9 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
       Y.applyUpdate(document, decodeUpdate(payload.state), REMOTE_ORIGIN);
       options.onPage(payload.page);
       applyPresence(payload);
-      if (!queuedUpdates.length && !inFlightUpdate) options.onStatus('connected');
+      if (!queuedUpdates.length && !inFlightUpdate) {
+        options.onStatus(source?.isConnected() ? 'connected' : 'connecting');
+      }
     });
     source.addEventListener('update', (event) => {
       const payload = eventPayload<{ generation: string; update: string; page: WikiCollaborationPageUpdate }>(event);
@@ -267,8 +318,11 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
       if (payload) applyPresence(payload);
     });
     source.addEventListener('reload', () => requestReload());
-    source.onerror = () => {
-      if (!closed && !reloading) options.onStatus('offline');
+    source.onerror = (event) => {
+      if (closed || reloading) return;
+      options.onStatus('offline');
+      const payload = eventPayload<{ code?: string }>(event);
+      if (payload?.code?.includes('session_expired')) void recoverSession();
     };
   };
 
@@ -293,18 +347,20 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
         Y.applyUpdate(document, decodeUpdate(replacement.state), REMOTE_ORIGIN);
         options.onPage(replacement.page);
         applyPresence(replacement);
-        resetRetry();
-        openEventSource();
+        resetUpdateRetry();
+        resetPresenceRetry();
+        openRealtimeChannel();
         setPresence(desiredPresence.editing, desiredPresence.blockId);
         if (queuedUpdates.length) {
           options.onStatus('syncing');
           scheduleFlush(0);
         } else {
-          options.onStatus('connected');
+          options.onStatus(source?.isConnected() ? 'connected' : 'connecting');
         }
       } catch {
         options.onStatus('offline');
-        scheduleRetry();
+        if (queuedUpdates.length) scheduleUpdateRetry();
+        else schedulePresenceRetry();
       }
     })();
     try {
@@ -316,7 +372,8 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
 
   const handleOnline = () => {
     if (closed || closing || reloading) return;
-    resetRetry();
+    resetUpdateRetry();
+    resetPresenceRetry();
     options.onStatus(queuedUpdates.length ? 'syncing' : 'connecting');
     if (queuedUpdates.length) void flush();
     else void sendPresence();
@@ -326,7 +383,7 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
   window.addEventListener('online', handleOnline);
   document.on('update', onDocumentUpdate);
   titleMap.observe(onTitleChange);
-  openEventSource();
+  openRealtimeChannel();
   options.onPage(session.page);
   applyPresence(session);
   onTitleChange();
@@ -334,13 +391,13 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
     options.onStatus('syncing');
     scheduleFlush(0);
   } else {
-    options.onStatus('connected');
+    options.onStatus('connecting');
   }
 
   return {
     document,
     get sessionId() { return session.sessionId; },
-    isConnected: () => !closed && source?.readyState === EventSource.OPEN,
+    isConnected: () => !closed && (source?.isConnected() ?? false),
     setTitle(title) {
       if (String(titleMap.get('title') ?? '') === title) return;
       titleMap.set('title', title);
@@ -351,16 +408,21 @@ export async function openWikiCollaboration(pageId: string, options: WikiCollabo
       if (closed) return;
       closing = true;
       if (updateTimer) clearTimeout(updateTimer);
-      clearRetry();
+      clearUpdateRetry();
+      clearPresenceRetry();
       if (presenceTimer) clearTimeout(presenceTimer);
       clearInterval(heartbeat);
       window.removeEventListener('online', handleOnline);
-      source?.close();
       await flush();
+      try {
+        await sendRealtimeRequest('wiki_close', { pageId, sessionId: session.sessionId }, 2_000);
+      } catch {
+        // The short server lease releases presence after an abrupt disconnect.
+      }
+      source?.close();
       closed = true;
       document.off('update', onDocumentUpdate);
       titleMap.unobserve(onTitleChange);
-      await deleteSession(pageId, session.sessionId);
       document.destroy();
     },
   };
@@ -370,6 +432,7 @@ function createSession(pageId: string, clientId: string) {
   return $fetch<SessionResponse>(`/api/wiki-pages/${pageId}/collaboration/session`, {
     method: 'POST',
     body: { clientId },
+    timeout: 10_000,
   });
 }
 

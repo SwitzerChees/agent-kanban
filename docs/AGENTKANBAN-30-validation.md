@@ -2,9 +2,9 @@
 
 Implemented on 2026-09-11.
 
-Project-scoped TODO invalidations share the existing Wiki collaboration stream after committed list/item creation, editing, completion, reordering, and deletion. There is no separate TODO SSE connection. Reconnection reloads the current snapshot; disconnected clients and failed snapshot requests retry every five seconds while visible. Requests are cancelled and guarded against late responses on project changes and unmount. Snapshot updates preserve mounted item drafts and each list's local filter/collapse state.
+Project-scoped TODO invalidations share the existing Wiki collaboration channel after committed list/item creation, editing, completion, reordering, and deletion. There is no separate TODO connection. Reconnection reloads the current snapshot; disconnected clients and failed snapshot requests retry every five seconds while visible. Requests are cancelled and guarded against late responses on project changes and unmount. Snapshot updates preserve mounted item drafts and each list's local filter/collapse state.
 
-UI event streams use `PageEventSource`, which closes the underlying connection while a tab is hidden and on pagehide/freeze, then restores its listeners when the tab becomes visible or resumes. The completion-notification stream opts out of hidden-tab suspension so system notifications still arrive while the app is minimized. Explicitly closed components stay closed. Chat reconnection uses its latest received event cursor. Wiki reconnects with a current synchronization snapshot. This prevents background and cached documents from retaining scarce HTTP/1 connections after a tab switch or navigation without disabling background alerts.
+All UI realtime channels use one `RealtimeConnection` WebSocket per browser tab. Wiki collaboration, TODO invalidations, task activity, private chat, and completion notifications subscribe over that socket. The connection automatically resubscribes after network or server interruptions, and chat resumes from its latest event cursor. Wiki writes use request acknowledgements and a persistent per-tab outbox, so an unconfirmed edit is retried after reconnect. A lost in-memory Wiki session is recreated without discarding its queued Yjs update. Application ping/pong detects half-open connections, and request IDs make reconnect retries idempotent.
 
 The default **Aktuell / Current** filter includes all open items and items completed on the browser's local calendar day. It refreshes at midnight and when tab visibility changes, including daylight-saving transitions. Existing filters remain available. Repeated completion and edits preserve the original completion date; reopening clears it.
 
@@ -12,7 +12,7 @@ Editing captures the item's original revision. A changed or deleted remote item 
 
 ## Verification
 
-- Full Vitest suite: 50 files, 261 tests passed.
+- Full Vitest suite: 52 files, 270 tests passed.
 - Nuxt typecheck and production build passed.
 - Regression tests cover local midnight, both daylight-saving transitions, completion dates, same-millisecond conflicts, project-scoped committed events, late snapshot responses, navigation/unmount cleanup, reconnect, disconnected polling, and retry after snapshot failure.
 - Built Node server tested on port 3107 with an isolated SQLite database and two separate browser sessions (admin and project member).
@@ -42,7 +42,7 @@ The repeatable regression script `scripts/test-wiki-todo-tabs.mjs` fails against
 
 The expanded test also reproduced retained event-stream connections after navigation; page lifecycle cleanup fixed that case. Successful saves in the corrected run completed in under 200 ms on the local QA server. All browser assertions use a five-second limit.
 
-A later regression exposed the remaining normal-tab-switch case: opening the Wiki and private chat in two tabs kept three streams per tab (notifications, Wiki collaboration, and chat), exhausting Chromium's six HTTP/1 connections before a reload could begin. Closing the chat panel only hid it and left its stream connected, which made the failure appear intermittent even with no visible chat. `PageEventSource` now also suspends streams on `visibilitychange` while hidden, and closing the chat panel explicitly closes its stream. Its focused regression test verifies that `pageshow`/`resume` cannot reopen a hidden tab and that the stream resumes exactly once when the tab becomes visible.
+A later regression exposed the remaining normal-tab-switch case: opening the Wiki and private chat in two tabs kept three streams per tab (notifications, Wiki collaboration, and chat), exhausting Chromium's six HTTP/1 connections before a reload could begin. Closing the chat panel only hid it and left its stream connected, which made the failure appear intermittent even with no visible chat. Suspending EventSource connections in hidden tabs reduced the symptom, but still left several independent transports and reconnect state machines.
 
 Run against an isolated built QA server (the script rejects port 3000 and non-loopback URLs):
 
@@ -53,4 +53,10 @@ KANBAN_QA_PASSWORD=your-qa-password \
 node scripts/test-wiki-todo-tabs.mjs
 ```
 
-The script creates disposable fixtures and requires `agent-browser`. The [documented EventSource connection limit](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) and [browser page lifecycle](https://developer.chrome.com/docs/web-platform/page-lifecycle-api) explain the observed behavior. The fix changes application connection management; it does not depend on enabling HTTP/2 in a proxy.
+The script creates disposable fixtures and requires `agent-browser`. The [documented EventSource connection limit](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) and [browser page lifecycle](https://developer.chrome.com/docs/web-platform/page-lifecycle-api) explain the observed behavior.
+
+## WebSocket consolidation
+
+The EventSource transports and their four server endpoints were removed. `scripts/test-realtime-websocket.mjs` verifies authentication, Origin validation, Wiki, notification, and chat subscriptions multiplexed over one physical socket, Wiki locks and updates, request de-duplication, TODO invalidation, and ping/pong. `scripts/test-realtime-restart.mjs` stops the built Node server while a page is being edited, verifies that the edit enters the persistent outbox, starts a fresh process against the same database, and confirms that the socket reconnects, recreates its collaboration session, acknowledges the queued update, and persists the title.
+
+The existing two-tab TODO regression remains part of the acceptance check. With Wiki, TODOs, notifications, task activity, and chat enabled, each tab now holds at most one realtime transport rather than one HTTP connection per feature.

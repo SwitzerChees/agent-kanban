@@ -352,6 +352,7 @@ function formatDate(value: string) {
             @keydown.down.stop.prevent="moveItemBy(item, 1)"
           ><UIcon name="i-lucide-grip-vertical" /></button>
           <input
+            :key="`${item.id}:${item.updatedAt}:${item.completed}`"
             type="checkbox"
             :checked="item.completed"
             :disabled="busyItems.has(item.id) || editingItemId === item.id"

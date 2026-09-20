@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { PageEventSource } from '~/utils/page-event-source';
+import { RealtimeChannel } from '~/utils/realtime-channel';
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
 import { commandPaletteTaskBuckets } from '~/utils/command-palette';
@@ -1243,8 +1243,8 @@ const annotationWidth = ref(5);
 const drawingStroke = ref<AnnotationStroke | null>(null);
 const annotationColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#111827'];
 let boardRefreshTimer: ReturnType<typeof setInterval> | null = null;
-let taskEventSource: PageEventSource | null = null;
-let completionEventSource: PageEventSource | null = null;
+let taskEventSource: RealtimeChannel | null = null;
+let completionEventSource: RealtimeChannel | null = null;
 let completionToastTimer: ReturnType<typeof setTimeout> | null = null;
 let completionAudioContext: AudioContext | null = null;
 const completionClaimsInFlight = new Set<number>();
@@ -2459,9 +2459,7 @@ const startCompletionNotificationStream = () => {
   if (!import.meta.client || !user.value) return;
   completionAlertsEnabled.value = localStorage.getItem(completionAlertPreferenceKey()) === 'true';
   syncCompletionNotificationPermission();
-  // Keep desktop/system completion alerts available while the app is hidden.
-  // Other page streams suspend in background tabs to preserve HTTP capacity.
-  completionEventSource = new PageEventSource('/api/notifications/events', { suspendWhenHidden: false });
+  completionEventSource = new RealtimeChannel('notifications');
   completionEventSource.addEventListener('task_completed', (event) => {
     try {
       const notification = JSON.parse((event as MessageEvent).data) as unknown;
@@ -3397,7 +3395,7 @@ const refreshTaskDetailFromActivity = (taskId: string) => {
     } while (taskDetailRefreshQueued && selectedTaskId.value === taskId);
   })()
     .catch(() => {
-      // The regular board refresh and the next SSE invalidation retry this
+      // The regular board refresh and the next realtime invalidation retry this
       // transiently. Avoid an unhandled rejection while the modal is open.
     })
     .finally(() => {
@@ -3410,7 +3408,7 @@ const refreshTaskDetailFromActivity = (taskId: string) => {
 const openTaskEventStream = (taskId: string) => {
   closeTaskEventStream();
   if (!import.meta.client) return;
-  taskEventSource = new PageEventSource(`/api/tasks/${taskId}/events`);
+  taskEventSource = new RealtimeChannel('task', { taskId });
   taskEventSource.addEventListener('activity', () => {
     if (selectedTaskId.value === taskId) void refreshTaskDetailFromActivity(taskId);
   });

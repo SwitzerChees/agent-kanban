@@ -84,6 +84,13 @@ export function getCurrentUser(event: H3Event): User | null {
   }
 
   const token = getCookie(event, COOKIE_NAME);
+  const user = authenticateSessionToken(token);
+  if (user) setAuthenticationMethod(event, 'session');
+  return user;
+}
+
+/** Authenticate the HttpOnly session cookie used during a WebSocket upgrade. */
+export function authenticateSessionToken(token: string | undefined): User | null {
   if (!token) return null;
   const now = new Date().toISOString();
   const rows = db
@@ -96,8 +103,11 @@ export function getCurrentUser(event: H3Event): User | null {
       eq(schema.users.active, true),
     ))
     .get();
-  if (rows?.user) setAuthenticationMethod(event, 'session');
   return rows?.user ?? null;
+}
+
+export function sessionCookieName() {
+  return COOKIE_NAME;
 }
 
 export function requireUser(event: H3Event): User {

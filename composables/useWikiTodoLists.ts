@@ -54,8 +54,7 @@ export function useWikiTodoLists(projectId: () => string, liveConnected: () => b
     mounted = true;
     connect();
     document.addEventListener('visibilitychange', onVisibility);
-    // Live invalidations share the Wiki stream. Do not allocate another SSE
-    // connection: two tabs would exhaust the HTTP/1 connection pool.
+    // Live invalidations share the Wiki channel on the tab's multiplexed socket.
     fallback = setInterval(() => {
       if (!document.hidden && (refreshFailed || !liveConnected())) refreshQuietly();
     }, 5_000);

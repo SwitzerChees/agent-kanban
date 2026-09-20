@@ -14,6 +14,7 @@ export default defineNuxtConfig({
   nitro: {
     experimental: {
       asyncContext: true,
+      websocket: true,
     },
   },
 });

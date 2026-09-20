@@ -17,7 +17,7 @@ Leser und Bearbeiter öffnen dasselbe kollaborative Dokument:
 3. Der Client bündelt lokale Änderungen kurz; der Server übernimmt jedes Batch atomar in einen kompakten Yjs-Gesamtzustand und aktualisiert dabei den bestehenden Markdown-Snapshot in `wiki_pages.content`.
 4. Der Read-only-Modus verwendet denselben synchronisierten Editor mit `editable: false`; damit erscheinen Änderungen ohne Polling und ohne Scroll-Sprung.
 
-Für die aktuelle Ein-Node-Produktion reicht ein pro Seite geführter In-Memory-Hub. Als Transport passt eine Kombination aus SSE und gebündelten HTTP-POSTs gut zur bestehenden Infrastruktur: SSE verteilt Updates, Presence und Locks; POST nimmt lokale Updates entgegen. Bei einer späteren horizontalen Skalierung kann derselbe Hub durch Redis/PubSub ersetzt werden.
+Für die aktuelle Ein-Node-Produktion reicht ein pro Seite geführter In-Memory-Hub. Alle Echtzeitfunktionen eines Browser-Tabs teilen einen authentifizierten, multiplexierten WebSocket. Logische Kanäle verteilen Wiki-Updates, Presence, Locks, TODO-Invalidierungen, Chat, Task-Aktivität und Benachrichtigungen; bestätigte Wiki-Schreibvorgänge laufen über denselben Socket. Bei einer späteren horizontalen Skalierung kann derselbe Hub durch Redis/PubSub ersetzt werden.
 
 ## Fein granularer Lock
 
@@ -37,7 +37,7 @@ Vorgesehen wären im Kern:
 
 - `wiki_collaboration_documents`: `page_id`, kompakter binärer Yjs-Zustand, Dokumentgeneration, Quellrevision und Snapshot-Zeitpunkt. Der Gesamtzustand macht ein separates Update-Log für die aktuelle Ein-Node-Produktion unnötig.
 - Ein `wiki-collaboration`-Service mit authentifizierten Sessions, Seitenberechtigungsprüfung, Größen-/Ratenlimits, Presence, Leases und sauberem Shutdown über die vorhandene Stream-Verwaltung.
-- Endpunkte für Session/Initial-Sync, SSE-Events, Update-Batches sowie Lease anfordern/erneuern/freigeben.
+- Einen REST-Endpunkt für Session/Initial-Sync und einen multiplexierten WebSocket für Events, bestätigte Update-Batches sowie Lease anfordern/erneuern/freigeben.
 
 `wiki_pages.content`, `updatedAt` und `updatedBy` bleiben bestehen. Der Server erzeugt pro angenommenem, clientseitig gebündeltem Update einen kanonisierten Markdown-Checkpoint. Activity-Einträge werden serverseitig entprellt, damit nicht jeder Tastendruck einen Eintrag erzeugt.
 

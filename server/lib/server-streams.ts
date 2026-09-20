@@ -16,8 +16,8 @@ export function closeServerStreams() {
 export function installServerStreamShutdown() {
   if (signalsInstalled) return;
   signalsInstalled = true;
-  // Nitro waits for open HTTP connections before it runs application close
-  // hooks. Ending long-lived SSE responses at signal time keeps deploys from
+  // Nitro waits for open connections before it runs application close hooks.
+  // Ending long-lived realtime connections at signal time keeps deploys from
   // exhausting systemd's stop timeout while a board or chat is open.
   process.prependListener('SIGTERM', closeServerStreams);
   process.prependListener('SIGINT', closeServerStreams);

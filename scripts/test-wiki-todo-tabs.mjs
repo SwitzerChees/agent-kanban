@@ -164,7 +164,7 @@ try {
 } catch (error) {
   console.error('Browser session:', session);
   console.error(browser('tab', 'list'));
-  console.error(browser('network', 'requests', '--filter', '/events'));
+  console.error(browser('network', 'requests', '--filter', '/api/realtime'));
   console.error(browser('snapshot', '-i'));
   console.error(browser('errors'));
   console.error(browser('network', 'requests', '--filter', 'wiki-todo'));
