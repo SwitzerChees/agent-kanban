@@ -1,14 +1,18 @@
-/** Releases SSE sockets when a document enters the back/forward cache. */
+/** Releases SSE sockets whenever a document is no longer the active page. */
 export class PageEventSource extends EventTarget {
   private source: EventSource | null = null;
   private closed = false;
   private eventTypes = new Set(['error']);
   onerror: ((event: Event) => void) | null = null;
 
-  constructor(private readonly url: string | (() => string)) {
+  constructor(
+    private readonly url: string | (() => string),
+    private readonly options: { suspendWhenHidden?: boolean } = {},
+  ) {
     super();
     window.addEventListener('pagehide', this.suspend);
     window.addEventListener('pageshow', this.resume);
+    if (this.suspendsWhenHidden) document.addEventListener('visibilitychange', this.syncVisibility);
     document.addEventListener('freeze', this.suspend);
     document.addEventListener('resume', this.resume);
     this.resume();
@@ -31,8 +35,13 @@ export class PageEventSource extends EventTarget {
     this.suspend();
     window.removeEventListener('pagehide', this.suspend);
     window.removeEventListener('pageshow', this.resume);
+    if (this.suspendsWhenHidden) document.removeEventListener('visibilitychange', this.syncVisibility);
     document.removeEventListener('freeze', this.suspend);
     document.removeEventListener('resume', this.resume);
+  }
+
+  private get suspendsWhenHidden() {
+    return this.options.suspendWhenHidden !== false;
   }
 
   private suspend = () => {
@@ -41,9 +50,14 @@ export class PageEventSource extends EventTarget {
   };
 
   private resume = () => {
-    if (this.closed || this.source) return;
+    if (this.closed || this.source || (this.suspendsWhenHidden && document.hidden)) return;
     this.source = new EventSource(typeof this.url === 'function' ? this.url() : this.url);
     for (const type of this.eventTypes) this.source.addEventListener(type, this.forward);
+  };
+
+  private syncVisibility = () => {
+    if (document.hidden) this.suspend();
+    else this.resume();
   };
 
   private forward = (event: Event) => {

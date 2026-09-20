@@ -11,11 +11,15 @@ class NativeSource extends EventTarget {
   constructor(public url: string) { super(); NativeSource.instances.push(this); }
 }
 let source: PageEventSource;
+let documentHidden: boolean;
 beforeEach(() => {
   NativeSource.instances = [];
+  documentHidden = false;
   vi.stubGlobal('EventSource', NativeSource);
   vi.stubGlobal('window', new EventTarget());
-  vi.stubGlobal('document', new EventTarget());
+  const documentTarget = new EventTarget();
+  Object.defineProperty(documentTarget, 'hidden', { get: () => documentHidden });
+  vi.stubGlobal('document', documentTarget);
   source = new PageEventSource('/events');
 });
 afterEach(() => { source.close(); vi.unstubAllGlobals(); });
@@ -48,6 +52,34 @@ test('supports freeze/resume and does not resume after explicit cleanup', () => 
   document.dispatchEvent(new Event('resume'));
   window.dispatchEvent(new Event('pageshow'));
   expect(NativeSource.instances).toHaveLength(2);
+});
+
+test('releases background-tab connections and resumes only when visible again', () => {
+  const first = NativeSource.instances[0]!;
+  documentHidden = true;
+  document.dispatchEvent(new Event('visibilitychange'));
+  expect(first.close).toHaveBeenCalledOnce();
+  expect(source.readyState).toBe(NativeSource.CONNECTING);
+
+  document.dispatchEvent(new Event('resume'));
+  window.dispatchEvent(new Event('pageshow'));
+  expect(NativeSource.instances).toHaveLength(1);
+
+  documentHidden = false;
+  document.dispatchEvent(new Event('visibilitychange'));
+  document.dispatchEvent(new Event('visibilitychange'));
+  expect(NativeSource.instances).toHaveLength(2);
+});
+
+test('allows streams required for background notifications to opt out', () => {
+  source.close();
+  source = new PageEventSource('/notifications', { suspendWhenHidden: false });
+  const notifications = NativeSource.instances[1]!;
+
+  documentHidden = true;
+  document.dispatchEvent(new Event('visibilitychange'));
+  expect(notifications.close).not.toHaveBeenCalled();
+  expect(source.readyState).toBe(NativeSource.OPEN);
 });
 
 test('forwards errors, preserves once listeners, and honors listener removal', () => {

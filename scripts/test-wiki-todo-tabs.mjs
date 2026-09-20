@@ -52,6 +52,15 @@ const save = async (label) => {
   browser('find', 'role', 'button', 'click', '--name', 'Save', '--exact');
   await within(label, () => evaluate('!document.querySelector(".ak-wiki-todo-edit")'));
 };
+const closeChat = async (label) => {
+  evaluate(`(() => {
+    localStorage.setItem('ak_project_chat_open', 'false');
+    const button = [...document.querySelectorAll('button')]
+      .find((element) => element.getAttribute('aria-label') === 'Close project chat');
+    button?.click();
+  })()`);
+  await within(label, () => !evaluate('Boolean(document.querySelector("[data-testid=project-chat-dock]"))'));
+};
 
 try {
   await api('auth/login', { email, password });
@@ -77,6 +86,24 @@ try {
   browser('wait', '--text', 'Same-browser TODOs');
   // Allow each tab to open all of its streams before writing.
   await delay(1000);
+  browser('find', 'role', 'button', 'click', '--name', 'Open private project chat', '--exact');
+  await within('project chat opens in second tab', () => evaluate(
+    '[...document.querySelectorAll("button")].some(el => el.getAttribute("aria-label") === "Close project chat")',
+  ));
+  browser('tab', first);
+  browser('find', 'role', 'button', 'click', '--name', 'Open private project chat', '--exact');
+  await within('project chat opens in first tab', () => evaluate(
+    '[...document.querySelectorAll("button")].some(el => el.getAttribute("aria-label") === "Close project chat")',
+  ));
+  browser('tab', 'second');
+  const reloadStartedAt = Date.now();
+  browser('reload');
+  await within('reload with Wiki and chat open in both tabs', () => listText().includes('Same-browser TODOs'));
+  assert(Date.now() - reloadStartedAt < 5000, 'reload exceeded five seconds with both tabs open');
+  await closeChat('close project chat in second tab');
+  browser('tab', first);
+  await closeChat('close project chat in first tab');
+  browser('tab', 'second');
   edit('Beta', 'Beta saved with both tabs open');
   await save('save in second tab');
   browser('tab', first);

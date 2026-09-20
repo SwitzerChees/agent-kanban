@@ -321,7 +321,10 @@ watch(() => [props.projectId, props.wikiPageId] as const, async () => {
 async function toggleDock() {
   isOpen.value = !isOpen.value;
   if (import.meta.client) localStorage.setItem('ak_project_chat_open', String(isOpen.value));
-  if (!isOpen.value) return;
+  if (!isOpen.value) {
+    closeStream();
+    return;
+  }
   await ensureCurrentChat();
   await nextTick();
   focusComposer();
@@ -330,6 +333,7 @@ async function toggleDock() {
 function closeDock() {
   isOpen.value = false;
   if (import.meta.client) localStorage.setItem('ak_project_chat_open', 'false');
+  closeStream();
 }
 
 async function ensureCurrentChat() {

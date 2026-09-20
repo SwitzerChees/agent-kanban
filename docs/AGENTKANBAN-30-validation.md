@@ -4,7 +4,7 @@ Implemented on 2026-09-11.
 
 Project-scoped TODO invalidations share the existing Wiki collaboration stream after committed list/item creation, editing, completion, reordering, and deletion. There is no separate TODO SSE connection. Reconnection reloads the current snapshot; disconnected clients and failed snapshot requests retry every five seconds while visible. Requests are cancelled and guarded against late responses on project changes and unmount. Snapshot updates preserve mounted item drafts and each list's local filter/collapse state.
 
-All UI event streams use `PageEventSource`, which closes the underlying connection on pagehide/freeze and restores its listeners on pageshow/resume. Explicitly closed components stay closed. Chat reconnection uses its latest received event cursor. This prevents cached documents from retaining scarce HTTP/1 connections after navigation.
+UI event streams use `PageEventSource`, which closes the underlying connection while a tab is hidden and on pagehide/freeze, then restores its listeners when the tab becomes visible or resumes. The completion-notification stream opts out of hidden-tab suspension so system notifications still arrive while the app is minimized. Explicitly closed components stay closed. Chat reconnection uses its latest received event cursor. Wiki reconnects with a current synchronization snapshot. This prevents background and cached documents from retaining scarce HTTP/1 connections after a tab switch or navigation without disabling background alerts.
 
 The default **Aktuell / Current** filter includes all open items and items completed on the browser's local calendar day. It refreshes at midnight and when tab visibility changes, including daylight-saving transitions. Existing filters remain available. Repeated completion and edits preserve the original completion date; reopening clears it.
 
@@ -41,6 +41,8 @@ The repeatable regression script `scripts/test-wiki-todo-tabs.mjs` fails against
 - Browser Back navigation followed by both sending and receiving updates.
 
 The expanded test also reproduced retained event-stream connections after navigation; page lifecycle cleanup fixed that case. Successful saves in the corrected run completed in under 200 ms on the local QA server. All browser assertions use a five-second limit.
+
+A later regression exposed the remaining normal-tab-switch case: opening the Wiki and private chat in two tabs kept three streams per tab (notifications, Wiki collaboration, and chat), exhausting Chromium's six HTTP/1 connections before a reload could begin. Closing the chat panel only hid it and left its stream connected, which made the failure appear intermittent even with no visible chat. `PageEventSource` now also suspends streams on `visibilitychange` while hidden, and closing the chat panel explicitly closes its stream. Its focused regression test verifies that `pageshow`/`resume` cannot reopen a hidden tab and that the stream resumes exactly once when the tab becomes visible.
 
 Run against an isolated built QA server (the script rejects port 3000 and non-loopback URLs):
 

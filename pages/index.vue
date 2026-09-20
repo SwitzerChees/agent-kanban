@@ -2459,7 +2459,9 @@ const startCompletionNotificationStream = () => {
   if (!import.meta.client || !user.value) return;
   completionAlertsEnabled.value = localStorage.getItem(completionAlertPreferenceKey()) === 'true';
   syncCompletionNotificationPermission();
-  completionEventSource = new PageEventSource('/api/notifications/events');
+  // Keep desktop/system completion alerts available while the app is hidden.
+  // Other page streams suspend in background tabs to preserve HTTP capacity.
+  completionEventSource = new PageEventSource('/api/notifications/events', { suspendWhenHidden: false });
   completionEventSource.addEventListener('task_completed', (event) => {
     try {
       const notification = JSON.parse((event as MessageEvent).data) as unknown;
