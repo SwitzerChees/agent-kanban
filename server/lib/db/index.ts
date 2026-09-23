@@ -405,7 +405,7 @@ export function ensureDatabase() {
       agent_enabled INTEGER NOT NULL DEFAULT 0,
       agent_status TEXT NOT NULL DEFAULT 'idle',
       agent_harness TEXT NOT NULL DEFAULT 'codex',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol',
+      agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol',
       reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -775,7 +775,7 @@ export function ensureDatabase() {
     sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_harness TEXT NOT NULL DEFAULT 'codex';");
   }
   if (!taskColumns.some((column) => column.name === 'agent_model')) {
-    sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-5.6-sol';");
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol';");
   }
   if (!taskColumns.some((column) => column.name === 'reasoning_effort')) {
     sqlite.exec("ALTER TABLE tasks ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'xhigh';");
@@ -793,8 +793,8 @@ export function ensureDatabase() {
        OR agent_harness IS NULL;
 
     UPDATE tasks
-    SET agent_model = 'gpt-5.6-sol'
-    WHERE agent_model NOT IN ('gpt-5.6-sol', 'gpt-6-astra')
+    SET agent_model = 'gpt-6-sol'
+    WHERE agent_model NOT IN ('gpt-6-sol', 'gpt-6-astra')
        OR agent_model IS NULL;
 
     UPDATE tasks

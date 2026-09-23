@@ -79,11 +79,11 @@ describe('refinement Codex security contract', () => {
 
   test('applies identical sticky thread hardening on start/resume and disables turn environments', () => {
     const workspace = '/srv/project';
-    const thread = buildRefinementThreadSecurityParams(workspace, 'gpt-5.6-sol') as any;
+    const thread = buildRefinementThreadSecurityParams(workspace, 'gpt-6-sol') as any;
     expect(thread).toMatchObject({
       cwd: workspace,
       runtimeWorkspaceRoots: [workspace],
-      model: 'gpt-5.6-sol',
+      model: 'gpt-6-sol',
       approvalPolicy: 'never',
       permissions: REFINEMENT_PERMISSION_PROFILE,
     });
@@ -91,12 +91,12 @@ describe('refinement Codex security contract', () => {
     expect(thread).not.toHaveProperty('sandboxPolicy');
     expect(thread.config).toEqual(buildRefinementSecurityConfig());
 
-    const turn = buildRefinementTurnSecurityParams(workspace, 'gpt-5.6-sol') as any;
+    const turn = buildRefinementTurnSecurityParams(workspace, 'gpt-6-sol') as any;
     expect(turn).toEqual({
       cwd: workspace,
       runtimeWorkspaceRoots: [workspace],
       environments: [],
-      model: 'gpt-5.6-sol',
+      model: 'gpt-6-sol',
       approvalPolicy: 'never',
     });
     // The selected profile is sticky. Re-sending it on turn/start is rejected

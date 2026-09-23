@@ -18,7 +18,7 @@ describe('Codex steering', () => {
     await runCodexSession({
       config: {
         command: `${process.execPath} ${JSON.stringify(fakeServer)}`,
-        model: 'gpt-5.6-sol',
+        model: 'gpt-6-sol',
         reasoningEffort: 'xhigh',
         approvalPolicy: null,
         threadSandbox: null,
@@ -54,9 +54,9 @@ describe('Codex steering', () => {
     const threadStart = messages.find((message) => message.method === 'thread/start');
     const turnStart = messages.find((message) => message.method === 'turn/start');
     const steered = messages.filter((message) => message.method === 'turn/steer');
-    expect(threadStart.params.model).toBe('gpt-5.6-sol');
+    expect(threadStart.params.model).toBe('gpt-6-sol');
     expect(threadStart.params).toMatchObject({ ephemeral: false, serviceName: 'agent-kanban-task' });
-    expect(turnStart.params).toMatchObject({ model: 'gpt-5.6-sol', effort: 'xhigh' });
+    expect(turnStart.params).toMatchObject({ model: 'gpt-6-sol', effort: 'xhigh' });
     expect(markedDelivered).toBe(true);
     expect(steered).toHaveLength(1);
     expect(steered[0].method).toBe('turn/steer');
@@ -75,7 +75,7 @@ describe('Codex steering', () => {
     const result = await runCodexSession({
       config: {
         command: `${process.execPath} ${JSON.stringify(fakeServer)}`,
-        model: 'gpt-5.6-sol',
+        model: 'gpt-6-sol',
         reasoningEffort: 'high',
         approvalPolicy: null,
         threadSandbox: null,

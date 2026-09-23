@@ -379,7 +379,7 @@ describe('external agent task controls', () => {
       folderPath: path.join(testRoot, 'private-workspace'),
     }, admin);
     const task = await kanban.createTask(project.id, { title: 'Private task' }, admin);
-    expect(task).toMatchObject({ agentHarness: 'codex', agentModel: 'gpt-5.6-sol', reasoningEffort: 'xhigh' });
+    expect(task).toMatchObject({ agentHarness: 'codex', agentModel: 'gpt-6-sol', reasoningEffort: 'xhigh' });
     const now = new Date().toISOString();
     const outsider: User = {
       id: 'api-outsider',

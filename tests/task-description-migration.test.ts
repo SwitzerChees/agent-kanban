@@ -135,6 +135,7 @@ describe('task description separation migration', () => {
       description: 'Human original text',
       refinedDescription: 'Applied refinement text',
       descriptionSource: 'refined',
+      agentModel: 'gpt-6-sol',
     });
   });
 });

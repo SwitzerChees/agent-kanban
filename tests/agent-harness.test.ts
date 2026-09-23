@@ -48,13 +48,13 @@ describe('agent harness runtime contracts', () => {
   });
 
   test('keeps Sol as the default and exposes Astra with model-specific Codex efforts', () => {
-    expect(CODEX_MODEL).toBe('gpt-5.6-sol');
-    expect(DEFAULT_CODEX_MODEL).toBe('gpt-5.6-sol');
-    expect(CODEX_MODELS).toEqual(['gpt-5.6-sol', 'gpt-6-astra']);
+    expect(CODEX_MODEL).toBe('gpt-6-sol');
+    expect(DEFAULT_CODEX_MODEL).toBe('gpt-6-sol');
+    expect(CODEX_MODELS).toEqual(['gpt-6-sol', 'gpt-6-astra']);
     expect(taskReasoningEfforts('codex', 'gpt-6-astra')).toEqual([
       'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
     ]);
-    expect(isTaskRuntimeSelectionSupported('codex', 'gpt-5.6-sol', 'max')).toBe(true);
+    expect(isTaskRuntimeSelectionSupported('codex', 'gpt-6-sol', 'max')).toBe(true);
     expect(isTaskRuntimeSelectionSupported('prime-agent', 'gpt-6-astra', 'high')).toBe(false);
     expect(TEXT_REFINEMENT_REASONING_EFFORT).toBe('xhigh');
     expect(VISUAL_REFINEMENT_REASONING_EFFORT).toBe('medium');
