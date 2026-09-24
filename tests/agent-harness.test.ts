@@ -395,6 +395,8 @@ describe('agent harness runtime contracts', () => {
       .toEqual(expect.arrayContaining(['--format', 'json', '--agent', 'explore', '--session', 'open-1']));
     expect(buildProjectChatArgs({ ...common, harness: 'codex', nativeSessionId: 'codex-1' }))
       .toEqual(expect.arrayContaining(['exec', 'resume', '--json', 'codex-1']));
+    expect(buildProjectChatArgs({ ...common, harness: 'codex', agentModel: 'gpt-6-astra', reasoningEffort: 'ultra', nativeSessionId: 'codex-1' }))
+      .toEqual(expect.arrayContaining(['--model', 'gpt-6-astra', '--config', 'model_reasoning_effort="ultra"']));
     expect(buildProjectChatArgs({ ...common, harness: 'opencode', nativeSessionId: null }))
       .not.toContain('--auto');
     for (const harness of ['codex', 'opencode', 'prime-agent'] as const) {

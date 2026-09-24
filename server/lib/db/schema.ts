@@ -212,7 +212,8 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
   wikiPageId: text('wiki_page_id').references(() => wikiPages.id, { onDelete: 'cascade' }),
   title: text('title').notNull().default('New chat'),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
-  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('low'),
+  agentModel: text('agent_model', { enum: ['gpt-6-sol', 'gpt-6-astra'] }).notNull().default('gpt-6-sol'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('low'),
   status: text('status', { enum: ['ready', 'running', 'failed'] }).notNull().default('ready'),
   isCurrent: integer('is_current', { mode: 'boolean' }).notNull().default(false),
   nativeSessionId: text('native_session_id'),
@@ -225,7 +226,8 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
 export const projectChatPreferences = sqliteTable('project_chat_preferences', {
   userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
-  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('low'),
+  agentModel: text('agent_model', { enum: ['gpt-6-sol', 'gpt-6-astra'] }).notNull().default('gpt-6-sol'),
+  reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('low'),
   updatedAt: text('updated_at').notNull(),
 });
 

@@ -5,17 +5,23 @@ import { db, schema } from './db';
 import type { User } from './db/schema';
 import {
   AGENT_HARNESSES,
+  CODEX_MODELS,
+  DEFAULT_CODEX_MODEL,
   REASONING_EFFORTS,
+  TASK_REASONING_EFFORTS,
   harnessExecutable,
   isAgentHarness,
-  isReasoningEffort,
+  isCodexModel,
+  isTaskRuntimeSelectionSupported,
+  isTaskReasoningEffort,
   type AgentHarness,
-  type ReasoningEffort,
+  type CodexModel,
+  type TaskReasoningEffort,
 } from './agent-harness';
 import { getProject } from './kanban';
 
 const DEFAULT_CHAT_HARNESS: AgentHarness = 'prime-agent';
-const DEFAULT_CHAT_EFFORT: ReasoningEffort = 'low';
+const DEFAULT_CHAT_EFFORT: TaskReasoningEffort = 'low';
 const MAX_HISTORY = 100;
 
 export interface ProjectChatMessageAttachment {
@@ -28,12 +34,14 @@ export interface ProjectChatMessageAttachment {
 
 export interface CreateProjectChatInput {
   harness?: unknown;
+  agentModel?: unknown;
   reasoningEffort?: unknown;
   wikiPageId?: string | null;
 }
 
 export interface UpdateProjectChatInput {
   harness?: unknown;
+  agentModel?: unknown;
   reasoningEffort?: unknown;
 }
 
@@ -89,9 +97,17 @@ export function createProjectChat(projectId: string, input: CreateProjectChatInp
   const harness = input.harness === undefined
     ? preferredHarness(preference?.harness)
     : requireHarness(input.harness);
-  const reasoningEffort = input.reasoningEffort === undefined
+  const agentModel = input.agentModel === undefined
+    ? preference?.agentModel ?? DEFAULT_CODEX_MODEL
+    : requireModel(input.agentModel);
+  const preferredEffort = input.reasoningEffort === undefined
     ? preference?.reasoningEffort ?? DEFAULT_CHAT_EFFORT
     : requireEffort(input.reasoningEffort);
+  const reasoningEffort = input.reasoningEffort === undefined
+    && !isTaskRuntimeSelectionSupported(harness, agentModel, preferredEffort)
+      ? DEFAULT_CHAT_EFFORT
+      : preferredEffort;
+  requireSelection(harness, agentModel, reasoningEffort);
   const now = new Date().toISOString();
   const thread = {
     id: randomUUID(),
@@ -100,6 +116,7 @@ export function createProjectChat(projectId: string, input: CreateProjectChatInp
     wikiPageId,
     title: '',
     harness,
+    agentModel,
     reasoningEffort,
     status: 'ready' as const,
     isCurrent: true,
@@ -143,36 +160,39 @@ export function activateProjectChat(threadId: string, user: User) {
 
 export function updateProjectChat(threadId: string, input: UpdateProjectChatInput, user: User) {
   const thread = authorizeProjectChat(threadId, user);
-  if (thread.status === 'running') {
-    throw createError({ statusCode: 409, statusMessage: 'chat_running_config_locked' });
-  }
-  const messageCount = db.select({ value: schema.projectChatMessages.id })
-    .from(schema.projectChatMessages)
-    .where(eq(schema.projectChatMessages.threadId, threadId))
-    .limit(1)
-    .get();
-  if (messageCount) {
-    throw createError({ statusCode: 409, statusMessage: 'chat_config_locked' });
+  if (input.harness !== undefined && input.harness !== thread.harness) {
+    const messageCount = db.select({ value: schema.projectChatMessages.id })
+      .from(schema.projectChatMessages)
+      .where(eq(schema.projectChatMessages.threadId, threadId))
+      .limit(1)
+      .get();
+    if (messageCount || thread.status === 'running') {
+      throw createError({ statusCode: 409, statusMessage: 'chat_config_locked' });
+    }
   }
   const harness = input.harness === undefined ? thread.harness : requireHarness(input.harness);
+  const agentModel = input.agentModel === undefined ? thread.agentModel : requireModel(input.agentModel);
   const reasoningEffort = input.reasoningEffort === undefined
-    ? thread.reasoningEffort
+    ? (isTaskRuntimeSelectionSupported(harness, agentModel, thread.reasoningEffort) ? thread.reasoningEffort : DEFAULT_CHAT_EFFORT)
     : requireEffort(input.reasoningEffort);
+  requireSelection(harness, agentModel, reasoningEffort);
   const now = new Date().toISOString();
   db.transaction((tx) => {
     tx.update(schema.projectChatThreads).set({
       harness,
+      agentModel,
       reasoningEffort,
       updatedAt: now,
     }).where(eq(schema.projectChatThreads.id, threadId)).run();
     tx.insert(schema.projectChatPreferences).values({
       userId: user.id,
       harness,
+      agentModel,
       reasoningEffort,
       updatedAt: now,
     }).onConflictDoUpdate({
       target: schema.projectChatPreferences.userId,
-      set: { harness, reasoningEffort, updatedAt: now },
+      set: { harness, agentModel, reasoningEffort, updatedAt: now },
     }).run();
   });
   return getProjectChat(threadId, user);
@@ -305,7 +325,10 @@ export function projectChatCapabilities() {
       available: isHarnessAvailable(harness),
     })),
     reasoningEfforts: [...REASONING_EFFORTS],
+    codexModels: [...CODEX_MODELS],
+    codexReasoningEfforts: [...TASK_REASONING_EFFORTS],
     defaultHarness: DEFAULT_CHAT_HARNESS,
+    defaultAgentModel: DEFAULT_CODEX_MODEL,
     defaultReasoningEffort: DEFAULT_CHAT_EFFORT,
   };
 }
@@ -317,6 +340,7 @@ function publicProjectChat(thread: typeof schema.projectChatThreads.$inferSelect
     wikiPageId: thread.wikiPageId,
     title: thread.title,
     harness: thread.harness,
+    agentModel: thread.agentModel,
     reasoningEffort: thread.reasoningEffort,
     status: thread.status,
     isCurrent: thread.isCurrent,
@@ -366,11 +390,24 @@ function requireHarness(value: unknown) {
   return value;
 }
 
-function requireEffort(value: unknown) {
-  if (!isReasoningEffort(value)) {
+function requireModel(value: unknown): CodexModel {
+  if (!isCodexModel(value)) {
+    throw createError({ statusCode: 400, statusMessage: 'invalid_chat_model' });
+  }
+  return value;
+}
+
+function requireEffort(value: unknown): TaskReasoningEffort {
+  if (!isTaskReasoningEffort(value)) {
     throw createError({ statusCode: 400, statusMessage: 'invalid_chat_effort' });
   }
   return value;
+}
+
+function requireSelection(harness: AgentHarness, model: CodexModel, effort: TaskReasoningEffort) {
+  if (!isTaskRuntimeSelectionSupported(harness, model, effort)) {
+    throw createError({ statusCode: 400, statusMessage: 'invalid_chat_effort' });
+  }
 }
 
 function parsePayload(value: string) {

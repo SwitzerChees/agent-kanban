@@ -5,13 +5,14 @@ import { chmod, copyFile, cp, mkdir, readdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  CODEX_MODEL,
+  DEFAULT_CODEX_MODEL,
   QWEN_MODEL_ID,
   QWEN_MODEL_PROVIDER,
   QWEN_OPENCODE_MODEL,
   harnessExecutable,
   type AgentHarness,
-  type ReasoningEffort,
+  type CodexModel,
+  type TaskReasoningEffort,
 } from './agent-harness';
 
 export type ProjectChatActivity = 'project' | 'web' | 'tool';
@@ -20,7 +21,8 @@ export type ProjectChatMode = 'read_only' | 'orchestrator';
 export interface ProjectChatHarnessTurnOptions {
   threadId: string;
   harness: AgentHarness;
-  reasoningEffort: ReasoningEffort;
+  agentModel: CodexModel;
+  reasoningEffort: TaskReasoningEffort;
   workspacePath: string;
   sessionRoot: string;
   credentialConfigPath: string;
@@ -176,7 +178,7 @@ export async function runProjectChatHarnessTurn(
 }
 
 export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions,
-  'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId' | 'mode' | 'projectInstructions'>) {
+  'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId' | 'mode' | 'projectInstructions'> & Partial<Pick<ProjectChatHarnessTurnOptions, 'agentModel'>>) {
   if (options.harness === 'opencode') {
     return [
       'run',
@@ -206,7 +208,7 @@ export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions
   const common = [
     '--json',
     '--dangerously-bypass-approvals-and-sandbox',
-    '--model', CODEX_MODEL,
+    '--model', options.agentModel ?? DEFAULT_CODEX_MODEL,
     '--config', `model_reasoning_effort="${options.reasoningEffort}"`,
   ];
   if (options.nativeSessionId) {

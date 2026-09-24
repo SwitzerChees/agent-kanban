@@ -404,7 +404,7 @@ paths:
     patch:
       tags: [Project chat]
       operationId: updatePrivateProjectChatConfig
-      summary: Change harness or effort before the first message
+      summary: Change the agent before the first message, or change the model and reasoning level at any time
       security: [{ cookieAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ChatId' }]
       requestBody:
@@ -1277,7 +1277,11 @@ components:
         harness:
           allOf: [{ $ref: '#/components/schemas/AgentHarness' }]
           default: prime-agent
-        reasoningEffort: { $ref: '#/components/schemas/ReasoningEffort' }
+        agentModel: { $ref: '#/components/schemas/CodexModel' }
+        reasoningEffort:
+          allOf: [{ $ref: '#/components/schemas/TaskReasoningEffort' }]
+          default: low
+          description: OpenCode and Prime Agent support low, medium, and xhigh only; changes during a turn apply to the next turn.
         wikiPageId: { type: [string, 'null'], format: uuid, description: Create a conversation bound to this Wiki page }
     ReasoningEffort:
       type: string

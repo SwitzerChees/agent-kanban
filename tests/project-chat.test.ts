@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import type { User } from '../server/lib/db/schema';
 
 const testRoot = mkdtempSync(path.join(tmpdir(), 'agent-kanban-project-chat-'));
@@ -89,14 +90,15 @@ describe('private project chats', () => {
 
     const second = chatModule.createProjectChat(projectId, {
       harness: 'codex',
+      agentModel: 'gpt-6-astra',
       reasoningEffort: 'medium',
     }, owner).chat;
     expect(second.id).not.toBe(first.id);
     expect(chatModule.getCurrentProjectChat(projectId, owner).chat?.id).toBe(second.id);
-    chatModule.updateProjectChat(second.id, { reasoningEffort: 'xhigh' }, owner);
+    chatModule.updateProjectChat(second.id, { reasoningEffort: 'ultra' }, owner);
 
     const inherited = chatModule.createProjectChat(projectId, {}, owner).chat;
-    expect(inherited).toMatchObject({ harness: 'codex', reasoningEffort: 'xhigh' });
+    expect(inherited).toMatchObject({ harness: 'codex', agentModel: 'gpt-6-astra', reasoningEffort: 'ultra' });
     expect(chatModule.listProjectChats(projectId, owner)).toHaveLength(3);
 
     const reactivated = chatModule.activateProjectChat(first.id, owner);
@@ -144,8 +146,8 @@ describe('private project chats', () => {
     expect(instructions).toContain('Never substitute raw @Name');
   });
 
-  test('locks harness configuration after the conversation starts and streams ordered events', () => {
-    const thread = chatModule.getCurrentProjectChat(projectId, owner).chat!;
+  test('locks the agent after conversation start but allows model and effort changes during a turn', () => {
+    const thread = chatModule.createProjectChat(projectId, { harness: 'codex', reasoningEffort: 'medium' }, owner).chat;
     const now = new Date().toISOString();
     dbModule.db.insert(dbModule.schema.projectChatMessages).values({
       id: randomUUID(),
@@ -159,6 +161,15 @@ describe('private project chats', () => {
     }).run();
     expect(() => chatModule.updateProjectChat(thread.id, { harness: 'opencode' }, owner))
       .toThrow(/chat_config_locked/);
+    const updated = chatModule.updateProjectChat(thread.id, {
+      agentModel: 'gpt-6-sol', reasoningEffort: 'max',
+    }, owner).chat;
+    expect(updated).toMatchObject({ harness: 'codex', agentModel: 'gpt-6-sol', reasoningEffort: 'max' });
+    dbModule.db.update(dbModule.schema.projectChatThreads).set({ status: 'running' })
+      .where(eq(dbModule.schema.projectChatThreads.id, thread.id)).run();
+    expect(chatModule.updateProjectChat(thread.id, { reasoningEffort: 'high' }, owner).chat?.reasoningEffort).toBe('high');
+    expect(() => chatModule.updateProjectChat(thread.id, { harness: 'prime-agent' }, owner))
+      .toThrow(/chat_config_locked/);
 
     const firstId = chatModule.appendProjectChatEvent(thread.id, 'activity', { activity: 'project' });
     const secondId = chatModule.appendProjectChatEvent(thread.id, 'message_updated', { content: 'Hello' });
@@ -166,6 +177,12 @@ describe('private project chats', () => {
     expect(chatModule.listProjectChatEvents(thread.id, firstId)).toEqual([
       expect.objectContaining({ id: secondId, type: 'message_updated', payload: { content: 'Hello' } }),
     ]);
+  });
+
+  test('limits non-Codex chats to their supported effort levels', () => {
+    const thread = chatModule.createProjectChat(projectId, { harness: 'prime-agent', reasoningEffort: 'low' }, owner).chat;
+    expect(() => chatModule.updateProjectChat(thread.id, { reasoningEffort: 'ultra' }, owner))
+      .toThrow(/invalid_chat_effort/);
   });
 
   test('keeps chat attachments private, visible in history, and explicit in the agent prompt', () => {

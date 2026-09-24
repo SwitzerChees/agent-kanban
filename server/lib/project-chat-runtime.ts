@@ -215,6 +215,9 @@ export class ProjectChatRuntime {
     });
     void this.runTurn({
       threadId,
+      harness: thread.harness,
+      agentModel: thread.agentModel,
+      reasoningEffort: thread.reasoningEffort,
       assistantMessageId,
       userContent: buildProjectChatPrompt(content, attachments),
       controller,
@@ -304,6 +307,9 @@ export class ProjectChatRuntime {
 
   private async runTurn(input: {
     threadId: string;
+    harness: typeof schema.projectChatThreads.$inferSelect.harness;
+    agentModel: typeof schema.projectChatThreads.$inferSelect.agentModel;
+    reasoningEffort: typeof schema.projectChatThreads.$inferSelect.reasoningEffort;
     assistantMessageId: string;
     userContent: string;
     controller: AbortController;
@@ -410,8 +416,9 @@ export class ProjectChatRuntime {
 
       const result = await runProjectChatHarnessTurn({
         threadId: input.threadId,
-        harness: thread.harness,
-        reasoningEffort: thread.reasoningEffort,
+        harness: input.harness,
+        agentModel: input.agentModel,
+        reasoningEffort: input.reasoningEffort,
         workspacePath,
         sessionRoot: appDataDir('chat-sessions', input.threadId),
         credentialConfigPath: credential.path,

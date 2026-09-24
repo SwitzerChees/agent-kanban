@@ -2,7 +2,8 @@
 import { RealtimeChannel } from '~/utils/realtime-channel';
 type Locale = 'en' | 'de';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
-type ReasoningEffort = 'low' | 'medium' | 'xhigh';
+type CodexModel = 'gpt-6-sol' | 'gpt-6-astra';
+type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 interface ProjectChat {
   id: string;
@@ -10,6 +11,7 @@ interface ProjectChat {
   wikiPageId: string | null;
   title: string;
   harness: AgentHarness;
+  agentModel: CodexModel;
   reasoningEffort: ReasoningEffort;
   status: 'ready' | 'running' | 'failed';
   isCurrent: boolean;
@@ -58,7 +60,10 @@ interface ProjectChatToolActivity {
 interface ChatCapabilities {
   harnesses: Array<{ value: AgentHarness; available: boolean }>;
   reasoningEfforts: ReasoningEffort[];
+  codexModels: CodexModel[];
+  codexReasoningEfforts: ReasoningEffort[];
   defaultHarness: AgentHarness;
+  defaultAgentModel: CodexModel;
   defaultReasoningEffort: ReasoningEffort;
 }
 
@@ -99,10 +104,15 @@ const copy = {
     send: 'Send message',
     stop: 'Stop response',
     harness: 'Harness',
+    model: 'Model',
     effort: 'Effort',
     low: 'Low',
     medium: 'Medium',
+    high: 'High',
     xhigh: 'Extra high',
+    max: 'Maximum',
+    ultra: 'Ultra',
+    nextTurn: 'Model and effort apply to the next answer.',
     preparing: 'Preparing project context',
     project: 'Searching the project',
     web: 'Researching on the web',
@@ -115,7 +125,8 @@ const copy = {
     retry: 'You can send another message.',
     loading: 'Loading private conversation…',
     unavailable: 'Unavailable on this server',
-    resize: 'Resize chat window',
+    resize: 'Drag to resize chat · use arrow keys on the handle',
+    resizeVisible: 'Drag to resize',
     move: 'Drag to move chat window',
     voiceStart: 'Start voice assistant',
     activityDetails: 'Current actions',
@@ -142,10 +153,15 @@ const copy = {
     send: 'Nachricht senden',
     stop: 'Antwort stoppen',
     harness: 'Harness',
+    model: 'Modell',
     effort: 'Aufwand',
     low: 'Niedrig',
     medium: 'Mittel',
+    high: 'Hoch',
     xhigh: 'Extra hoch',
+    max: 'Maximal',
+    ultra: 'Ultra',
+    nextTurn: 'Modell und Stufe gelten ab der nächsten Antwort.',
     preparing: 'Projektkontext wird vorbereitet',
     project: 'Durchsucht das Projekt',
     web: 'Recherchiert im Web',
@@ -158,7 +174,8 @@ const copy = {
     retry: 'Du kannst eine weitere Nachricht senden.',
     loading: 'Private Unterhaltung wird geladen…',
     unavailable: 'Auf diesem Server nicht verfügbar',
-    resize: 'Chat-Fenster skalieren',
+    resize: 'Ziehen, um die Chat-Größe zu ändern · Pfeiltasten am Griff möglich',
+    resizeVisible: 'Ziehen, um Größe zu ändern',
     move: 'Ziehen, um das Chat-Fenster zu verschieben',
     voiceStart: 'Sprachassistent starten',
     activityDetails: 'Aktuelle Aktionen',
@@ -201,6 +218,7 @@ const isOpen = ref(false);
 const view = ref<'chat' | 'history'>('chat');
 const loading = ref(false);
 const submitting = ref(false);
+const configUpdating = ref(false);
 const reconnecting = ref(false);
 const errorMessage = ref('');
 const chat = ref<ProjectChat | null>(null);
@@ -260,11 +278,15 @@ const harnessItems = computed(() => {
     disabled: !item.available,
   }));
 });
-const effortItems = computed(() => [
-  { label: t.value.low, value: 'low' },
-  { label: t.value.medium, value: 'medium' },
-  { label: t.value.xhigh, value: 'xhigh' },
+const modelItems = computed(() => [
+  { label: 'GPT-6 Sol', value: 'gpt-6-sol' },
+  { label: 'GPT-6 Astra', value: 'gpt-6-astra' },
 ]);
+const effortItems = computed(() => (chat.value?.harness === 'codex'
+  ? capabilities.value?.codexReasoningEfforts ?? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+  : capabilities.value?.reasoningEfforts ?? ['low', 'medium', 'xhigh']
+).map((value) => ({ label: t.value[value], value })));
+const effortLabel = (value: ReasoningEffort) => t.value[value];
 const hasMessages = computed(() => messages.value.length > 0);
 const running = computed(() => chat.value?.status === 'running');
 const canSend = computed(() => Boolean(composer.value.trim() || pendingFiles.value.length) && !running.value && !submitting.value);
@@ -398,29 +420,38 @@ async function createNewChat() {
 }
 
 async function updateHarness(value: AgentHarness) {
-  if (!chat.value || hasMessages.value) return;
-  chat.value.harness = value;
+  if (!chat.value || hasMessages.value || running.value || configUpdating.value || value === chat.value.harness) return;
   await persistConfig({ harness: value });
 }
 
+async function updateModel(value: CodexModel) {
+  if (!chat.value || chat.value.harness !== 'codex' || configUpdating.value || value === chat.value.agentModel) return;
+  await persistConfig({ agentModel: value });
+}
+
 async function updateEffort(value: ReasoningEffort) {
-  if (!chat.value || hasMessages.value) return;
-  chat.value.reasoningEffort = value;
+  if (!chat.value || configUpdating.value || value === chat.value.reasoningEffort) return;
   await persistConfig({ reasoningEffort: value });
 }
 
-async function persistConfig(body: { harness?: AgentHarness; reasoningEffort?: ReasoningEffort }) {
+async function persistConfig(body: { harness?: AgentHarness; agentModel?: CodexModel; reasoningEffort?: ReasoningEffort }) {
   if (!chat.value) return;
   errorMessage.value = '';
+  configUpdating.value = true;
   try {
     const payload = await $fetch<ChatPayload>(`/api/project-chats/${chat.value.id}`, {
       method: 'PATCH',
       body,
     });
-    applyPayload(payload);
+    if (chat.value?.id === payload.chat?.id) {
+      chat.value.harness = payload.chat.harness;
+      chat.value.agentModel = payload.chat.agentModel;
+      chat.value.reasoningEffort = payload.chat.reasoningEffort;
+    }
   } catch (error) {
     errorMessage.value = friendlyError(error);
-    await reloadChat().catch(() => undefined);
+  } finally {
+    configUpdating.value = false;
   }
 }
 
@@ -780,11 +811,11 @@ function isNearLatest() {
 function scheduleScroll(force = false) {
   if (!force || scrollFrame !== null) return;
   void nextTick(() => {
-    scrollFrame = requestAnimationFrame(() => {
-      scrollFrame = null;
-      const log = messageLog.value;
-      if (log) log.scrollTop = log.scrollHeight;
-    });
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = null;
+        const log = messageLog.value;
+        if (log) log.scrollTop = hasMessages.value ? log.scrollHeight : 0;
+      });
   });
 }
 
@@ -818,6 +849,7 @@ function restoreDockPosition() {
 
 function updateViewport() {
   desktopViewport.value = window.innerWidth >= 640;
+  if (!desktopViewport.value) return;
   const clamped = clampDockSize(dockSize.width, dockSize.height);
   dockSize.width = clamped.width;
   dockSize.height = clamped.height;
@@ -959,7 +991,8 @@ function errorLabel(code: string) {
     chat_empty_response: ['The harness returned no answer.', 'Der Harness hat keine Antwort geliefert.'],
     chat_interrupted: ['The response was interrupted by a service restart.', 'Die Antwort wurde durch einen Service-Neustart unterbrochen.'],
     chat_turn_already_running: ['An answer is already running.', 'Es läuft bereits eine Antwort.'],
-    chat_config_locked: ['Harness and effort are fixed for this conversation.', 'Harness und Aufwand sind für diese Unterhaltung festgelegt.'],
+    chat_config_locked: ['The agent is fixed once the conversation starts.', 'Der Agent ist nach Gesprächsbeginn festgelegt.'],
+    invalid_chat_effort: ['This effort level is unavailable for the selected agent.', 'Diese Stufe ist für den gewählten Agenten nicht verfügbar.'],
     chat_harness_failed: ['The selected harness could not complete the answer.', 'Der gewählte Harness konnte die Antwort nicht abschließen.'],
     chat_attachment_too_large: ['Each attachment may be up to 10 MB.', 'Ein einzelner Anhang darf höchstens 10 MB groß sein.'],
     chat_attachments_too_large: ['Attachments may total up to 30 MB.', 'Anhänge dürfen zusammen höchstens 30 MB groß sein.'],
@@ -991,12 +1024,15 @@ function friendlyError(error: unknown) {
           <button
             v-if="desktopViewport"
             type="button"
-            class="ak-project-chat-resize-handle"
+            class="ak-project-chat-resize-handle group"
             :aria-label="t.resize"
             data-testid="project-chat-resize"
             @pointerdown="beginResize"
             @keydown="resizeWithKeyboard"
-          />
+          >
+            <UIcon name="i-lucide-move-diagonal-2" class="size-3.5" aria-hidden="true" />
+            <span>{{ t.resizeVisible }}</span>
+          </button>
           <header
             class="ak-project-chat-header flex min-h-16 shrink-0 items-center gap-3 border-b border-zinc-200 px-3.5 dark:border-zinc-800"
             :title="desktopViewport ? t.move : undefined"
@@ -1077,7 +1113,8 @@ function friendlyError(error: unknown) {
                     <span>·</span>
                     <span>{{ harnessItems.find((option) => option.value === item.harness)?.label?.split(' · ')[0] }}</span>
                     <span>·</span>
-                    <span>{{ effortItems.find((option) => option.value === item.reasoningEffort)?.label }}</span>
+                    <span v-if="item.harness === 'codex'">{{ modelItems.find((option) => option.value === item.agentModel)?.label }} ·</span>
+                    <span>{{ effortLabel(item.reasoningEffort) }}</span>
                   </span>
                 </span>
               </button>
@@ -1193,48 +1230,49 @@ function friendlyError(error: unknown) {
                 @turn-completed="reloadChat"
               />
 
-              <div v-if="!voiceActive && !hasMessages && chat" class="mb-2.5 flex items-center gap-2">
+              <div v-if="!voiceActive && chat" class="mb-2.5 grid grid-cols-2 gap-2">
                 <USelect
                   :model-value="chat.harness"
                   :items="harnessItems"
                   value-key="value"
                   size="sm"
-                  class="min-w-0 flex-1"
+                  class="min-w-0"
+                  :class="chat.harness === 'codex' ? 'col-span-2' : ''"
                   icon="i-lucide-bot"
                   :ui="{ content: 'z-[60]' }"
                   :aria-label="t.harness"
+                  :disabled="hasMessages || running || configUpdating"
                   data-testid="project-chat-harness"
                   @update:model-value="updateHarness($event as AgentHarness)"
+                />
+                <USelect
+                  v-if="chat.harness === 'codex'"
+                  :model-value="chat.agentModel"
+                  :items="modelItems"
+                  value-key="value"
+                  size="sm"
+                  class="min-w-0"
+                  :ui="{ content: 'z-[60]' }"
+                  :aria-label="t.model"
+                  :disabled="configUpdating"
+                  data-testid="project-chat-model"
+                  @update:model-value="updateModel($event as CodexModel)"
                 />
                 <USelect
                   :model-value="chat.reasoningEffort"
                   :items="effortItems"
                   value-key="value"
                   size="sm"
-                  class="min-w-0 flex-1"
+                  class="min-w-0"
                   icon="i-lucide-gauge"
                   :ui="{ content: 'z-[60]' }"
                   :aria-label="t.effort"
+                  :disabled="configUpdating"
                   data-testid="project-chat-effort"
                   @update:model-value="updateEffort($event as ReasoningEffort)"
                 />
               </div>
-
-              <div v-else-if="!voiceActive && chat" class="mb-2 flex min-w-0 items-center gap-2 px-1 text-[10px] text-zinc-500 dark:text-zinc-400">
-                <span class="inline-flex min-w-0 items-center gap-1">
-                  <UIcon name="i-lucide-bot" class="size-3" />
-                  <span class="truncate">{{ harnessItems.find((item) => item.value === chat?.harness)?.label?.split(' · ')[0] }}</span>
-                </span>
-                <span>·</span>
-                <span>{{ effortItems.find((item) => item.value === chat?.reasoningEffort)?.label }}</span>
-                <template v-if="chat.sourceRevision">
-                  <span>·</span>
-                  <span class="inline-flex min-w-0 items-center gap-1 font-mono">
-                    <UIcon name="i-lucide-git-commit-horizontal" class="size-3" />
-                    {{ chat.sourceRevision.slice(0, 8) }}
-                  </span>
-                </template>
-              </div>
+              <p v-if="!voiceActive && running && chat" class="mb-2 px-1 text-[11px] text-zinc-500 dark:text-zinc-400">{{ t.nextTurn }}</p>
 
               <div v-if="!voiceActive && (currentActivity || reconnecting)" class="mb-2 flex items-center gap-2 px-1 text-xs text-zinc-500 dark:text-zinc-400" role="status">
                 <UIcon :name="reconnecting ? 'i-lucide-wifi-off' : 'i-lucide-loader-circle'" class="size-3.5" :class="reconnecting ? '' : 'animate-spin'" />
@@ -1457,47 +1495,31 @@ function friendlyError(error: unknown) {
 }
 
 .ak-project-chat-resize-handle {
-  position: absolute;
-  z-index: 2;
-  top: 0;
-  left: 0;
-  width: 1.5rem;
-  height: 1.5rem;
+  display: flex;
+  width: 100%;
+  min-height: 1.75rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
   border: 0;
-  border-radius: 1rem 0 0;
-  background: transparent;
-  color: rgb(113 113 122);
+  border-bottom: 1px solid rgb(228 228 231);
+  background: rgb(250 250 250);
+  color: rgb(82 82 91);
   cursor: nwse-resize;
+  font-size: 0.6875rem;
+  font-weight: 500;
   touch-action: none;
 }
 
-.ak-project-chat-resize-handle::before,
-.ak-project-chat-resize-handle::after {
-  position: absolute;
-  top: 0.35rem;
-  left: 0.35rem;
-  width: 0.5rem;
-  height: 0.5rem;
-  border-top: 1.5px solid currentColor;
-  border-left: 1.5px solid currentColor;
-  content: '';
-}
-
-.ak-project-chat-resize-handle::after {
-  top: 0.62rem;
-  left: 0.62rem;
-  width: 0.25rem;
-  height: 0.25rem;
-  opacity: 0.55;
-}
-
 .ak-project-chat-resize-handle:hover {
-  color: rgb(13 148 136);
+  background: rgb(240 253 250);
+  color: rgb(15 118 110);
 }
 
 .ak-project-chat-resize-handle:focus-visible {
   outline: 2px solid rgb(13 148 136);
-  outline-offset: -2px;
+  outline-offset: -3px;
 }
 
 :global(html.ak-project-chat-resizing),
@@ -1516,6 +1538,17 @@ function friendlyError(error: unknown) {
   border-color: rgb(63 63 70);
   background: rgb(9 9 11);
   box-shadow: 0 8px 12px rgb(0 0 0 / 0.42);
+}
+
+:global(.dark .ak-project-chat-resize-handle) {
+  border-bottom-color: rgb(63 63 70);
+  background: rgb(24 24 27);
+  color: rgb(212 212 216);
+}
+
+:global(.dark .ak-project-chat-resize-handle:hover) {
+  background: rgb(19 78 74 / 0.4);
+  color: rgb(153 246 228);
 }
 
 .ak-project-chat-log {
