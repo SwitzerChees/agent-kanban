@@ -114,6 +114,36 @@ legacy.exec(`
     '2026-07-02T00:00:00.000Z', 'legacy-user',
     '2026-07-01T00:00:00.000Z', '2026-07-02T00:00:00.000Z'
   );
+
+  ALTER TABLE tasks ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol';
+  CREATE TABLE project_chat_threads (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT 'New chat',
+    harness TEXT NOT NULL DEFAULT 'codex',
+    agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol',
+    reasoning_effort TEXT NOT NULL DEFAULT 'low',
+    status TEXT NOT NULL DEFAULT 'ready',
+    is_current INTEGER NOT NULL DEFAULT 0,
+    native_session_id TEXT,
+    source_revision TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE project_chat_preferences (
+    user_id TEXT PRIMARY KEY,
+    harness TEXT NOT NULL DEFAULT 'codex',
+    agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol',
+    reasoning_effort TEXT NOT NULL DEFAULT 'low',
+    updated_at TEXT NOT NULL
+  );
+  INSERT INTO project_chat_threads (id, project_id, user_id, agent_model, created_at, updated_at)
+  VALUES ('legacy-chat', 'legacy-project', 'legacy-user', 'gpt-6-sol',
+    '2026-07-02T00:00:00.000Z', '2026-07-02T00:00:00.000Z');
+  INSERT INTO project_chat_preferences (user_id, agent_model, updated_at)
+  VALUES ('legacy-user', 'gpt-6-sol', '2026-07-02T00:00:00.000Z');
 `);
 legacy.close();
 
@@ -135,7 +165,14 @@ describe('task description separation migration', () => {
       description: 'Human original text',
       refinedDescription: 'Applied refinement text',
       descriptionSource: 'refined',
-      agentModel: 'gpt-6-sol',
+      agentModel: 'gpt-6.1-sol',
     });
+  });
+
+  test('moves saved Codex Sol selections to GPT-6.1 Sol', () => {
+    for (const table of ['tasks', 'project_chat_threads', 'project_chat_preferences']) {
+      const row = dbModule.sqliteDatabase.prepare(`SELECT agent_model FROM ${table}`).get() as { agent_model: string };
+      expect(row.agent_model).toBe('gpt-6.1-sol');
+    }
   });
 });

@@ -212,7 +212,7 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
   wikiPageId: text('wiki_page_id').references(() => wikiPages.id, { onDelete: 'cascade' }),
   title: text('title').notNull().default('New chat'),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
-  agentModel: text('agent_model', { enum: ['gpt-6-sol', 'gpt-6-astra'] }).notNull().default('gpt-6-sol'),
+  agentModel: text('agent_model', { enum: ['gpt-6.1-sol', 'gpt-6-astra'] }).notNull().default('gpt-6.1-sol'),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('low'),
   status: text('status', { enum: ['ready', 'running', 'failed'] }).notNull().default('ready'),
   isCurrent: integer('is_current', { mode: 'boolean' }).notNull().default(false),
@@ -226,7 +226,7 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
 export const projectChatPreferences = sqliteTable('project_chat_preferences', {
   userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
-  agentModel: text('agent_model', { enum: ['gpt-6-sol', 'gpt-6-astra'] }).notNull().default('gpt-6-sol'),
+  agentModel: text('agent_model', { enum: ['gpt-6.1-sol', 'gpt-6-astra'] }).notNull().default('gpt-6.1-sol'),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('low'),
   updatedAt: text('updated_at').notNull(),
 });
@@ -354,7 +354,7 @@ export const tasks = sqliteTable('tasks', {
   agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
   agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'waiting_external', 'failed', 'done'] }).notNull().default('idle'),
   agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
-  agentModel: text('agent_model', { enum: ['gpt-6-sol', 'gpt-6-astra'] }).notNull().default('gpt-6-sol'),
+  agentModel: text('agent_model', { enum: ['gpt-6.1-sol', 'gpt-6-astra'] }).notNull().default('gpt-6.1-sol'),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('xhigh'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),

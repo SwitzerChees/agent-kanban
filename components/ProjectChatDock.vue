@@ -2,7 +2,7 @@
 import { RealtimeChannel } from '~/utils/realtime-channel';
 type Locale = 'en' | 'de';
 type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
-type CodexModel = 'gpt-6-sol' | 'gpt-6-astra';
+type CodexModel = 'gpt-6.1-sol' | 'gpt-6-astra';
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 interface ProjectChat {
@@ -279,7 +279,7 @@ const harnessItems = computed(() => {
   }));
 });
 const modelItems = computed(() => [
-  { label: 'GPT-6 Sol', value: 'gpt-6-sol' },
+  { label: 'GPT-6.1 Sol', value: 'gpt-6.1-sol' },
   { label: 'GPT-6 Astra', value: 'gpt-6-astra' },
 ]);
 const effortItems = computed(() => (chat.value?.harness === 'codex'

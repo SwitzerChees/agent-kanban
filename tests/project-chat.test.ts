@@ -162,9 +162,9 @@ describe('private project chats', () => {
     expect(() => chatModule.updateProjectChat(thread.id, { harness: 'opencode' }, owner))
       .toThrow(/chat_config_locked/);
     const updated = chatModule.updateProjectChat(thread.id, {
-      agentModel: 'gpt-6-sol', reasoningEffort: 'max',
+      agentModel: 'gpt-6.1-sol', reasoningEffort: 'max',
     }, owner).chat;
-    expect(updated).toMatchObject({ harness: 'codex', agentModel: 'gpt-6-sol', reasoningEffort: 'max' });
+    expect(updated).toMatchObject({ harness: 'codex', agentModel: 'gpt-6.1-sol', reasoningEffort: 'max' });
     dbModule.db.update(dbModule.schema.projectChatThreads).set({ status: 'running' })
       .where(eq(dbModule.schema.projectChatThreads.id, thread.id)).run();
     expect(chatModule.updateProjectChat(thread.id, { reasoningEffort: 'high' }, owner).chat?.reasoningEffort).toBe('high');

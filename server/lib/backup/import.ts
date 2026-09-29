@@ -7,7 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import Database from 'better-sqlite3';
 import { createError } from 'h3';
 import yauzl, { type Entry, type ZipFile } from 'yauzl';
-import { appDataDir, appDataRoot, sqliteDatabase } from '../db';
+import { appDataDir, appDataRoot, migrateLegacyCodexModels, sqliteDatabase } from '../db';
 import { backupManifestSchema, databaseSchemaFingerprint, validateArchivePath, type BackupFile, type BackupManifest } from './format';
 
 const IMPORT_EXPIRY_MS = 60 * 60 * 1000;
@@ -362,6 +362,7 @@ function importDatabaseRows(sourcePath: string, manifest: BackupManifest, projec
         `);
       }
       for (const step of COPY_STEPS) copyRows(step.table, step.where, step.columns);
+      migrateLegacyCodexModels();
       // Restoring an older backup must not resurrect links revoked after that backup.
       sqliteDatabase.prepare(`UPDATE showroom_shares SET revoked_at = COALESCE(revoked_at, ?)
         WHERE project_id IN (SELECT id FROM selected_import_projects)`).run(new Date().toISOString());

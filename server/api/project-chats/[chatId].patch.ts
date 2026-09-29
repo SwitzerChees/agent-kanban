@@ -5,7 +5,7 @@ import { requireSessionUser } from '../../lib/security/auth';
 
 const bodySchema = z.object({
   harness: z.enum(['codex', 'opencode', 'prime-agent']).optional(),
-  agentModel: z.enum(['gpt-6-sol', 'gpt-6-astra']).optional(),
+  agentModel: z.enum(['gpt-6.1-sol', 'gpt-6-astra']).optional(),
   reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
 }).refine((value) => value.harness !== undefined || value.agentModel !== undefined || value.reasoningEffort !== undefined);
 

@@ -270,7 +270,7 @@ export function ensureDatabase() {
       wiki_page_id TEXT REFERENCES wiki_pages(id) ON DELETE CASCADE,
       title TEXT NOT NULL DEFAULT 'New chat',
       harness TEXT NOT NULL DEFAULT 'prime-agent',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol',
+      agent_model TEXT NOT NULL DEFAULT 'gpt-6.1-sol',
       reasoning_effort TEXT NOT NULL DEFAULT 'low',
       status TEXT NOT NULL DEFAULT 'ready',
       is_current INTEGER NOT NULL DEFAULT 0,
@@ -284,7 +284,7 @@ export function ensureDatabase() {
     CREATE TABLE IF NOT EXISTS project_chat_preferences (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       harness TEXT NOT NULL DEFAULT 'prime-agent',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol',
+      agent_model TEXT NOT NULL DEFAULT 'gpt-6.1-sol',
       reasoning_effort TEXT NOT NULL DEFAULT 'low',
       updated_at TEXT NOT NULL
     );
@@ -407,7 +407,7 @@ export function ensureDatabase() {
       agent_enabled INTEGER NOT NULL DEFAULT 0,
       agent_status TEXT NOT NULL DEFAULT 'idle',
       agent_harness TEXT NOT NULL DEFAULT 'codex',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol',
+      agent_model TEXT NOT NULL DEFAULT 'gpt-6.1-sol',
       reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -740,11 +740,11 @@ export function ensureDatabase() {
     sqlite.exec('ALTER TABLE project_chat_threads ADD COLUMN wiki_page_id TEXT REFERENCES wiki_pages(id) ON DELETE CASCADE;');
   }
   if (!projectChatThreadColumns.some((column) => column.name === 'agent_model')) {
-    sqlite.exec("ALTER TABLE project_chat_threads ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol';");
+    sqlite.exec("ALTER TABLE project_chat_threads ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6.1-sol';");
   }
   const projectChatPreferenceColumns = sqlite.prepare('PRAGMA table_info(project_chat_preferences)').all() as Array<{ name: string }>;
   if (!projectChatPreferenceColumns.some((column) => column.name === 'agent_model')) {
-    sqlite.exec("ALTER TABLE project_chat_preferences ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol';");
+    sqlite.exec("ALTER TABLE project_chat_preferences ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6.1-sol';");
   }
   sqlite.exec(`
     DROP INDEX IF EXISTS idx_project_chat_current;
@@ -784,11 +784,12 @@ export function ensureDatabase() {
     sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_harness TEXT NOT NULL DEFAULT 'codex';");
   }
   if (!taskColumns.some((column) => column.name === 'agent_model')) {
-    sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6-sol';");
+    sqlite.exec("ALTER TABLE tasks ADD COLUMN agent_model TEXT NOT NULL DEFAULT 'gpt-6.1-sol';");
   }
   if (!taskColumns.some((column) => column.name === 'reasoning_effort')) {
     sqlite.exec("ALTER TABLE tasks ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'xhigh';");
   }
+  migrateLegacyCodexModels();
   sqlite.exec(`
     UPDATE tasks
     SET description_source = 'original'
@@ -802,8 +803,8 @@ export function ensureDatabase() {
        OR agent_harness IS NULL;
 
     UPDATE tasks
-    SET agent_model = 'gpt-6-sol'
-    WHERE agent_model NOT IN ('gpt-6-sol', 'gpt-6-astra')
+    SET agent_model = 'gpt-6.1-sol'
+    WHERE agent_model NOT IN ('gpt-6.1-sol', 'gpt-6-astra')
        OR agent_model IS NULL;
 
     UPDATE tasks
@@ -1140,6 +1141,14 @@ export function ensureTaskHierarchy() {
       SET oberthema_id = NEW.oberthema_id
       WHERE unterthema_id = NEW.id;
     END;
+  `);
+}
+
+export function migrateLegacyCodexModels() {
+  sqlite.exec(`
+    UPDATE tasks SET agent_model = 'gpt-6.1-sol' WHERE agent_model = 'gpt-6-sol';
+    UPDATE project_chat_threads SET agent_model = 'gpt-6.1-sol' WHERE agent_model = 'gpt-6-sol';
+    UPDATE project_chat_preferences SET agent_model = 'gpt-6.1-sol' WHERE agent_model = 'gpt-6-sol';
   `);
 }
 

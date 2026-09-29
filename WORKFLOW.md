@@ -9,7 +9,7 @@ agent:
   max_retry_backoff_ms: 300000
 codex:
   command: codex app-server
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   reasoning_effort: xhigh
   approval_policy: never
   thread_sandbox: workspace-write
