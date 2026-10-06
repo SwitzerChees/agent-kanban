@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { parseTaskDeepLink, resolveTaskDeepLink, type TaskDeepLink } from '../utils/task-deep-link';
 import { RealtimeChannel } from '~/utils/realtime-channel';
 import type { CommandPaletteGroup, CommandPaletteItem, CommandPaletteProps, EditorCustomHandlers, EditorToolbarItem, ModalProps, TableColumn } from '@nuxt/ui';
 import Fuse from 'fuse.js';
@@ -1142,6 +1143,7 @@ const user = ref<User | null>(null);
 const users = ref<User[]>([]);
 const projects = ref<Project[]>([]);
 const selectedProjectId = ref<string | null>(null);
+let pendingTaskDeepLink: TaskDeepLink | null = null;
 const selectedOberthemaId = ref<string | null>(null);
 const selectedUnterthemaId = ref<string | null>(null);
 const collapsedOberthemaIds = ref<string[]>([]);
@@ -2479,7 +2481,8 @@ onMounted(async () => {
   syncMobileViewport();
   sidebarCollapsed.value = isMobileViewport.value
     || localStorage.getItem('ak_sidebar_collapsed') === 'true';
-  selectedProjectId.value = projectIdFromSurfaceRoute() ?? localStorage.getItem('ak_project');
+  pendingTaskDeepLink = parseTaskDeepLink(window.location.search);
+  selectedProjectId.value = pendingTaskDeepLink?.projectId ?? projectIdFromSurfaceRoute() ?? localStorage.getItem('ak_project');
   window.addEventListener('keydown', handleWindowKeydown, true);
   window.addEventListener('keyup', handleWindowKeyup, true);
   window.addEventListener('pointerdown', handleWindowPointerDown, true);
@@ -2571,6 +2574,11 @@ const loadAppData = async () => {
     }
     if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].id;
     if (selectedProjectId.value) await loadBoard(selectedProjectId.value);
+    if (pendingTaskDeepLink && board.value) {
+      const task = resolveTaskDeepLink(pendingTaskDeepLink, board.value.project.id, board.value.tasks);
+      pendingTaskDeepLink = null;
+      if (task) await openTaskDetail(task);
+    }
   } finally {
     busy.value = false;
   }
