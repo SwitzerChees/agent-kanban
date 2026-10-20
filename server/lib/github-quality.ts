@@ -27,7 +27,7 @@ export interface WorkflowEvidence {
 }
 interface WorkflowRun {
   databaseId: number; headSha: string; status: string; conclusion: string;
-  url: string; updatedAt: string;
+  url: string; updatedAt: string; createdAt: string; event: string;
 }
 export async function qualityJson<T>(args: string[], cwd: string, run = runQualityCommand): Promise<T | null> {
   const result = await run('gh', args, cwd);
@@ -53,14 +53,23 @@ export async function probeGitHubWait(target: GitHubWaitTarget, cwd: string, run
     if (!pr) return { status: 'unknown' };
     if (pr.headRefOid !== target.commit) return { status: 'failure', conclusion: 'head_changed' };
   }
-  const args = ['run', 'list', '--workflow', target.workflow, '--limit', '20', '--json', 'databaseId,headSha,status,conclusion,url,updatedAt'];
-  if (target.kind === 'ci') args.push('--commit', target.commit, '--event', 'pull_request');
+  const args = ['run', 'list', '--workflow', target.workflow, '--limit', '20', '--json', 'databaseId,headSha,status,conclusion,url,updatedAt,createdAt,event'];
+  if (target.kind === 'ci') args.push('--commit', target.commit);
   else args.push('--branch', target.branch, '--event', 'push');
   const runs = await qualityJson<WorkflowRun[]>(args, cwd, run);
   if (!Array.isArray(runs)) return { status: 'unknown' };
   // A rerun updates an existing run, so creation order alone can hide a newer failure.
   runs.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-  let candidate = target.kind === 'ci' ? runs.find(item => item.headSha === target.commit) : runs[0];
+  const ciRuns = runs.filter(item => item.headSha === target.commit
+    && (item.event === 'pull_request' || item.event === 'workflow_dispatch'));
+  // A later-created manual recovery can prove CI after a PR startup failure,
+  // even if someone subsequently retries that original, unstartable run.
+  // Real failures and pending attempts still use latest-update ordering.
+  let candidate = target.kind === 'ci' ? ciRuns.find(item => !(item.status === 'completed'
+    && item.conclusion === 'startup_failure'
+    && ciRuns.some(recovery => recovery.event === 'workflow_dispatch'
+      && recovery.status === 'completed' && recovery.conclusion === 'success'
+      && Date.parse(recovery.createdAt) > Date.parse(item.createdAt)))) : runs[0];
   // Only the latest deployment may prove what is serving now. Never fall back
   // to an older green run after a rollback or a newer failed deployment.
   if (candidate && target.kind === 'deployment' && candidate.headSha !== target.commit) {

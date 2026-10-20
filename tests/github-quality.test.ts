@@ -10,7 +10,7 @@ const next = 'c'.repeat(40);
 const policy = projectQualitySchema.parse({ version: 1, ciWorkflow: 'ci.yml', deploymentWorkflow: 'cd-test.yml' });
 const pr = { number: 7, headRefOid: head, state: 'MERGED', mergedAt: '2026-09-10T00:00:00Z', mergeCommit: { oid: merge } };
 const target: GitHubWaitTarget = { kind: 'ci', workflow: 'ci.yml', commit: head, branch: 'master', pullRequest: 7, createdAt: new Date().toISOString() };
-const workflow = (commit = head, conclusion = 'success', status = 'completed') => ({ databaseId: 42, headSha: commit, conclusion, status, url: 'https://github.com/a/b/actions/runs/42', updatedAt: '2026-09-10T00:00:00Z' });
+const workflow = (commit = head, conclusion = 'success', status = 'completed') => ({ databaseId: 42, event: 'pull_request', headSha: commit, conclusion, status, url: 'https://github.com/a/b/actions/runs/42', createdAt: '2026-09-10T00:00:00Z', updatedAt: '2026-09-10T00:00:00Z' });
 function runner(options: { ci?: unknown; deployment?: unknown; head?: string; comparison?: string; localHead?: string } = {}): CommandRunner {
   return async (command, args) => {
     let value: unknown;
@@ -55,6 +55,48 @@ describe('commit-bound GitHub quality', () => {
     expect(await probeGitHubWait(target, '/repo', runner({ ci: [workflow(), rerun] }))).toMatchObject({ status: 'failure' });
     const deployment = { ...target, kind: 'deployment' as const, commit: merge, workflow: 'cd-test.yml' };
     expect(await probeGitHubWait(deployment, '/repo', runner({ deployment: [workflow(next), workflow(merge)], comparison: 'behind' }))).toEqual({ status: 'pending' });
+  });
+  it('accepts a later manual retry of the same workflow at the exact PR head', async () => {
+    const manual = { ...workflow(), databaseId: 43, event: 'workflow_dispatch', updatedAt: '2026-09-11T00:00:00Z' };
+    const commands: string[][] = [];
+    const base = runner({ ci: [workflow(head, 'startup_failure'), manual] });
+    const run: CommandRunner = async (command, args, cwd) => {
+      commands.push(args);
+      return base(command, args, cwd);
+    };
+    expect(await probeGitHubWait(target, '/repo', run)).toMatchObject({ status: 'success', runId: 43, commit: head });
+    const listing = commands.find(args => args[0] === 'run')!;
+    expect(listing).toContain('--commit');
+    expect(listing).toContain(head);
+    expect(listing).not.toContain('--event');
+    const input = { workspacePath: '/repo', agentsContent: '', qualityPolicy: policy, hasAgentBrowserEvidence: false };
+    expect((await checkAgentsCompletionGate(input, base)).ok).toBe(true);
+  });
+  it('uses a manual recovery after an old startup failure is retried again', async () => {
+    const startup = { ...workflow(head, 'startup_failure'), updatedAt: '2026-09-12T00:00:00Z' };
+    const recovery = { ...workflow(), databaseId: 43, event: 'workflow_dispatch', createdAt: '2026-09-11T00:00:00Z', updatedAt: '2026-09-11T00:05:00Z' };
+    expect(await probeGitHubWait(target, '/repo', runner({ ci: [startup, recovery] }))).toMatchObject({ status: 'success', runId: 43 });
+    expect(await probeGitHubWait(target, '/repo', runner({ ci: [startup] }))).toMatchObject({ status: 'failure', conclusion: 'startup_failure' });
+    const older = { ...recovery, createdAt: '2026-09-09T00:00:00Z' };
+    expect(await probeGitHubWait(target, '/repo', runner({ ci: [startup, older] }))).toMatchObject({ status: 'failure' });
+    const failure = { ...workflow(head, 'failure'), updatedAt: '2026-09-11T01:00:00Z' };
+    expect(await probeGitHubWait(target, '/repo', runner({ ci: [startup, recovery, failure] }))).toMatchObject({ status: 'failure', conclusion: 'failure' });
+  });
+  it('does not let manual evidence hide newer failures or pending attempts', async () => {
+    const manual = { ...workflow(), event: 'workflow_dispatch' };
+    for (const attempt of [workflow(head, 'failure'), workflow(head, '', 'in_progress')]) {
+      const latest = { ...attempt, updatedAt: '2026-09-11T00:00:00Z' };
+      expect(await probeGitHubWait(target, '/repo', runner({ ci: [manual, latest] }))).toMatchObject({
+        status: attempt.status === 'completed' ? 'failure' : 'pending',
+      });
+    }
+    const failedManual = { ...manual, conclusion: 'failure', updatedAt: '2026-09-11T00:00:00Z' };
+    expect(await probeGitHubWait(target, '/repo', runner({ ci: [workflow(), failedManual] }))).toMatchObject({ status: 'failure' });
+  });
+  it('rejects manual retries from other commits and unrelated event types', async () => {
+    for (const other of [{ ...workflow(next), event: 'workflow_dispatch' }, { ...workflow(), event: 'push' }]) {
+      expect(await probeGitHubWait(target, '/repo', runner({ ci: [other] }))).toEqual({ status: 'pending' });
+    }
   });
   it('requires both CI and TEST success and a clean matching PR checkout', async () => {
     const input = { workspacePath: '/repo', agentsContent: '', qualityPolicy: policy, hasAgentBrowserEvidence: false };
