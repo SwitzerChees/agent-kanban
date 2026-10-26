@@ -374,6 +374,7 @@ export const taskAgentRuns = sqliteTable('task_agent_runs', {
   waitResult: text('wait_result'),
   resumeAt: text('resume_at'),
   waitCount: integer('wait_count').notNull().default(0),
+  capacityRetryCount: integer('capacity_retry_count').notNull().default(0),
   createdAt: text('created_at').notNull(),
   startedAt: text('started_at').notNull(),
   updatedAt: text('updated_at').notNull(),
