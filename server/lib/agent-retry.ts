@@ -55,7 +55,23 @@ export function isTransientAgentCapacityFailure(error: unknown) {
     'rate limit exceeded',
     'ratelimit',
     'rate_limit',
-  ].some(marker => message.includes(marker));
+    'service unavailable',
+    'bad gateway',
+    'gateway timeout',
+  ].some(marker => message.includes(marker))
+    || /"httpstatuscode"\s*:\s*(429|502|503|504)\b/.test(message);
+}
+
+export const MAX_AGENT_CAPACITY_RETRIES = 8;
+
+// These waits live in task_agent_runs, outside the short in-process retry loop.
+// Jitter spreads recovery attempts; the bound prevents a permanent outage from
+// keeping a task alive indefinitely. A successful turn resets the counter.
+export function agentCapacityRetryDelayMs(error: unknown, previousRetries: number, jitter = Math.random()) {
+  if (!isRetryableAgentFailure(error) || !isTransientAgentCapacityFailure(error)
+    || previousRetries >= MAX_AGENT_CAPACITY_RETRIES) return null;
+  const base = 60_000 * 2 ** Math.max(0, previousRetries);
+  return Math.min(15 * 60_000, base + Math.floor(Math.max(0, Math.min(1, jitter)) * 30_000));
 }
 
 function errorMessage(error: unknown) {

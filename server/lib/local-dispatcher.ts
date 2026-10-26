@@ -25,8 +25,10 @@ import { loadProjectQuality } from './project-quality';
 import { captureGitHubWait, probeGitHubWait, type GitHubWaitTarget } from './github-quality';
 import { completedBrowserEvidence } from './browser-evidence';
 import {
+  agentCapacityRetryDelayMs,
   configuredAgentRetries,
   isRetryableAgentFailure,
+  isTransientAgentCapacityFailure,
   runWithAgentRetries,
 } from './agent-retry';
 import {
@@ -149,6 +151,7 @@ export class LocalTaskDispatcher {
 
     for (const row of queuedRows) {
       if (globalSlots <= 0) break;
+      if (!taskCapacityAvailability(row.task.agentHarness, row.task.agentModel).available) continue;
       if (!taskSlotAvailability(row.task.projectId, row.task.agentHarness).available) continue;
       globalSlots -= 1;
       const running = this.runTask(row.task, row.column);
@@ -235,7 +238,10 @@ export class LocalTaskDispatcher {
         const changed = db.update(schema.tasks).set({ agentStatus: 'queued', updatedAt: now })
           .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.agentStatus, 'waiting_external'), eq(schema.tasks.agentEnabled, true))).run();
         if (!changed.changes) continue;
-        db.update(schema.taskAgentRuns).set({ waitResult: evidence ? JSON.stringify(evidence) : null, updatedAt: now })
+        db.update(schema.taskAgentRuns).set({
+          waitResult: evidence ? JSON.stringify(evidence) : run.waitKind === 'rate_limit' ? run.waitResult : null,
+          updatedAt: now,
+        })
           .where(eq(schema.taskAgentRuns.id, run.id)).run();
         logTaskActivity(task.projectId, task.id, null, 'agent_wait_resumed', {
           runId: run.id, waitKind: run.waitKind, waitCount: run.waitCount,
@@ -531,7 +537,8 @@ export class LocalTaskDispatcher {
       const result = await runWithAgentRetries({
         retries: configuredAgentRetries(),
         signal: controller.signal,
-        shouldRetry: isRetryableAgentFailure,
+        // Provider outages need a durable cooldown, not another call 1.5s later.
+        shouldRetry: error => isRetryableAgentFailure(error) && !isTransientAgentCapacityFailure(error),
         run: (attempt) => {
           const unitName = taskHarnessUnitName(queued.id, agentRun.id, attempt);
           return runTaskAgentHarness({
@@ -576,6 +583,8 @@ export class LocalTaskDispatcher {
       });
 
       if (controller.signal.aborted) throw new Error('turn_cancelled');
+      db.update(schema.taskAgentRuns).set({ capacityRetryCount: 0 })
+        .where(eq(schema.taskAgentRuns.id, agentRun.id)).run();
       await closeTaskBrowserSession(browserSession);
       if (result.waitRequest) {
         const waitTarget = await captureGitHubWait(result.waitRequest.kind, workspacePath, qualityPolicy);
@@ -712,6 +721,12 @@ export class LocalTaskDispatcher {
         runtimeLogger.info('local codex task cancelled', { task_id: queued.id, task_key: queued.key });
         return;
       }
+      const deferred = deferTaskForCapacityRetry(queued.id, agentRun.id, error);
+      if (deferred) {
+        await closeTaskBrowserSession(browserSession);
+        notifyVoiceJobProgress(queued.id, `Provider temporarily unavailable. Resuming automatically at ${deferred.resumeAt}.`);
+        return;
+      }
       const failed = db.update(schema.tasks).set({
         agentStatus: 'failed',
         columnId: reviewColumn?.id ?? queued.columnId,
@@ -747,6 +762,72 @@ export class LocalTaskDispatcher {
   }
 }
 
+export function deferTaskForCapacityRetry(taskId: string, runId: string, error: unknown) {
+  const deferred = db.transaction(tx => {
+    const task = tx.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+    const run = tx.select().from(schema.taskAgentRuns).where(eq(schema.taskAgentRuns.id, runId)).get();
+    if (!task?.agentEnabled || task.agentStatus !== 'running'
+      || !run || run.taskId !== taskId || run.status !== 'running') return null;
+    const delayMs = agentCapacityRetryDelayMs(error, run.capacityRetryCount);
+    if (delayMs === null) return null;
+    const now = new Date();
+    const resumeAt = new Date(now.getTime() + delayMs).toISOString();
+    const reason = `Provider temporarily unavailable; automatic retry ${run.capacityRetryCount + 1}.`;
+    tx.update(schema.tasks).set({ agentStatus: 'waiting_external', updatedAt: now.toISOString() })
+      .where(eq(schema.tasks.id, taskId)).run();
+    tx.update(schema.taskAgentRuns).set({
+      status: 'waiting_external',
+      waitKind: 'rate_limit',
+      waitReason: reason,
+      // Keep the session and previous workflow evidence, but discard its target:
+      // a successful GitHub probe must not bypass a provider cooldown.
+      waitTarget: null,
+      resumeAt,
+      waitCount: run.waitCount + 1,
+      capacityRetryCount: run.capacityRetryCount + 1,
+      currentUnitName: null,
+      browserSessionName: null,
+      updatedAt: now.toISOString(),
+    }).where(eq(schema.taskAgentRuns.id, runId)).run();
+    return { projectId: task.projectId, taskKey: task.key, attempt: run.capacityRetryCount + 1, resumeAt, reason };
+  });
+  if (deferred) {
+    logTaskActivity(deferred.projectId, taskId, null, 'agent_waiting_external', {
+      runId, kind: 'rate_limit', attempt: deferred.attempt, reason: deferred.reason,
+      resumeAt: deferred.resumeAt, error: error instanceof Error ? error.message : String(error),
+    });
+    runtimeLogger.warn('local agent task deferred after provider failure', {
+      task_id: taskId, task_key: deferred.taskKey, run_id: runId,
+      retry: deferred.attempt, resume_at: deferred.resumeAt,
+    });
+  }
+  return deferred;
+}
+
+export function taskCapacityAvailability(harness: AgentHarness, model: CodexModel) {
+  const active = db.select({ task: schema.tasks, run: schema.taskAgentRuns })
+    .from(schema.taskAgentRuns)
+    .innerJoin(schema.tasks, eq(schema.tasks.id, schema.taskAgentRuns.taskId))
+    .where(and(
+      eq(schema.tasks.agentEnabled, true),
+      eq(schema.tasks.agentHarness, harness),
+      eq(schema.tasks.agentModel, model),
+      inArray(schema.tasks.agentStatus, ['queued', 'running', 'waiting_external']),
+      inArray(schema.taskAgentRuns.status, ['running', 'waiting_external']),
+    )).all();
+  const recovering = active.filter(({ run }) => run.capacityRetryCount > 0);
+  if (!recovering.length) return { available: true, resumeAt: null };
+  const resumeAt = recovering.reduce<string | null>((latest, { run }) =>
+    run.resumeAt && (!latest || run.resumeAt > latest) ? run.resumeAt : latest, null);
+  // Only one task probes recovery for this provider/model. Other providers and
+  // models keep their slots, and all state survives a service restart.
+  return {
+    available: (!resumeAt || Date.parse(resumeAt) <= Date.now())
+      && !active.some(({ task }) => task.agentStatus === 'running'),
+    resumeAt,
+  };
+}
+
 function activeTaskAgentRun(taskId: string) {
   return db.select().from(schema.taskAgentRuns)
     .where(and(
@@ -775,6 +856,7 @@ function ensureTaskAgentRun(task: typeof schema.tasks.$inferSelect) {
     waitResult: null,
     resumeAt: null,
     waitCount: 0,
+    capacityRetryCount: 0,
     createdAt: now,
     startedAt: now,
     updatedAt: now,

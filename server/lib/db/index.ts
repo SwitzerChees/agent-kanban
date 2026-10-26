@@ -427,6 +427,7 @@ export function ensureDatabase() {
       wait_result TEXT,
       resume_at TEXT,
       wait_count INTEGER NOT NULL DEFAULT 0,
+      capacity_retry_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       started_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -1025,6 +1026,9 @@ export function ensureDatabase() {
   const waitColumns = new Set((sqlite.prepare('PRAGMA table_info(task_agent_runs)').all() as Array<{ name: string }>).map(column => column.name));
   for (const name of ['wait_target', 'wait_result']) {
     if (!waitColumns.has(name)) sqlite.exec(`ALTER TABLE task_agent_runs ADD COLUMN ${name} TEXT`);
+  }
+  if (!waitColumns.has('capacity_retry_count')) {
+    sqlite.exec('ALTER TABLE task_agent_runs ADD COLUMN capacity_retry_count INTEGER NOT NULL DEFAULT 0');
   }
 
   ensureTaskHierarchy();
