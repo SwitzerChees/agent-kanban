@@ -90,7 +90,7 @@ describe('private project chats', () => {
 
     const second = chatModule.createProjectChat(projectId, {
       harness: 'codex',
-      agentModel: 'gpt-6-astra',
+      agentModel: 'gpt-6.2-astra',
       reasoningEffort: 'medium',
     }, owner).chat;
     expect(second.id).not.toBe(first.id);
@@ -98,7 +98,7 @@ describe('private project chats', () => {
     chatModule.updateProjectChat(second.id, { reasoningEffort: 'ultra' }, owner);
 
     const inherited = chatModule.createProjectChat(projectId, {}, owner).chat;
-    expect(inherited).toMatchObject({ harness: 'codex', agentModel: 'gpt-6-astra', reasoningEffort: 'ultra' });
+    expect(inherited).toMatchObject({ harness: 'codex', agentModel: 'gpt-6.2-astra', reasoningEffort: 'ultra' });
     expect(chatModule.listProjectChats(projectId, owner)).toHaveLength(3);
 
     const reactivated = chatModule.activateProjectChat(first.id, owner);
@@ -162,9 +162,9 @@ describe('private project chats', () => {
     expect(() => chatModule.updateProjectChat(thread.id, { harness: 'opencode' }, owner))
       .toThrow(/chat_config_locked/);
     const updated = chatModule.updateProjectChat(thread.id, {
-      agentModel: 'gpt-6.1-sol', reasoningEffort: 'max',
+      agentModel: 'gpt-6.2-sol', reasoningEffort: 'max',
     }, owner).chat;
-    expect(updated).toMatchObject({ harness: 'codex', agentModel: 'gpt-6.1-sol', reasoningEffort: 'max' });
+    expect(updated).toMatchObject({ harness: 'codex', agentModel: 'gpt-6.2-sol', reasoningEffort: 'max' });
     dbModule.db.update(dbModule.schema.projectChatThreads).set({ status: 'running' })
       .where(eq(dbModule.schema.projectChatThreads.id, thread.id)).run();
     expect(chatModule.updateProjectChat(thread.id, { reasoningEffort: 'high' }, owner).chat?.reasoningEffort).toBe('high');

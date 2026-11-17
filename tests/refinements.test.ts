@@ -115,7 +115,7 @@ describe('task refinements', () => {
     const task = await kanban.createTask(project.id, {
       title: 'A rough product idea',
       description: 'Add a useful overview.',
-      agentModel: 'gpt-6-astra',
+      agentModel: 'gpt-6.2-astra',
       reasoningEffort: 'max',
     }, admin);
     await expect(kanban.updateTask(task!.id, { descriptionSource: 'refined' }, admin))
@@ -144,7 +144,7 @@ describe('task refinements', () => {
       taskTitle: task!.title,
       taskDescription: task!.description,
       agentHarness: 'codex',
-      agentModel: 'gpt-6-astra',
+      agentModel: 'gpt-6.2-astra',
       reasoningEffort: 'max',
       projectFolderPath: project.folderPath,
       round: 1,

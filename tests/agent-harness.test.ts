@@ -48,14 +48,14 @@ describe('agent harness runtime contracts', () => {
   });
 
   test('keeps Sol as the default and exposes Astra with model-specific Codex efforts', () => {
-    expect(CODEX_MODEL).toBe('gpt-6.1-sol');
-    expect(DEFAULT_CODEX_MODEL).toBe('gpt-6.1-sol');
-    expect(CODEX_MODELS).toEqual(['gpt-6.1-sol', 'gpt-6-astra']);
-    expect(taskReasoningEfforts('codex', 'gpt-6-astra')).toEqual([
+    expect(CODEX_MODEL).toBe('gpt-6.2-sol');
+    expect(DEFAULT_CODEX_MODEL).toBe('gpt-6.2-sol');
+    expect(CODEX_MODELS).toEqual(['gpt-6.2-sol', 'gpt-6.2-astra']);
+    expect(taskReasoningEfforts('codex', 'gpt-6.2-astra')).toEqual([
       'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
     ]);
-    expect(isTaskRuntimeSelectionSupported('codex', 'gpt-6.1-sol', 'max')).toBe(true);
-    expect(isTaskRuntimeSelectionSupported('prime-agent', 'gpt-6-astra', 'high')).toBe(false);
+    expect(isTaskRuntimeSelectionSupported('codex', 'gpt-6.2-sol', 'max')).toBe(true);
+    expect(isTaskRuntimeSelectionSupported('prime-agent', 'gpt-6.2-astra', 'high')).toBe(false);
     expect(TEXT_REFINEMENT_REASONING_EFFORT).toBe('xhigh');
     expect(VISUAL_REFINEMENT_REASONING_EFFORT).toBe('medium');
     expect(QWEN_OPENCODE_MODEL).toBe('homelab-qwen-3-8-27b/Qwen/Qwen3.8-27B');
@@ -395,8 +395,8 @@ describe('agent harness runtime contracts', () => {
       .toEqual(expect.arrayContaining(['--format', 'json', '--agent', 'explore', '--session', 'open-1']));
     expect(buildProjectChatArgs({ ...common, harness: 'codex', nativeSessionId: 'codex-1' }))
       .toEqual(expect.arrayContaining(['exec', 'resume', '--json', 'codex-1']));
-    expect(buildProjectChatArgs({ ...common, harness: 'codex', agentModel: 'gpt-6-astra', reasoningEffort: 'ultra', nativeSessionId: 'codex-1' }))
-      .toEqual(expect.arrayContaining(['--model', 'gpt-6-astra', '--config', 'model_reasoning_effort="ultra"']));
+    expect(buildProjectChatArgs({ ...common, harness: 'codex', agentModel: 'gpt-6.2-astra', reasoningEffort: 'ultra', nativeSessionId: 'codex-1' }))
+      .toEqual(expect.arrayContaining(['--model', 'gpt-6.2-astra', '--config', 'model_reasoning_effort="ultra"']));
     expect(buildProjectChatArgs({ ...common, harness: 'opencode', nativeSessionId: null }))
       .not.toContain('--auto');
     for (const harness of ['codex', 'opencode', 'prime-agent'] as const) {

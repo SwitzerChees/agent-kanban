@@ -230,17 +230,17 @@ describe('external agent task controls', () => {
     }, admin);
     const task = await kanban.createTask(project.id, {
       title: 'Use additional intelligence',
-      agentModel: 'gpt-6-astra',
+      agentModel: 'gpt-6.2-astra',
       reasoningEffort: 'high',
     }, admin);
 
     expect(task).toMatchObject({
       agentHarness: 'codex',
-      agentModel: 'gpt-6-astra',
+      agentModel: 'gpt-6.2-astra',
       reasoningEffort: 'high',
     });
     await expect(kanban.updateTask(task.id, { reasoningEffort: 'ultra' }, admin))
-      .resolves.toMatchObject({ agentModel: 'gpt-6-astra', reasoningEffort: 'ultra' });
+      .resolves.toMatchObject({ agentModel: 'gpt-6.2-astra', reasoningEffort: 'ultra' });
     await expect(kanban.updateTask(task.id, { agentHarness: 'opencode' }, admin))
       .rejects.toMatchObject({ statusMessage: 'unsupported_task_agent_runtime' });
   });
@@ -379,7 +379,7 @@ describe('external agent task controls', () => {
       folderPath: path.join(testRoot, 'private-workspace'),
     }, admin);
     const task = await kanban.createTask(project.id, { title: 'Private task' }, admin);
-    expect(task).toMatchObject({ agentHarness: 'codex', agentModel: 'gpt-6.1-sol', reasoningEffort: 'xhigh' });
+    expect(task).toMatchObject({ agentHarness: 'codex', agentModel: 'gpt-6.2-sol', reasoningEffort: 'xhigh' });
     const now = new Date().toISOString();
     const outsider: User = {
       id: 'api-outsider',

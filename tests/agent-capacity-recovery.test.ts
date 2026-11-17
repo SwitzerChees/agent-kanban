@@ -50,9 +50,9 @@ test('parks 429 failures, preserves progress, frees slots and resumes the same r
     waitTarget: null, waitResult: '{"status":"success"}', waitCount: 13, capacityRetryCount: 1, completedAt: null,
   });
   expect(dispatcher.taskSlotAvailability(task.projectId, 'codex').projectRunning).toBe(0);
-  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.1-sol').available).toBe(false);
-  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6-astra').available).toBe(true);
-  expect(dispatcher.taskCapacityAvailability('prime-agent', 'gpt-6.1-sol').available).toBe(true);
+  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.2-sol').available).toBe(false);
+  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.2-astra').available).toBe(true);
+  expect(dispatcher.taskCapacityAvailability('prime-agent', 'gpt-6.2-sol').available).toBe(true);
 
   const probe = vi.fn().mockResolvedValue({ status: 'success' });
   const restarted = new dispatcher.LocalTaskDispatcher(probe);
@@ -66,17 +66,17 @@ test('parks 429 failures, preserves progress, frees slots and resumes the same r
   expect(db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get()?.agentStatus).toBe('queued');
   expect(db.select().from(schema.taskAgentRuns).where(eq(schema.taskAgentRuns.id, runId)).get())
     .toMatchObject({ nativeSessionId: 'RECOVER-session', capacityRetryCount: 1, waitResult: '{"status":"success"}' });
-  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.1-sol').available).toBe(true);
+  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.2-sol').available).toBe(true);
 
   // The first recovery probe blocks other tasks, including those in another project.
   db.update(schema.tasks).set({ agentStatus: 'running' }).where(eq(schema.tasks.id, task.id)).run();
   db.update(schema.taskAgentRuns).set({ status: 'running', resumeAt: null }).where(eq(schema.taskAgentRuns.id, runId)).run();
-  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.1-sol').available).toBe(false);
+  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.2-sol').available).toBe(false);
   const again = dispatcher.deferTaskForCapacityRetry(task.id, runId, outage)!;
   expect(again.attempt).toBe(2);
   expect(Date.parse(again.resumeAt) - Date.now()).toBeGreaterThan(119_000);
   kanban.cancelTaskAgent(task.id, db.select().from(schema.users).get()!);
-  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.1-sol').available).toBe(true);
+  expect(dispatcher.taskCapacityAvailability('codex', 'gpt-6.2-sol').available).toBe(true);
 });
 
 test('does not resurrect cancelled tasks or mask quality failures and stops after the retry budget', async () => {

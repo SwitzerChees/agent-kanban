@@ -654,8 +654,8 @@ const dictionary = {
     model: 'Model',
     reasoningEffort: 'Reasoning effort',
     fixedModel: 'Fixed model',
-    modelSol: 'GPT-6.1 Sol (default)',
-    modelAstra: 'GPT-6 Astra',
+    modelSol: 'GPT-6.2 Sol (default)',
+    modelAstra: 'GPT-6.2 Astra',
     harnessCodex: 'Codex',
     harnessOpenCode: 'OpenCode',
     harnessPrimeAgent: 'Prime Agent',
@@ -1012,8 +1012,8 @@ const dictionary = {
     model: 'Modell',
     reasoningEffort: 'Reasoning-Aufwand',
     fixedModel: 'Festes Modell',
-    modelSol: 'GPT-6.1 Sol (Standard)',
-    modelAstra: 'GPT-6 Astra',
+    modelSol: 'GPT-6.2 Sol (Standard)',
+    modelAstra: 'GPT-6.2 Astra',
     harnessCodex: 'Codex',
     harnessOpenCode: 'OpenCode',
     harnessPrimeAgent: 'Prime Agent',
@@ -1458,7 +1458,7 @@ const agentHarnessItems = computed(() => [
   { label: t.value.harnessPrimeAgent, value: 'prime-agent' },
 ]);
 const codexModelItems = computed(() => CODEX_MODELS.map(model => ({
-  label: model === 'gpt-6-astra' ? t.value.modelAstra : t.value.modelSol,
+  label: model === 'gpt-6.2-astra' ? t.value.modelAstra : t.value.modelSol,
   value: model,
 })));
 const reasoningEffortItems = computed(() => taskReasoningEfforts(taskForm.agentHarness, taskForm.agentModel).map(effort => ({

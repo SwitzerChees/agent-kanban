@@ -165,14 +165,36 @@ describe('task description separation migration', () => {
       description: 'Human original text',
       refinedDescription: 'Applied refinement text',
       descriptionSource: 'refined',
-      agentModel: 'gpt-6.1-sol',
+      agentModel: 'gpt-6.2-sol',
     });
   });
 
-  test('moves saved Codex Sol selections to GPT-6.1 Sol', () => {
+  test('moves saved Codex Sol selections to GPT-6.2 Sol', () => {
     for (const table of ['tasks', 'project_chat_threads', 'project_chat_preferences']) {
       const row = dbModule.sqliteDatabase.prepare(`SELECT agent_model FROM ${table}`).get() as { agent_model: string };
-      expect(row.agent_model).toBe('gpt-6.1-sol');
+      expect(row.agent_model).toBe('gpt-6.2-sol');
     }
+  });
+
+  test.each([
+    ['gpt-6-sol', 'gpt-6.2-sol'],
+    ['gpt-6.1-sol', 'gpt-6.2-sol'],
+    ['gpt-6-astra', 'gpt-6.2-astra'],
+    ['gpt-6.2-sol', 'gpt-6.2-sol'],
+    ['gpt-6.2-astra', 'gpt-6.2-astra'],
+  ])('migrates saved %s selections to %s without changing other settings', (previousModel, expectedModel) => {
+    const tables = ['tasks', 'project_chat_threads', 'project_chat_preferences'];
+    const previousRows = tables.map((table) => {
+      dbModule.sqliteDatabase.prepare(`UPDATE ${table} SET agent_model = ?`).run(previousModel);
+      return dbModule.sqliteDatabase.prepare(`SELECT * FROM ${table}`).get() as Record<string, unknown>;
+    });
+
+    dbModule.migrateLegacyCodexModels();
+    dbModule.migrateLegacyCodexModels();
+
+    tables.forEach((table, index) => {
+      const row = dbModule.sqliteDatabase.prepare(`SELECT * FROM ${table}`).get();
+      expect(row).toEqual({ ...previousRows[index], agent_model: expectedModel });
+    });
   });
 });
