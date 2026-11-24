@@ -19,7 +19,7 @@ codex:
 server:
   port: 3000
 ---
-# Local Kanban Codex Workflow
+# Local Kanban Agent Workflow
 
 You are working on a local Kanban task in a project folder managed by Agent Kanban.
 
@@ -31,7 +31,7 @@ Description:
 {{ issue.description | default: "No description provided." }}
 
 Rules:
-- Work only inside the project folder that was supplied as the Codex working directory.
+- Work only inside the project folder that was supplied as the agent working directory.
 - Keep changes focused on the task.
 - Run relevant validation before handing off.
 - Do not depend on Linear or any external issue tracker.

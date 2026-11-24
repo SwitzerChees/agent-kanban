@@ -25,7 +25,7 @@ async function runningTask(key: string) {
   const { db, schema } = database;
   const admin = db.select().from(schema.users).get()!;
   const project = await kanban.createProject({ name: key, key, folderPath: path.join(root, key) }, admin);
-  const task = await kanban.createTask(project.id, { title: 'Resume after provider failure', agentEnabled: true }, admin);
+  const task = await kanban.createTask(project.id, { title: 'Resume after provider failure', agentEnabled: true, agentHarness: 'codex' }, admin);
   const column = kanban.getBoard(project.id, admin).columns.find(column => column.key === 'in_progress')!;
   db.update(schema.tasks).set({ agentStatus: 'running', columnId: column.id }).where(eq(schema.tasks.id, task.id)).run();
   const now = new Date().toISOString();

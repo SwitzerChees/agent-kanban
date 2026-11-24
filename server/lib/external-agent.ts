@@ -1,4 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { CLAUDE_TASK_TOOLS, CLAUDE_INSPECTION_TOOLS, claudeArgs, claudeBlocks, claudeResultError, prepareClaudeSession, streamClaudeInput, claudeToolTracker, claudeEnvironment } from './claude';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { CodexRuntimeEvent, Issue } from './types';
@@ -9,10 +11,11 @@ import {
   QWEN_OPENCODE_MODEL,
   harnessExecutable,
   type AgentHarness,
-  type ReasoningEffort,
+  type AgentModel,
+  type TaskReasoningEffort,
 } from './agent-harness';
 import { parseAgentWaitRequest } from './agent-wait';
-import type { TaskHarnessRuntimeOptions, TaskHarnessSessionResult } from './codex';
+import type { CodexSteeringBatch, TaskHarnessRuntimeOptions, TaskHarnessSessionResult } from './codex';
 import {
   buildTaskHarnessRunner,
   prepareTaskHarnessSession,
@@ -44,7 +47,8 @@ interface CompletionCheckResult {
 
 interface RunExternalAgentSessionOptions {
   harness: ExternalHarness;
-  reasoningEffort: ReasoningEffort;
+  model?: AgentModel;
+  reasoningEffort: TaskReasoningEffort;
   workspacePath: string;
   issue: Issue;
   promptTemplate: string;
@@ -60,12 +64,14 @@ interface RunExternalAgentSessionOptions {
   nativeSessionId?: string | null;
   onSession?: (nativeSessionId: string) => void;
   runtime?: Omit<TaskHarnessRuntimeOptions, 'unitName'> & { unitNamePrefix: string };
+  loadSteering?: () => Promise<CodexSteeringBatch | null>;
   skipImplementationGate?: boolean;
 }
 
 export interface RunExternalRefinementOptions {
   harness: ExternalHarness;
-  reasoningEffort: ReasoningEffort;
+  model?: AgentModel;
+  reasoningEffort: TaskReasoningEffort;
   workspacePath: string;
   prompt: string;
   outputSchema: Record<string, unknown>;
@@ -92,12 +98,14 @@ export async function runExternalAgentSession(options: RunExternalAgentSessionOp
 
     const result = await runExternalProcess({
       harness: options.harness,
+      model: options.model,
       reasoningEffort: options.reasoningEffort,
       workspacePath: options.workspacePath,
       prompt,
       signal: options.signal,
       timeoutMs: options.turnTimeoutMs,
       autonomous: true,
+      loadSteering: options.loadSteering,
       // A successful threshold compaction can intentionally end a headless
       // Prime process without a final text message. The host-side staged gate
       // decides the next prompt from durable Git state instead of treating
@@ -175,6 +183,7 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
     const repair = attempt > 1;
     const result = await runExternalProcess({
       harness: options.harness,
+      model: options.model,
       reasoningEffort: options.reasoningEffort,
       workspacePath: options.workspacePath,
       prompt: buildExternalRefinementPrompt(options, repair, previousResponse, validationFeedback),
@@ -190,7 +199,16 @@ export async function runExternalRefinementTurn(options: RunExternalRefinementOp
       // different: resume that session after its daemon worker has shut down so
       // Prime can answer from the compacted repository context.
       nativeSessionId: externalRefinementSessionId(options.harness, repair, previousResponse, nativeSessionId),
+      onSession: options.harness === 'claude' ? id => options.onEvent?.({
+        event: nativeSessionId ? 'refinement_thread_resumed' : 'refinement_thread_started',
+        timestamp: now(), thread_id: id,
+      }) : undefined,
       sessionRoot: options.sessionRoot,
+      runtime: options.harness === 'claude' && options.sessionRoot ? {
+        unitName: `agent-kanban-task-refinement-${randomUUID()}`,
+        sessionRoot: options.sessionRoot,
+        workspaceWritable: false,
+      } : undefined,
     });
     nativeSessionId = result.sessionId ?? nativeSessionId;
     if (!result.text.trim()) {
@@ -268,7 +286,8 @@ export function refinementValidationFeedback(error: unknown) {
 
 export interface RunExternalProcessOptions {
   harness: ExternalHarness;
-  reasoningEffort: ReasoningEffort;
+  model?: AgentModel;
+  reasoningEffort: TaskReasoningEffort;
   workspacePath: string;
   prompt: string;
   signal: AbortSignal;
@@ -281,6 +300,7 @@ export interface RunExternalProcessOptions {
   nativeSessionId?: string | null;
   onSession?: (nativeSessionId: string) => void;
   sessionRoot?: string;
+  loadSteering?: () => Promise<CodexSteeringBatch | null>;
   runtime?: TaskHarnessRuntimeOptions;
 }
 
@@ -288,6 +308,12 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
   assertNotAborted(options.signal);
   const executable = harnessExecutable(options.harness);
   const args = buildExternalArgs(options);
+  const claude = options.harness === 'claude';
+  const extraEnv = { ...options.runtime?.extraEnv };
+  if (claude && options.sessionRoot) {
+    await prepareClaudeSession(options.sessionRoot);
+    Object.assign(extraEnv, claudeEnvironment(options.sessionRoot));
+  }
   let runner: ReturnType<typeof buildTaskHarnessRunner> | null = null;
   if (options.runtime && options.sessionRoot) {
     await prepareTaskHarnessSession(options.sessionRoot);
@@ -298,7 +324,7 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
       workspacePath: options.workspacePath,
       sessionRoot: options.sessionRoot,
       harness: options.harness,
-      extraEnv: options.runtime.extraEnv,
+      extraEnv,
       workspaceWritable: options.runtime.workspaceWritable,
       isolatedHome: options.runtime.isolatedHome,
       protectAgentCredentials: options.runtime.protectAgentCredentials,
@@ -307,9 +333,18 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
   }
   const child = spawn(runner?.command ?? executable, runner?.args ?? args, {
     cwd: options.workspacePath,
-    env: runner?.env ?? { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    env: runner?.env ?? { ...process.env, ...extraEnv, NO_COLOR: '1', FORCE_COLOR: '0' },
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
+  child.stdin.on('error', () => { /* Early CLI exit is reported below. */ });
+  const closeInput = claude && options.loadSteering
+    ? streamClaudeInput(child.stdin, options.prompt, options.loadSteering, message => options.onEvent({
+        event: 'steering_delivered', timestamp: now(), message,
+      }))
+    : null;
+  if (!closeInput) child.stdin.end(claude ? options.prompt : undefined);
+  let terminalResult: Record<string, unknown> | null = null;
+  const trackTools = claudeToolTracker();
   let stdoutBuffer = '';
   let stderrTail = '';
   let text = '';
@@ -331,13 +366,25 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
     try {
       event = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
-      if (!trimmed.startsWith('[')) text += `${trimmed}\n`;
+      if (!claude && !trimmed.startsWith('[')) text += `${trimmed}\n`;
       return;
     }
     const discoveredSessionId = externalSessionId(event, options.harness);
     if (discoveredSessionId && discoveredSessionId !== sessionId) {
       sessionId = discoveredSessionId;
       options.onSession?.(discoveredSessionId);
+    }
+    if (claude) {
+      if (event.type === 'result') {
+        terminalResult = event;
+        closeInput?.();
+      }
+      for (const tool of trackTools(event)) {
+        if (tool.type === 'tool_execution_end' && tool.toolName === 'Bash' && tool.command) options.onEvent({
+          event: 'item/completed', timestamp: now(), session_id: sessionId,
+          raw: { item: { type: 'commandExecution', command: tool.command, exitCode: 0, status: 'completed' } },
+        });
+      }
     }
     const runtimeProgress = options.harness === 'prime-agent' ? primeRuntimeProgress(event) : null;
     if (runtimeProgress) {
@@ -364,12 +411,12 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
       session_id: sessionId,
       thread_id: sessionId,
       message: fragment,
-      raw: event,
+      raw: claude ? undefined : event,
     });
   };
 
-  child.stdout.on('data', (chunk: Buffer) => {
-    stdoutBuffer += chunk.toString('utf8');
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+    stdoutBuffer += chunk;
     while (true) {
       const newline = stdoutBuffer.indexOf('\n');
       if (newline < 0) break;
@@ -385,9 +432,14 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
   try {
     const exit = await waitForExit(child, options.signal, options.timeoutMs);
     if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
-    if (exit.code !== 0) {
-      const detail = stderrTail.trim().slice(-2_000);
+    const resultError = terminalResult && claudeResultError(terminalResult);
+    if (exit.code !== 0 || resultError || (claude && !terminalResult)) {
+      const detail = resultError || stderrTail.trim().slice(-2_000) || 'missing terminal result';
       throw new Error(`${options.harness}_exit_${exit.code ?? exit.signal ?? 'unknown'}${detail ? `: ${detail}` : ''}`);
+    }
+    if (claude && terminalResult) {
+      const final = terminalResult as Record<string, unknown>;
+      if (typeof final.result === 'string') text = final.result;
     }
     if (!text.trim()) {
       if (options.allowEmptyResponse) return { text: '', sessionId };
@@ -404,12 +456,17 @@ async function runExternalProcess(options: RunExternalProcessOptions) {
     });
     return { text: text.trim(), sessionId };
   } finally {
+    closeInput?.();
     await stopTaskHarnessUnit(runner?.unitName);
     options.runtime?.onUnit?.(null, null);
   }
 }
 
 export function buildExternalArgs(options: RunExternalProcessOptions) {
+  if (options.harness === 'claude') {
+    const tools = options.disableTools ? '' : options.autonomous ? CLAUDE_TASK_TOOLS : CLAUDE_INSPECTION_TOOLS;
+    return [...claudeArgs({ ...options, tools }), ...(options.loadSteering ? ['--input-format', 'stream-json'] : [])];
+  }
   if (options.harness === 'opencode') {
     return [
       'run',
@@ -495,6 +552,9 @@ function buildImplementationRepairPrompt(detail: string) {
 }
 
 function assistantText(event: Record<string, unknown>, harness: ExternalHarness, emitted: string) {
+  if (harness === 'claude') {
+    return event.type === 'assistant' ? claudeBlocks(event).filter(b => b.type === 'text').map(b => b.text).join('') : '';
+  }
   if (harness === 'opencode') {
     if (event.type === 'text') {
       return stringValue(asRecord(event.part).text) ?? stringValue(event.text) ?? '';
@@ -627,7 +687,7 @@ function waitForExit(
       cleanup();
       reject(error);
     });
-    child.once('exit', (code, exitSignal) => {
+    child.once('close', (code, exitSignal) => {
       if (settled) return;
       settled = true;
       cleanup();

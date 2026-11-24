@@ -180,6 +180,8 @@ describe('task description separation migration', () => {
     ['gpt-6-sol', 'gpt-6.2-sol'],
     ['gpt-6.1-sol', 'gpt-6.2-sol'],
     ['gpt-6-astra', 'gpt-6.2-astra'],
+    ['claude-fable-5-2', 'claude-fable-5-2'],
+    ['claude-opus-5-5', 'claude-opus-5-5'],
     ['gpt-6.2-sol', 'gpt-6.2-sol'],
     ['gpt-6.2-astra', 'gpt-6.2-astra'],
   ])('migrates saved %s selections to %s without changing other settings', (previousModel, expectedModel) => {

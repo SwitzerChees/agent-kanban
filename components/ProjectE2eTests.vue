@@ -2,7 +2,7 @@
 type Locale = 'en' | 'de';
 type RunStatus = 'queued' | 'running' | 'passed' | 'warning' | 'failed' | 'cancelled';
 type ExecutionMode = 'browser_harness' | 'project_command';
-type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
+import { DEFAULT_AGENT_HARNESS, type AgentHarness } from '~/shared/agent-runtime';
 type ReasoningEffort = 'low' | 'medium' | 'xhigh';
 
 interface E2eProject {
@@ -166,7 +166,7 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 function emptyDraft() {
   return {
     suiteId: '', title: '', scenario: '', preconditions: '', expectedResult: '', roles: '', targetUrl: '',
-    executionMode: 'browser_harness' as ExecutionMode, agentHarness: 'codex' as AgentHarness, reasoningEffort: 'xhigh' as ReasoningEffort,
+    executionMode: 'browser_harness' as ExecutionMode, agentHarness: DEFAULT_AGENT_HARNESS as AgentHarness, reasoningEffort: 'xhigh' as ReasoningEffort,
     runnerCommand: '', timeoutSeconds: 900, triggerColumnKey: '__manual__', triggerOberthemaId: '__all__',
     triggerUnterthemaId: '__all__', enabled: true,
   };
@@ -195,6 +195,7 @@ const executionModeItems = computed(() => [
   { label: copy.value.projectCommand, value: 'project_command' },
 ]);
 const harnessItems = [
+  { label: 'Claude Code', value: 'claude' },
   { label: 'Codex', value: 'codex' },
   { label: 'OpenCode', value: 'opencode' },
   { label: 'Prime Agent', value: 'prime-agent' },

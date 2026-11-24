@@ -4,7 +4,7 @@ import { requireUser } from '../../../lib/security/auth';
 import { createTask } from '../../../lib/kanban';
 import { parseTaskUploadParts } from '../../../lib/task-upload';
 import { assertTaskUploadContentLength } from '../../../lib/upload-limits';
-import { AGENT_HARNESSES, CODEX_MODELS, TASK_REASONING_EFFORTS } from '../../../lib/agent-harness';
+import { AGENT_HARNESSES, AGENT_MODELS, TASK_REASONING_EFFORTS } from '../../../lib/agent-harness';
 
 const jsonTaskSchema = z.object({
   title: z.string().min(1),
@@ -16,7 +16,7 @@ const jsonTaskSchema = z.object({
   assigneeId: z.string().optional().nullable(),
   agentEnabled: z.boolean().optional(),
   agentHarness: z.enum(AGENT_HARNESSES).optional(),
-  agentModel: z.enum(CODEX_MODELS).optional(),
+  agentModel: z.enum(AGENT_MODELS).optional(),
   reasoningEffort: z.enum(TASK_REASONING_EFFORTS).optional(),
   clientRequestId: z.string().min(16).max(128).regex(/^[A-Za-z0-9._:-]+$/).optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),

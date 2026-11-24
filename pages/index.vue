@@ -7,12 +7,15 @@ import { commandPaletteTaskBuckets } from '~/utils/command-palette';
 import { compressedImageFileName, compressImageForUpload } from '~/utils/image-upload';
 import { canCompleteReviewedAgentTask } from '~/utils/task-status-transition';
 import {
-  CODEX_MODELS,
-  DEFAULT_CODEX_MODEL,
+  MODEL_LABELS,
+  selectableModels,
+  modelForHarness,
+  DEFAULT_AGENT_HARNESS,
+  DEFAULT_CLAUDE_MODEL,
   DEFAULT_TASK_REASONING_EFFORT,
   taskReasoningEfforts,
   type AgentHarness,
-  type CodexModel,
+  type AgentModel,
   type TaskReasoningEffort,
 } from '~/shared/agent-runtime';
 
@@ -139,7 +142,7 @@ interface Task {
   agentEnabled: boolean;
   agentStatus: 'idle' | 'queued' | 'running' | 'waiting_external' | 'failed' | 'done';
   agentHarness: AgentHarness;
-  agentModel: CodexModel;
+  agentModel: AgentModel;
   reasoningEffort: TaskReasoningEffort;
   attachments: Attachment[];
   tags: string[];
@@ -654,8 +657,6 @@ const dictionary = {
     model: 'Model',
     reasoningEffort: 'Reasoning effort',
     fixedModel: 'Fixed model',
-    modelSol: 'GPT-6.2 Sol (default)',
-    modelAstra: 'GPT-6.2 Astra',
     harnessCodex: 'Codex',
     harnessOpenCode: 'OpenCode',
     harnessPrimeAgent: 'Prime Agent',
@@ -1012,8 +1013,6 @@ const dictionary = {
     model: 'Modell',
     reasoningEffort: 'Reasoning-Aufwand',
     fixedModel: 'Festes Modell',
-    modelSol: 'GPT-6.2 Sol (Standard)',
-    modelAstra: 'GPT-6.2 Astra',
     harnessCodex: 'Codex',
     harnessOpenCode: 'OpenCode',
     harnessPrimeAgent: 'Prime Agent',
@@ -1283,6 +1282,7 @@ const emptyProjectForm = () => ({
   agentConcurrencyLimit: 1,
   e2eConcurrencyLimit: 2,
   agentHarnessLimits: {
+    claude: 1,
     codex: 1,
     opencode: 1,
     'prime-agent': 1,
@@ -1299,8 +1299,8 @@ const taskForm = reactive({
   swimlaneId: '',
   assigneeId: UNASSIGNED_ID,
   agentEnabled: false,
-  agentHarness: 'codex' as AgentHarness,
-  agentModel: DEFAULT_CODEX_MODEL as CodexModel,
+  agentHarness: DEFAULT_AGENT_HARNESS as AgentHarness,
+  agentModel: DEFAULT_CLAUDE_MODEL as AgentModel,
   reasoningEffort: DEFAULT_TASK_REASONING_EFFORT as TaskReasoningEffort,
   priority: 'normal' as Task['priority'],
   tags: [] as string[],
@@ -1453,12 +1453,13 @@ const taskModalContentProps = { 'aria-modal': 'true' } as unknown as NonNullable
 
 const t = computed(() => dictionary[locale.value]);
 const agentHarnessItems = computed(() => [
+  { label: 'Claude Code', value: 'claude' },
   { label: t.value.harnessCodex, value: 'codex' },
   { label: t.value.harnessOpenCode, value: 'opencode' },
   { label: t.value.harnessPrimeAgent, value: 'prime-agent' },
 ]);
-const codexModelItems = computed(() => CODEX_MODELS.map(model => ({
-  label: model === 'gpt-6.2-astra' ? t.value.modelAstra : t.value.modelSol,
+const agentModelItems = computed(() => selectableModels(taskForm.agentHarness).map(model => ({
+  label: MODEL_LABELS[model],
   value: model,
 })));
 const reasoningEffortItems = computed(() => taskReasoningEfforts(taskForm.agentHarness, taskForm.agentModel).map(effort => ({
@@ -1472,12 +1473,13 @@ const reasoningEffortItems = computed(() => taskReasoningEfforts(taskForm.agentH
   }[effort],
   value: effort,
 })));
-const selectedHarnessLabel = computed(() => agentHarnessItems.value.find((item) => item.value === taskForm.agentHarness)?.label ?? t.value.harnessCodex);
-const selectedHarnessModel = computed(() => taskForm.agentHarness === 'codex' ? taskForm.agentModel : 'Qwen/Qwen3.8-27B');
+const selectedHarnessLabel = computed(() => agentHarnessItems.value.find((item) => item.value === taskForm.agentHarness)?.label ?? 'Claude Code');
+const selectedHarnessModel = computed(() => agentModelItems.value.length ? taskForm.agentModel : 'Qwen/Qwen3.8-27B');
 watch(
   () => [taskForm.agentHarness, taskForm.agentModel] as const,
   ([harness, model]) => {
-    const supported = taskReasoningEfforts(harness, model);
+    taskForm.agentModel = modelForHarness(harness, model);
+    const supported = taskReasoningEfforts(harness, taskForm.agentModel);
     if (!supported.includes(taskForm.reasoningEffort)) taskForm.reasoningEffort = DEFAULT_TASK_REASONING_EFFORT;
   },
 );
@@ -3317,8 +3319,8 @@ const openTaskModal = async (columnId?: string, placement?: TaskPlacement) => {
     swimlaneId: defaultSwimlaneId.value,
     assigneeId: defaultTaskAssigneeId.value,
     agentEnabled: false,
-    agentHarness: 'codex',
-    agentModel: DEFAULT_CODEX_MODEL,
+    agentHarness: DEFAULT_AGENT_HARNESS,
+    agentModel: DEFAULT_CLAUDE_MODEL,
     reasoningEffort: DEFAULT_TASK_REASONING_EFFORT,
     priority: 'normal',
     tags: [],
@@ -3795,8 +3797,8 @@ const saveTaskAction = async () => {
         swimlaneId: defaultSwimlaneId.value,
         assigneeId: defaultTaskAssigneeId.value,
         agentEnabled: false,
-        agentHarness: 'codex',
-        agentModel: DEFAULT_CODEX_MODEL,
+        agentHarness: DEFAULT_AGENT_HARNESS,
+        agentModel: DEFAULT_CLAUDE_MODEL,
         reasoningEffort: DEFAULT_TASK_REASONING_EFFORT,
         priority: 'normal',
         tags: [],
@@ -5623,7 +5625,7 @@ const commandTaskItem = (task: CommandPaletteTask): AppCommandPaletteItem => ({
     task.assigneeName,
     task.assigneeEmail,
     task.columnDone ? `${t.value.commandCompleted} ${t.value.completedTasks}` : null,
-    task.agentEnabled ? `${t.value.aiTask} AI agent Codex` : t.value.humanTask,
+    task.agentEnabled ? `${t.value.aiTask} AI agent` : t.value.humanTask,
     ...task.tags,
   ].filter(Boolean).join(' '),
   searchText: plainTextDescription(task.description),
@@ -7421,6 +7423,9 @@ const humanError = (error: unknown) => {
                   </div>
 
                   <div class="grid gap-3 sm:grid-cols-3">
+                    <UFormField label="Claude Code" :description="t.agentConcurrencyHarnessHelp" size="sm">
+                      <UInput v-model.number="projectForm.agentHarnessLimits.claude" type="number" min="0" max="100" inputmode="numeric" size="lg" />
+                    </UFormField>
                     <UFormField :label="t.harnessCodex" :description="t.agentConcurrencyHarnessHelp" size="sm">
                       <UInput v-model.number="projectForm.agentHarnessLimits.codex" type="number" min="0" max="100" inputmode="numeric" size="lg" />
                     </UFormField>
@@ -8234,12 +8239,12 @@ const humanError = (error: unknown) => {
                           :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                         />
                       </UFormField>
-                      <UFormField v-if="taskForm.agentHarness === 'codex'" :label="t.model" size="sm">
+                      <UFormField v-if="agentModelItems.length" :label="t.model" size="sm">
                         <USelect
                           v-model="taskForm.agentModel"
                           data-testid="task-model-select"
                           class="w-full"
-                          :items="codexModelItems"
+                          :items="agentModelItems"
                           size="lg"
                           icon="i-lucide-brain-circuit"
                           :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
@@ -8256,7 +8261,7 @@ const humanError = (error: unknown) => {
                           :disabled="editingTask?.agentStatus === 'running' || editingTask?.agentStatus === 'waiting_external'"
                         />
                       </UFormField>
-                      <div v-if="taskForm.agentHarness !== 'codex'" class="flex items-center justify-between gap-3 rounded-lg bg-zinc-100/80 px-3 py-2 text-xs dark:bg-zinc-800/70">
+                      <div v-if="!agentModelItems.length" class="flex items-center justify-between gap-3 rounded-lg bg-zinc-100/80 px-3 py-2 text-xs dark:bg-zinc-800/70">
                         <span class="text-zinc-500 dark:text-zinc-400">{{ t.fixedModel }}</span>
                         <span data-testid="task-model-label" class="min-w-0 truncate font-mono font-medium text-zinc-800 dark:text-zinc-200">{{ selectedHarnessModel }}</span>
                       </div>

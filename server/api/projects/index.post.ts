@@ -13,6 +13,7 @@ const createProjectSchema = z.object({
   agentConcurrencyLimit: z.number().int().min(0).max(100).optional(),
   e2eConcurrencyLimit: z.number().int().min(0).max(100).optional(),
   agentHarnessLimits: z.object({
+    claude: z.number().int().min(0).max(100).optional(),
     codex: z.number().int().min(0).max(100),
     opencode: z.number().int().min(0).max(100),
     'prime-agent': z.number().int().min(0).max(100),

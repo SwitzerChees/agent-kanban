@@ -1,3 +1,4 @@
+import { AGENT_HARNESSES } from '../../../shared/agent-runtime';
 import { getRouterParam, readBody } from 'h3';
 import { z } from 'zod';
 import { requireUser } from '../../lib/security/auth';
@@ -12,7 +13,7 @@ const bodySchema = z.object({
   roles: z.array(z.string().max(100)).max(20).optional(),
   targetUrl: z.string().max(2_000).optional().nullable(),
   executionMode: z.enum(['browser_harness', 'project_command']).optional(),
-  agentHarness: z.enum(['codex', 'opencode', 'prime-agent']).optional(),
+  agentHarness: z.enum(AGENT_HARNESSES).optional(),
   reasoningEffort: z.enum(['low', 'medium', 'xhigh']).optional(),
   runnerCommand: z.string().max(4_000).optional(),
   timeoutSeconds: z.number().int().min(10).max(7_200).optional(),

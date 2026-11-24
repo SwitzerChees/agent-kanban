@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_HARNESS } from './agent-harness';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
@@ -339,7 +340,7 @@ function voiceContext(threadId: string) {
     .filter((command) => command.kind === 'orchestrate' || (command.kind === 'steer' && !command.targetTaskId))
     .map((command) => publicOrchestratorJob(
       command,
-      thread?.harness ?? 'codex',
+      thread?.harness ?? DEFAULT_AGENT_HARNESS,
       thread?.reasoningEffort ?? 'xhigh',
     ));
   const jobs = [...taskJobs, ...orchestratorJobs]
@@ -496,6 +497,7 @@ async function dispatchStoredCommand(
         columnId: todo.id,
         agentEnabled: true,
         agentHarness: thread.harness,
+        agentModel: thread.agentModel,
         reasoningEffort: thread.reasoningEffort,
         clientRequestId: `voice-${command.id}`,
         tags: ['voice'],
@@ -682,7 +684,7 @@ function publicVoiceJob(
     taskId: job.taskId,
     taskKey: task?.key ?? '',
     title: task?.title ?? '',
-    harness: task?.agentHarness ?? 'codex',
+    harness: task?.agentHarness ?? DEFAULT_AGENT_HARNESS,
     reasoningEffort: task?.reasoningEffort ?? 'xhigh',
     status: normalizeJobStatus(task?.agentStatus, job.status),
     latestProgress: job.latestProgress,
@@ -809,6 +811,7 @@ function fallbackTaskTitle(value: string) {
 }
 
 function harnessLabel(harness: string) {
+  if (harness === 'claude') return 'Claude Code';
   if (harness === 'prime-agent') return 'Prime Agent';
   if (harness === 'opencode') return 'OpenCode';
   return 'Codex';

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { RealtimeChannel } from '~/utils/realtime-channel';
 type Locale = 'en' | 'de';
-type AgentHarness = 'codex' | 'opencode' | 'prime-agent';
-type CodexModel = 'gpt-6.2-sol' | 'gpt-6.2-astra';
+import { MODEL_LABELS, selectableModels, taskReasoningEfforts, type AgentHarness, type AgentModel } from '~/shared/agent-runtime';
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 interface ProjectChat {
@@ -11,7 +10,7 @@ interface ProjectChat {
   wikiPageId: string | null;
   title: string;
   harness: AgentHarness;
-  agentModel: CodexModel;
+  agentModel: AgentModel;
   reasoningEffort: ReasoningEffort;
   status: 'ready' | 'running' | 'failed';
   isCurrent: boolean;
@@ -60,10 +59,10 @@ interface ProjectChatToolActivity {
 interface ChatCapabilities {
   harnesses: Array<{ value: AgentHarness; available: boolean }>;
   reasoningEfforts: ReasoningEffort[];
-  codexModels: CodexModel[];
+  codexModels: AgentModel[];
   codexReasoningEfforts: ReasoningEffort[];
   defaultHarness: AgentHarness;
-  defaultAgentModel: CodexModel;
+  defaultAgentModel: AgentModel;
   defaultReasoningEffort: ReasoningEffort;
 }
 
@@ -263,11 +262,13 @@ const streamTargets = new Map<string, { content: string; state: ProjectChatMessa
 
 const harnessItems = computed(() => {
   const labels: Record<AgentHarness, string> = {
+    claude: 'Claude Code',
     codex: 'Codex',
     opencode: 'OpenCode',
     'prime-agent': 'Prime Agent',
   };
   const configured = capabilities.value?.harnesses ?? [
+    { value: 'claude' as const, available: true },
     { value: 'prime-agent' as const, available: true },
     { value: 'codex' as const, available: true },
     { value: 'opencode' as const, available: true },
@@ -278,14 +279,9 @@ const harnessItems = computed(() => {
     disabled: !item.available,
   }));
 });
-const modelItems = computed(() => [
-  { label: 'GPT-6.2 Sol', value: 'gpt-6.2-sol' },
-  { label: 'GPT-6.2 Astra', value: 'gpt-6.2-astra' },
-]);
-const effortItems = computed(() => (chat.value?.harness === 'codex'
-  ? capabilities.value?.codexReasoningEfforts ?? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
-  : capabilities.value?.reasoningEfforts ?? ['low', 'medium', 'xhigh']
-).map((value) => ({ label: t.value[value], value })));
+const modelItems = computed(() => chat.value ? selectableModels(chat.value.harness).map(value => ({ label: MODEL_LABELS[value], value })) : []);
+const effortItems = computed(() => chat.value ? taskReasoningEfforts(chat.value.harness, chat.value.agentModel)
+  .map(value => ({ label: t.value[value], value })) : []);
 const effortLabel = (value: ReasoningEffort) => t.value[value];
 const hasMessages = computed(() => messages.value.length > 0);
 const running = computed(() => chat.value?.status === 'running');
@@ -424,8 +420,8 @@ async function updateHarness(value: AgentHarness) {
   await persistConfig({ harness: value });
 }
 
-async function updateModel(value: CodexModel) {
-  if (!chat.value || chat.value.harness !== 'codex' || configUpdating.value || value === chat.value.agentModel) return;
+async function updateModel(value: AgentModel) {
+  if (!chat.value || !modelItems.value.length || configUpdating.value || value === chat.value.agentModel) return;
   await persistConfig({ agentModel: value });
 }
 
@@ -434,7 +430,7 @@ async function updateEffort(value: ReasoningEffort) {
   await persistConfig({ reasoningEffort: value });
 }
 
-async function persistConfig(body: { harness?: AgentHarness; agentModel?: CodexModel; reasoningEffort?: ReasoningEffort }) {
+async function persistConfig(body: { harness?: AgentHarness; agentModel?: AgentModel; reasoningEffort?: ReasoningEffort }) {
   if (!chat.value) return;
   errorMessage.value = '';
   configUpdating.value = true;
@@ -1113,7 +1109,7 @@ function friendlyError(error: unknown) {
                     <span>·</span>
                     <span>{{ harnessItems.find((option) => option.value === item.harness)?.label?.split(' · ')[0] }}</span>
                     <span>·</span>
-                    <span v-if="item.harness === 'codex'">{{ modelItems.find((option) => option.value === item.agentModel)?.label }} ·</span>
+                    <span v-if="selectableModels(item.harness).length">{{ MODEL_LABELS[item.agentModel] }} ·</span>
                     <span>{{ effortLabel(item.reasoningEffort) }}</span>
                   </span>
                 </span>
@@ -1237,7 +1233,7 @@ function friendlyError(error: unknown) {
                   value-key="value"
                   size="sm"
                   class="min-w-0"
-                  :class="chat.harness === 'codex' ? 'col-span-2' : ''"
+                  :class="modelItems.length ? 'col-span-2' : ''"
                   icon="i-lucide-bot"
                   :ui="{ content: 'z-[60]' }"
                   :aria-label="t.harness"
@@ -1246,7 +1242,7 @@ function friendlyError(error: unknown) {
                   @update:model-value="updateHarness($event as AgentHarness)"
                 />
                 <USelect
-                  v-if="chat.harness === 'codex'"
+                  v-if="modelItems.length"
                   :model-value="chat.agentModel"
                   :items="modelItems"
                   value-key="value"
@@ -1256,7 +1252,7 @@ function friendlyError(error: unknown) {
                   :aria-label="t.model"
                   :disabled="configUpdating"
                   data-testid="project-chat-model"
-                  @update:model-value="updateModel($event as CodexModel)"
+                  @update:model-value="updateModel($event as AgentModel)"
                 />
                 <USelect
                   :model-value="chat.reasoningEffort"

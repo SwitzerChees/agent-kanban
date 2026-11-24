@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { claudeCredentialPath } from './claude';
 import { runtimeLogger } from './logger';
 import type { AgentHarness } from './agent-harness';
 
@@ -155,6 +156,9 @@ export function buildTaskHarnessRunner(options: TaskHarnessSandboxOptions): Task
     'KillMode=control-group',
     ...taskHarnessResourceProperties(),
   ];
+  if (options.harness === 'claude' && !options.protectAgentCredentials && fs.existsSync(claudeCredentialPath())) {
+    properties.push(`ReadWritePaths=${claudeCredentialPath()}`);
+  }
   if (options.protectAgentCredentials) {
     for (const credentialPath of agentCredentialPaths(hostHome)) {
       if (fs.existsSync(credentialPath)) properties.push(`InaccessiblePaths=${credentialPath}`);
@@ -220,6 +224,8 @@ function safeCommandEnvironment(): NodeJS.ProcessEnv {
 
 function agentCredentialPaths(home: string) {
   return [
+    path.join(home, '.claude'),
+    claudeCredentialPath(),
     path.join(home, '.codex'),
     path.join(home, '.prime'),
     path.join(home, '.config', 'opencode'),

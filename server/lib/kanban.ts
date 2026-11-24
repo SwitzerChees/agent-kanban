@@ -10,12 +10,12 @@ import { activeTaskDescription, publicTaskDescription, type TaskDescriptionSourc
 import type { User } from './db/schema';
 import {
   AGENT_HARNESSES,
-  DEFAULT_AGENT_HARNESS,
-  DEFAULT_CODEX_MODEL,
+  harnessForModel,
+  modelForHarness,
   DEFAULT_TASK_REASONING_EFFORT,
   isTaskRuntimeSelectionSupported,
   type AgentHarness,
-  type CodexModel,
+  type AgentModel,
   type TaskReasoningEffort,
 } from './agent-harness';
 import { queueE2eForTaskTransition } from './e2e-tests';
@@ -788,7 +788,7 @@ type CreateTaskInput = {
   assigneeId?: string | null;
   agentEnabled?: boolean;
   agentHarness?: AgentHarness;
-  agentModel?: CodexModel;
+  agentModel?: AgentModel;
   reasoningEffort?: TaskReasoningEffort;
   clientRequestId?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
@@ -865,8 +865,8 @@ async function createTaskOnce(
   const position = nextTaskPosition(projectId, columnId, placement.oberthemaId, placement.unterthemaId);
   const taskId = randomUUID();
   const taskKey = nextTaskKey(project.key);
-  const agentHarness = input.agentHarness ?? DEFAULT_AGENT_HARNESS;
-  const agentModel = input.agentModel ?? DEFAULT_CODEX_MODEL;
+  const agentHarness = input.agentHarness ?? harnessForModel(input.agentModel);
+  const agentModel = input.agentModel ?? modelForHarness(agentHarness);
   const reasoningEffort = input.reasoningEffort ?? DEFAULT_TASK_REASONING_EFFORT;
   assertTaskRuntimeSelection(agentHarness, agentModel, reasoningEffort);
 
@@ -985,7 +985,7 @@ export async function updateTask(taskId: string, input: {
   assigneeId?: string | null;
   agentEnabled?: boolean;
   agentHarness?: AgentHarness;
-  agentModel?: CodexModel;
+  agentModel?: AgentModel;
   reasoningEffort?: TaskReasoningEffort;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   tags?: string[];
@@ -1021,7 +1021,7 @@ export async function updateTask(taskId: string, input: {
   let nextAgentStatus = input.agentStatus;
   const nextAgentEnabled = input.agentEnabled ?? task.agentEnabled;
   const nextAgentHarness = input.agentHarness ?? task.agentHarness;
-  const nextAgentModel = input.agentModel ?? task.agentModel;
+  const nextAgentModel = input.agentModel ?? modelForHarness(nextAgentHarness, task.agentModel);
   const nextReasoningEffort = input.reasoningEffort ?? task.reasoningEffort;
   assertTaskRuntimeSelection(nextAgentHarness, nextAgentModel, nextReasoningEffort);
   const placementRequested = input.oberthemaId !== undefined || input.unterthemaId !== undefined;
@@ -1069,7 +1069,7 @@ export async function updateTask(taskId: string, input: {
     assigneeId: nextAssigneeId,
     agentEnabled: input.agentEnabled,
     agentHarness: input.agentHarness,
-    agentModel: input.agentModel,
+    agentModel: nextAgentModel,
     reasoningEffort: input.reasoningEffort,
     priority: input.priority,
     position: input.position ?? (placementChanged
@@ -1099,7 +1099,7 @@ export async function updateTask(taskId: string, input: {
       || (input.agentModel !== undefined && input.agentModel !== task.agentModel)
       || (input.reasoningEffort !== undefined && input.reasoningEffort !== task.reasoningEffort),
     agentHarness: input.agentHarness ?? task.agentHarness,
-    agentModel: input.agentModel ?? task.agentModel,
+    agentModel: nextAgentModel,
     reasoningEffort: input.reasoningEffort ?? task.reasoningEffort,
     assigneeChanged: input.assigneeId !== undefined && nextAssigneeId !== task.assigneeId,
     agentStatus: nextAgentStatus,
@@ -1145,7 +1145,7 @@ export async function updateTask(taskId: string, input: {
 
 function assertTaskRuntimeSelection(
   harness: AgentHarness,
-  model: CodexModel,
+  model: AgentModel,
   effort: TaskReasoningEffort,
 ) {
   if (!isTaskRuntimeSelectionSupported(harness, model, effort)) {

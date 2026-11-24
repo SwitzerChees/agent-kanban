@@ -1,3 +1,4 @@
+import { claudeArgs, claudeTextDelta, claudeToolTracker, claudeResultError, claudeCredentialPath, claudeEnvironment, prepareClaudeSession, CLAUDE_TASK_TOOLS } from './claude';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ import {
   QWEN_OPENCODE_MODEL,
   harnessExecutable,
   type AgentHarness,
-  type CodexModel,
+  type AgentModel,
   type TaskReasoningEffort,
 } from './agent-harness';
 
@@ -21,7 +22,7 @@ export type ProjectChatMode = 'read_only' | 'orchestrator';
 export interface ProjectChatHarnessTurnOptions {
   threadId: string;
   harness: AgentHarness;
-  agentModel: CodexModel;
+  agentModel: AgentModel;
   reasoningEffort: TaskReasoningEffort;
   workspacePath: string;
   sessionRoot: string;
@@ -87,6 +88,7 @@ export async function runProjectChatHarnessTurn(
   assertNotAborted(options.signal);
   const session = await prepareSessionDirectories(options.sessionRoot);
 
+  if (options.harness === 'claude') await prepareClaudeSession(options.sessionRoot, path.dirname(session.skillDirectory));
   const localCodex = path.join(os.homedir(), '.local', 'bin', 'codex');
   const executable = options.harness === 'codex'
     ? process.env.KANBAN_CODEX_EXEC_COMMAND || (fs.existsSync(localCodex) ? localCodex : 'codex')
@@ -113,9 +115,12 @@ export async function runProjectChatHarnessTurn(
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const systemPrompt = projectChatSystemPrompt(options.mode, options.projectInstructions);
+  child.stdin.on('error', () => { /* Handled by the process exit. */ });
   child.stdin.end(options.harness === 'prime-agent'
     ? options.prompt
     : `${systemPrompt}\n\n---\n\n${options.prompt}`);
+  const trackTools = claudeToolTracker();
+  let terminalResult: Record<string, unknown> | null = null;
   let stdoutBuffer = '';
   let stderrTail = '';
   let text = '';
@@ -132,14 +137,17 @@ export async function runProjectChatHarnessTurn(
       return;
     }
 
+    if (options.harness === 'claude' && event.type === 'result') terminalResult = event;
     nativeSessionId = sessionIdFromEvent(event, options.harness) ?? nativeSessionId;
-    const activity = activityFromEvent(event);
-    if (activity && activity !== lastActivity) {
-      lastActivity = activity;
-      options.onActivity(activity);
+    for (const update of options.harness === 'claude' ? trackTools(event) : [event]) {
+      const activity = activityFromEvent(update);
+      if (activity && activity !== lastActivity) {
+        lastActivity = activity;
+        options.onActivity(activity);
+      }
+      const tool = toolActivityFromEvent(update);
+      if (tool) options.onToolActivity?.(tool);
     }
-    const toolActivity = toolActivityFromEvent(event);
-    if (toolActivity) options.onToolActivity?.(toolActivity);
 
     const candidate = assistantTextFromEvent(event, options.harness);
     if (!candidate) return;
@@ -149,8 +157,8 @@ export async function runProjectChatHarnessTurn(
     options.onText(fragment);
   };
 
-  child.stdout.on('data', (chunk: Buffer) => {
-    stdoutBuffer += chunk.toString('utf8');
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+    stdoutBuffer += chunk;
     while (true) {
       const newline = stdoutBuffer.indexOf('\n');
       if (newline < 0) break;
@@ -166,9 +174,17 @@ export async function runProjectChatHarnessTurn(
   try {
     const exit = await waitForExit(child, options.signal, unitName);
     if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
-    if (exit.code !== 0) {
-      const detail = sanitizeHarnessError(stderrTail);
+    const error = terminalResult && claudeResultError(terminalResult);
+    if (exit.code !== 0 || error || (options.harness === 'claude' && !terminalResult)) {
+      const detail = sanitizeHarnessError(error || stderrTail);
       throw new Error(`${options.harness}_exit_${exit.code ?? exit.signal ?? 'unknown'}${detail ? `: ${detail}` : ''}`);
+    }
+    if (!text.trim() && terminalResult) {
+      const final = terminalResult as Record<string, unknown>;
+      if (typeof final.result === 'string') {
+        text = final.result;
+        options.onText(text);
+      }
     }
     if (!text.trim()) throw new Error(`${options.harness}_empty_response`);
     return { text: text.trim(), nativeSessionId };
@@ -179,6 +195,9 @@ export async function runProjectChatHarnessTurn(
 
 export function buildProjectChatArgs(options: Pick<ProjectChatHarnessTurnOptions,
   'harness' | 'reasoningEffort' | 'workspacePath' | 'sessionRoot' | 'nativeSessionId' | 'prompt' | 'threadId' | 'mode' | 'projectInstructions'> & Partial<Pick<ProjectChatHarnessTurnOptions, 'agentModel'>>) {
+  if (options.harness === 'claude') {
+    return [...claudeArgs({ ...options, model: options.agentModel, tools: CLAUDE_TASK_TOOLS }), '--include-partial-messages'];
+  }
   if (options.harness === 'opencode') {
     return [
       'run',
@@ -235,8 +254,10 @@ export function buildSandboxRunner(options: SandboxRunnerOptions) {
   const codexHome = path.join(options.sessionRoot, 'codex-home');
   const primeAgentHome = path.join(options.sessionRoot, 'prime-agent');
   const primeSupervisorRegistry = path.join(options.sessionRoot, 'prime-supervisor');
+  const claudeEnv = options.harness === 'claude' ? claudeEnvironment(options.sessionRoot) : {};
   const env = {
     ...process.env,
+    ...claudeEnv,
     NO_COLOR: '1',
     FORCE_COLOR: '0',
     CODEX_HOME: codexHome,
@@ -262,6 +283,7 @@ export function buildSandboxRunner(options: SandboxRunnerOptions) {
     options.mode === 'orchestrator'
       ? `ReadWritePaths=${options.workspacePath}`
       : `BindReadOnlyPaths=${options.workspacePath}`,
+    ...(options.harness === 'claude' && fs.existsSync(claudeCredentialPath()) ? [`ReadWritePaths=${claudeCredentialPath()}`] : []),
     'NoNewPrivileges=yes',
     'RestrictSUIDSGID=yes',
     'PrivateDevices=yes',
@@ -286,6 +308,7 @@ export function buildSandboxRunner(options: SandboxRunnerOptions) {
       `--working-directory=${options.workspacePath}`,
       `--setenv=HOME=${home}`,
       `--setenv=PATH=${process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`,
+      ...Object.entries(claudeEnv).map(([key, value]) => `--setenv=${key}=${value}`),
       '--setenv=NO_COLOR=1',
       '--setenv=FORCE_COLOR=0',
       `--setenv=CODEX_HOME=${codexHome}`,
@@ -372,6 +395,10 @@ export function sessionIdFromEvent(event: Record<string, unknown>, harness: Agen
 }
 
 export function assistantTextFromEvent(event: Record<string, unknown>, harness: AgentHarness): { text: string; full: boolean } | null {
+  if (harness === 'claude') {
+    const text = claudeTextDelta(event);
+    return text ? { text, full: false } : null;
+  }
   if (harness === 'opencode' && event.type === 'text') {
     const part = asRecord(event.part);
     if (['reasoning', 'thinking'].includes(stringValue(part.type) ?? '')) return null;
@@ -448,7 +475,7 @@ export function toolActivityFromEvent(event: Record<string, unknown>): ProjectCh
     ? 'kanban'
     : /browser|web|https?:/.test(`${combined} ${command ?? ''}`) ? 'web'
       : /file|patch|edit|write/.test(combined) ? 'file'
-        : /command|exec|shell/.test(combined) ? 'command' : 'tool';
+        : /command|exec|shell|bash/.test(combined) ? 'command' : 'tool';
   const labels = {
     kanban: 'Agent Kanban steuern',
     web: 'Web-Recherche',
@@ -515,7 +542,7 @@ function waitForExit(
       cleanup();
       reject(error);
     });
-    child.once('exit', (code, exitSignal) => {
+    child.once('close', (code, exitSignal) => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -527,7 +554,7 @@ function waitForExit(
 export function stopSandboxUnit(unitName: string) {
   return new Promise<void>((resolve) => {
     const child = spawn('sudo', ['-n', 'systemctl', 'stop', unitName], { stdio: 'ignore' });
-    child.once('exit', () => resolve());
+    child.once('close', () => resolve());
     child.once('error', () => resolve());
   });
 }

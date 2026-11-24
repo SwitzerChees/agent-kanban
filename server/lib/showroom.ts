@@ -1,3 +1,4 @@
+import { AGENT_HARNESSES, DEFAULT_AGENT_HARNESS } from '../../shared/agent-runtime';
 import { randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createError } from 'h3';
@@ -209,7 +210,7 @@ export const iterationInput = z.object({
   requestId: z.string().uuid(), targetPath: z.string().max(400), brief: z.string().trim().min(1).max(20000),
   sourcePath: z.string().max(400).nullable().default(null), snapshotId: z.string().max(64).nullable().default(null),
   feedbackIds: z.array(z.string().uuid()).max(100).default([]),
-  agentHarness: z.enum(['codex', 'opencode', 'prime-agent']).default('codex'), start: z.boolean().default(true),
+  agentHarness: z.enum(AGENT_HARNESSES).default(DEFAULT_AGENT_HARNESS), start: z.boolean().default(true),
 });
 const creatingIterations = new Set<string>();
 export async function createShowroomIteration(projectId: string, input: z.infer<typeof iterationInput>, user: User) {

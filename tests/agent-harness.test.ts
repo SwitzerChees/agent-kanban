@@ -1,3 +1,4 @@
+import { claudeToolTracker, claudeResultError } from '../server/lib/claude';
 import { describe, expect, test } from 'vitest';
 import {
   CODEX_MODELS,
@@ -518,5 +519,39 @@ describe('agent harness runtime contracts', () => {
       toolName: 'shell',
       command: '--password private-value',
     })?.detail).not.toContain('private-value');
+  });
+});
+
+describe('Claude Code', () => {
+  test('restricts models and efforts to those supported by the selected harness', () => {
+    expect(isTaskRuntimeSelectionSupported('claude', 'claude-fable-5-2', 'max')).toBe(true);
+    expect(isTaskRuntimeSelectionSupported('claude', 'claude-opus-5-5', 'ultra')).toBe(false);
+    expect(isTaskRuntimeSelectionSupported('codex', 'claude-opus-5-5', 'low')).toBe(false);
+    expect(isTaskRuntimeSelectionSupported('claude', 'gpt-6.2-sol', 'low')).toBe(false);
+    expect(isTaskRuntimeSelectionSupported('opencode', 'claude-opus-5-5', 'low')).toBe(false);
+  });
+
+  test('passes the exact model and resumes by ID without putting the prompt on the command line', () => {
+    const args = buildProjectChatArgs({
+      harness: 'claude', agentModel: 'claude-fable-5-2', reasoningEffort: 'high',
+      workspacePath: '/work', sessionRoot: '/session', nativeSessionId: 'session-id',
+      prompt: 'private instruction', threadId: 'chat',
+    });
+    expect(args).toEqual(expect.arrayContaining(['--model', 'claude-fable-5-2', '--resume', 'session-id', '--effort', 'high']));
+    expect(args).not.toContain('private instruction');
+  });
+
+  test('only streams public text deltas and records tool outcomes by matching call ID', () => {
+    const stream = (type: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type, text: 'sample' } } });
+    expect(assistantTextFromEvent(stream('text_delta'), 'claude')).toEqual({ text: 'sample', full: false });
+    expect(assistantTextFromEvent(stream('thinking_delta'), 'claude')).toBeNull();
+    const track = claudeToolTracker();
+    const command = 'agent-browser snapshot';
+    const event = (type: string, block: object) => ({ type, message: { content: [block] } });
+    track(event('assistant', { type: 'tool_use', id: 'a', name: 'Bash', input: { command } }));
+    expect(track(event('user', { type: 'tool_result', tool_use_id: 'b' }))).toEqual([]);
+    expect(track(event('user', { type: 'tool_result', tool_use_id: 'a', is_error: true, content: 'sensitive' })))
+      .toEqual([{ type: 'tool_execution_failed', id: 'a', toolName: 'Bash', command, path: undefined }]);
+    expect(claudeResultError({ type: 'result', subtype: 'success', is_error: true, result: 'rate limited' })).toBe('rate limited');
   });
 });

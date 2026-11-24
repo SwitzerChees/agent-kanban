@@ -4,13 +4,11 @@ import path from 'node:path';
 import { appDataDir, db, schema } from './db';
 import { loadWorkflow } from './workflow';
 import { resolveServiceConfig } from './config';
-import { runCodexSession, type CodexSteeringBatch, type CodexUserInput } from './codex';
-import { runExternalAgentSession } from './external-agent';
+import type { CodexSteeringBatch, CodexUserInput } from './codex';
+import { runTaskAgentHarness } from './task-agent';
 import {
-  isReasoningEffort,
   type AgentHarness,
-  type CodexModel,
-  type TaskReasoningEffort,
+  type AgentModel,
 } from './agent-harness';
 import { prepareTaskWorktree } from './git-workspaces';
 import { runtimeLogger } from './logger';
@@ -199,7 +197,7 @@ export class LocalTaskDispatcher {
         logTaskActivity(row.task.projectId, row.task.id, null, 'codex_requeued', {
           reason: 'dispatcher_startup_recovery',
         });
-        runtimeLogger.warn('requeued interrupted local codex task', { task_id: row.task.id, task_key: row.task.key });
+        runtimeLogger.warn('requeued interrupted local agent task', { task_id: row.task.id, task_key: row.task.key });
         notifyVoiceJobStatus(row.task.id, 'queued', 'Background agent recovered after a service restart.');
       }
     }
@@ -718,7 +716,7 @@ export class LocalTaskDispatcher {
         await cleanupTaskSession(sessionRoot, queued.id, agentRun.id);
         logTaskActivity(queued.projectId, queued.id, null, 'codex_cancelled', {});
         notifyVoiceJobStatus(queued.id, 'cancelled');
-        runtimeLogger.info('local codex task cancelled', { task_id: queued.id, task_key: queued.key });
+        runtimeLogger.info('local agent task cancelled', { task_id: queued.id, task_key: queued.key });
         return;
       }
       const deferred = deferTaskForCapacityRetry(queued.id, agentRun.id, error);
@@ -751,7 +749,7 @@ export class LocalTaskDispatcher {
           run_id: agentRun.id,
         });
       }
-      runtimeLogger.warn('local codex task failed', {
+      runtimeLogger.warn('local agent task failed', {
         task_id: queued.id,
         task_key: queued.key,
         error: error instanceof Error ? error.message : String(error),
@@ -804,7 +802,7 @@ export function deferTaskForCapacityRetry(taskId: string, runId: string, error: 
   return deferred;
 }
 
-export function taskCapacityAvailability(harness: AgentHarness, model: CodexModel) {
+export function taskCapacityAvailability(harness: AgentHarness, model: AgentModel) {
   const active = db.select({ task: schema.tasks, run: schema.taskAgentRuns })
     .from(schema.taskAgentRuns)
     .innerJoin(schema.tasks, eq(schema.tasks.id, schema.taskAgentRuns.taskId))
@@ -1005,7 +1003,7 @@ export function reconcileFailedTaskColumns() {
       reason: 'failed_task_left_in_progress',
       nextColumn: reviewColumn.key,
     });
-    runtimeLogger.warn('moved failed local codex task to review', {
+    runtimeLogger.warn('moved failed local agent task to review', {
       task_id: row.task.id,
       task_key: row.task.key,
     });
@@ -1081,57 +1079,6 @@ function taskToIssue(task: typeof schema.tasks.$inferSelect, state: string): Iss
     created_at: task.createdAt,
     updated_at: task.updatedAt,
   };
-}
-
-async function runTaskAgentHarness(options: Parameters<typeof runCodexSession>[0] & {
-  harness: AgentHarness;
-  model: CodexModel;
-  reasoningEffort: TaskReasoningEffort;
-}) {
-  const { harness, model, reasoningEffort, config, loadSteering, ...common } = options;
-  if (harness === 'codex') {
-    return runCodexSession({
-      ...common,
-      loadSteering,
-      config: {
-        ...config,
-        model,
-        reasoningEffort,
-      },
-    });
-  }
-
-  if (!isReasoningEffort(reasoningEffort)) {
-    throw new Error('unsupported_external_agent_reasoning_effort');
-  }
-
-  return runExternalAgentSession({
-    harness,
-    reasoningEffort,
-    turnTimeoutMs: config.turnTimeoutMs,
-    workspacePath: common.workspacePath,
-    issue: common.issue,
-    promptTemplate: common.promptTemplate,
-    promptPrefix: common.promptPrefix,
-    attempt: common.attempt,
-    maxTurns: common.maxTurns,
-    signal: common.signal,
-    onEvent: common.onEvent,
-    refreshIssue: common.refreshIssue,
-    shouldContinue: common.shouldContinue,
-    completionCheck: common.completionCheck,
-    nativeSessionId: common.nativeSessionId,
-    onSession: common.onSession,
-    runtime: common.runtime ? {
-      unitNamePrefix: common.runtime.unitName,
-      sessionRoot: common.runtime.sessionRoot,
-      extraEnv: common.runtime.extraEnv,
-      workspaceWritable: common.runtime.workspaceWritable,
-      isolatedHome: common.runtime.isolatedHome,
-      protectAgentCredentials: common.runtime.protectAgentCredentials,
-      onUnit: common.runtime.onUnit,
-    } : undefined,
-  });
 }
 
 function buildLiveSteeringBatch(

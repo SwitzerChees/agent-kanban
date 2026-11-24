@@ -1,3 +1,4 @@
+import { AGENT_HARNESSES, AGENT_MODELS, DEFAULT_AGENT_HARNESS, DEFAULT_CLAUDE_MODEL } from '../../../shared/agent-runtime';
 import { blob, integer, primaryKey, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
@@ -67,7 +68,7 @@ export const e2eTestCases = sqliteTable('e2e_test_cases', {
   rolesJson: text('roles_json').notNull().default('[]'),
   targetUrl: text('target_url'),
   executionMode: text('execution_mode', { enum: ['browser_harness', 'project_command'] }).notNull().default('browser_harness'),
-  agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
+  agentHarness: text('agent_harness', { enum: AGENT_HARNESSES }).notNull().default(DEFAULT_AGENT_HARNESS),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'xhigh'] }).notNull().default('xhigh'),
   runnerCommand: text('runner_command').notNull().default(''),
   timeoutSeconds: integer('timeout_seconds').notNull().default(900),
@@ -104,7 +105,7 @@ export const e2eTestRuns = sqliteTable('e2e_test_runs', {
   triggerTaskId: text('trigger_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   targetRevision: text('target_revision'),
   executionMode: text('execution_mode', { enum: ['browser_harness', 'project_command'] }).notNull().default('browser_harness'),
-  agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
+  agentHarness: text('agent_harness', { enum: AGENT_HARNESSES }).notNull().default(DEFAULT_AGENT_HARNESS),
   status: text('status', { enum: ['queued', 'running', 'passed', 'warning', 'failed', 'cancelled'] }).notNull().default('queued'),
   summary: text('summary'),
   output: text('output').notNull().default(''),
@@ -190,7 +191,7 @@ export const wikiImages = sqliteTable('wiki_images', {
 
 export const projectHarnessLimits = sqliteTable('project_harness_limits', {
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
-  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull(),
+  harness: text('harness', { enum: AGENT_HARNESSES }).notNull(),
   maxConcurrentTasks: integer('max_concurrent_tasks').notNull().default(1),
 }, (table) => ({
   pk: primaryKey({ columns: [table.projectId, table.harness] }),
@@ -211,8 +212,8 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
   userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   wikiPageId: text('wiki_page_id').references(() => wikiPages.id, { onDelete: 'cascade' }),
   title: text('title').notNull().default('New chat'),
-  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
-  agentModel: text('agent_model', { enum: ['gpt-6.2-sol', 'gpt-6.2-astra'] }).notNull().default('gpt-6.2-sol'),
+  harness: text('harness', { enum: AGENT_HARNESSES }).notNull().default(DEFAULT_AGENT_HARNESS),
+  agentModel: text('agent_model', { enum: AGENT_MODELS }).notNull().default(DEFAULT_CLAUDE_MODEL),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('low'),
   status: text('status', { enum: ['ready', 'running', 'failed'] }).notNull().default('ready'),
   isCurrent: integer('is_current', { mode: 'boolean' }).notNull().default(false),
@@ -225,8 +226,8 @@ export const projectChatThreads = sqliteTable('project_chat_threads', {
 
 export const projectChatPreferences = sqliteTable('project_chat_preferences', {
   userId: text('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
-  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('prime-agent'),
-  agentModel: text('agent_model', { enum: ['gpt-6.2-sol', 'gpt-6.2-astra'] }).notNull().default('gpt-6.2-sol'),
+  harness: text('harness', { enum: AGENT_HARNESSES }).notNull().default(DEFAULT_AGENT_HARNESS),
+  agentModel: text('agent_model', { enum: AGENT_MODELS }).notNull().default(DEFAULT_CLAUDE_MODEL),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('low'),
   updatedAt: text('updated_at').notNull(),
 });
@@ -353,8 +354,8 @@ export const tasks = sqliteTable('tasks', {
   assigneeId: text('assignee_id').references(() => users.id),
   agentEnabled: integer('agent_enabled', { mode: 'boolean' }).notNull().default(false),
   agentStatus: text('agent_status', { enum: ['idle', 'queued', 'running', 'waiting_external', 'failed', 'done'] }).notNull().default('idle'),
-  agentHarness: text('agent_harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull().default('codex'),
-  agentModel: text('agent_model', { enum: ['gpt-6.2-sol', 'gpt-6.2-astra'] }).notNull().default('gpt-6.2-sol'),
+  agentHarness: text('agent_harness', { enum: AGENT_HARNESSES }).notNull().default(DEFAULT_AGENT_HARNESS),
+  agentModel: text('agent_model', { enum: AGENT_MODELS }).notNull().default(DEFAULT_CLAUDE_MODEL),
   reasoningEffort: text('reasoning_effort', { enum: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }).notNull().default('xhigh'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -363,7 +364,7 @@ export const tasks = sqliteTable('tasks', {
 export const taskAgentRuns = sqliteTable('task_agent_runs', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
-  harness: text('harness', { enum: ['codex', 'opencode', 'prime-agent'] }).notNull(),
+  harness: text('harness', { enum: AGENT_HARNESSES }).notNull(),
   status: text('status', { enum: ['running', 'waiting_external', 'completed', 'failed', 'cancelled'] }).notNull(),
   nativeSessionId: text('native_session_id'),
   currentUnitName: text('current_unit_name'),

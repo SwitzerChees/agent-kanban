@@ -84,7 +84,8 @@ describe('private project chats', () => {
 
   test('keeps exactly one current chat per project and owner', () => {
     const first = chatModule.createProjectChat(projectId, {}, owner).chat;
-    expect(first.harness).toBe('prime-agent');
+    expect(first.harness).toBe('claude');
+    expect(first.agentModel).toBe('claude-opus-5-5');
     expect(first.reasoningEffort).toBe('low');
     expect(chatModule.getCurrentProjectChat(projectId, owner).chat?.id).toBe(first.id);
 

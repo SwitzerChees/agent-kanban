@@ -2,35 +2,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  AGENT_HARNESSES,
+  DEFAULT_CLAUDE_MODEL,
   DEFAULT_AGENT_HARNESS,
   DEFAULT_CODEX_MODEL,
   DEFAULT_REASONING_EFFORT,
-  REASONING_EFFORTS,
   isAgentHarness,
   isReasoningEffort,
 } from '../../shared/agent-runtime';
 import type { AgentHarness, ReasoningEffort } from '../../shared/agent-runtime';
 
-export {
-  AGENT_HARNESSES,
-  CODEX_MODELS,
-  DEFAULT_AGENT_HARNESS,
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_REASONING_EFFORT,
-  DEFAULT_TASK_REASONING_EFFORT,
-  REASONING_EFFORTS,
-  TASK_REASONING_EFFORTS,
-  TEXT_REFINEMENT_REASONING_EFFORT,
-  VISUAL_REFINEMENT_REASONING_EFFORT,
-  isAgentHarness,
-  isCodexModel,
-  isReasoningEffort,
-  isTaskReasoningEffort,
-  isTaskRuntimeSelectionSupported,
-  taskReasoningEfforts,
-} from '../../shared/agent-runtime';
-export type { AgentHarness, CodexModel, ReasoningEffort, TaskReasoningEffort } from '../../shared/agent-runtime';
+export * from '../../shared/agent-runtime';
 
 export const CODEX_MODEL = DEFAULT_CODEX_MODEL;
 export const QWEN_MODEL_PROVIDER = 'homelab-qwen-3-8-27b';
@@ -46,10 +27,18 @@ export function resolveReasoningEffort(value: unknown): ReasoningEffort {
 }
 
 export function harnessModel(harness: AgentHarness) {
+  if (harness === 'claude') return DEFAULT_CLAUDE_MODEL;
   return harness === 'codex' ? CODEX_MODEL : QWEN_MODEL_ID;
 }
 
 export function harnessExecutable(harness: Exclude<AgentHarness, 'codex'>) {
+  if (harness === 'claude') {
+    return firstExecutable([
+      process.env.KANBAN_CLAUDE_COMMAND,
+      path.join(os.homedir(), '.local', 'bin', 'claude'),
+      ...(process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map(dir => path.join(dir, 'claude')),
+    ]);
+  }
   if (harness === 'opencode') {
     return firstExecutable([
       process.env.KANBAN_OPENCODE_COMMAND,

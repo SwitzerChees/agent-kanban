@@ -189,7 +189,7 @@ export function ensureDatabase() {
       roles_json TEXT NOT NULL DEFAULT '[]',
       target_url TEXT,
       execution_mode TEXT NOT NULL DEFAULT 'browser_harness',
-      agent_harness TEXT NOT NULL DEFAULT 'codex',
+      agent_harness TEXT NOT NULL DEFAULT 'claude',
       reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
       runner_command TEXT NOT NULL DEFAULT '',
       timeout_seconds INTEGER NOT NULL DEFAULT 900,
@@ -226,7 +226,7 @@ export function ensureDatabase() {
       trigger_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
       target_revision TEXT,
       execution_mode TEXT NOT NULL DEFAULT 'browser_harness',
-      agent_harness TEXT NOT NULL DEFAULT 'codex',
+      agent_harness TEXT NOT NULL DEFAULT 'claude',
       status TEXT NOT NULL DEFAULT 'queued',
       summary TEXT,
       output TEXT NOT NULL DEFAULT '',
@@ -269,8 +269,8 @@ export function ensureDatabase() {
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       wiki_page_id TEXT REFERENCES wiki_pages(id) ON DELETE CASCADE,
       title TEXT NOT NULL DEFAULT 'New chat',
-      harness TEXT NOT NULL DEFAULT 'prime-agent',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-6.2-sol',
+      harness TEXT NOT NULL DEFAULT 'claude',
+      agent_model TEXT NOT NULL DEFAULT 'claude-opus-5-5',
       reasoning_effort TEXT NOT NULL DEFAULT 'low',
       status TEXT NOT NULL DEFAULT 'ready',
       is_current INTEGER NOT NULL DEFAULT 0,
@@ -283,8 +283,8 @@ export function ensureDatabase() {
 
     CREATE TABLE IF NOT EXISTS project_chat_preferences (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      harness TEXT NOT NULL DEFAULT 'prime-agent',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-6.2-sol',
+      harness TEXT NOT NULL DEFAULT 'claude',
+      agent_model TEXT NOT NULL DEFAULT 'claude-opus-5-5',
       reasoning_effort TEXT NOT NULL DEFAULT 'low',
       updated_at TEXT NOT NULL
     );
@@ -406,8 +406,8 @@ export function ensureDatabase() {
       assignee_id TEXT REFERENCES users(id),
       agent_enabled INTEGER NOT NULL DEFAULT 0,
       agent_status TEXT NOT NULL DEFAULT 'idle',
-      agent_harness TEXT NOT NULL DEFAULT 'codex',
-      agent_model TEXT NOT NULL DEFAULT 'gpt-6.2-sol',
+      agent_harness TEXT NOT NULL DEFAULT 'claude',
+      agent_model TEXT NOT NULL DEFAULT 'claude-opus-5-5',
       reasoning_effort TEXT NOT NULL DEFAULT 'xhigh',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -702,7 +702,7 @@ export function ensureDatabase() {
     WHERE execution_mode NOT IN ('browser_harness', 'project_command') OR execution_mode IS NULL;
     UPDATE e2e_test_cases
     SET agent_harness = 'codex'
-    WHERE agent_harness NOT IN ('codex', 'opencode', 'prime-agent') OR agent_harness IS NULL;
+    WHERE agent_harness NOT IN ('claude', 'codex', 'opencode', 'prime-agent') OR agent_harness IS NULL;
     UPDATE e2e_test_cases
     SET reasoning_effort = 'xhigh'
     WHERE reasoning_effort NOT IN ('low', 'medium', 'xhigh') OR reasoning_effort IS NULL;
@@ -711,7 +711,7 @@ export function ensureDatabase() {
     WHERE execution_mode NOT IN ('browser_harness', 'project_command') OR execution_mode IS NULL;
     UPDATE e2e_test_runs
     SET agent_harness = 'codex'
-    WHERE agent_harness NOT IN ('codex', 'opencode', 'prime-agent') OR agent_harness IS NULL;
+    WHERE agent_harness NOT IN ('claude', 'codex', 'opencode', 'prime-agent') OR agent_harness IS NULL;
   `);
   sqlite.exec(`
     UPDATE projects
@@ -726,7 +726,8 @@ export function ensureDatabase() {
     SELECT projects.id, harnesses.harness, projects.agent_concurrency_limit
     FROM projects
     CROSS JOIN (
-      SELECT 'codex' AS harness
+      SELECT 'claude' AS harness
+      UNION ALL SELECT 'codex'
       UNION ALL SELECT 'opencode'
       UNION ALL SELECT 'prime-agent'
     ) AS harnesses;
@@ -800,12 +801,12 @@ export function ensureDatabase() {
   sqlite.exec(`
     UPDATE tasks
     SET agent_harness = 'codex'
-    WHERE agent_harness NOT IN ('codex', 'opencode', 'prime-agent')
+    WHERE agent_harness NOT IN ('claude', 'codex', 'opencode', 'prime-agent')
        OR agent_harness IS NULL;
 
     UPDATE tasks
-    SET agent_model = 'gpt-6.2-sol'
-    WHERE agent_model NOT IN ('gpt-6.2-sol', 'gpt-6.2-astra')
+    SET agent_model = CASE WHEN agent_harness = 'claude' THEN 'claude-opus-5-5' ELSE 'gpt-6.2-sol' END
+    WHERE agent_model NOT IN ('gpt-6.2-sol', 'gpt-6.2-astra', 'claude-opus-5-5', 'claude-fable-5-2')
        OR agent_model IS NULL;
 
     UPDATE tasks
@@ -815,7 +816,7 @@ export function ensureDatabase() {
 
     UPDATE tasks
     SET reasoning_effort = 'xhigh'
-    WHERE agent_harness <> 'codex'
+    WHERE agent_harness NOT IN ('codex', 'claude')
       AND reasoning_effort NOT IN ('low', 'medium', 'xhigh');
 
     CREATE INDEX IF NOT EXISTS idx_tasks_agent_dispatch

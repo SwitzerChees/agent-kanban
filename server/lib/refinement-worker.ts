@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import { buildAgentsPromptPrefix, loadAgentsContext } from './agents-context';
-import { syncMasterForRefinement } from './git-workspaces';
+import { prepareTaskWorktree, syncMasterForRefinement } from './git-workspaces';
 import { runRefinementCodexTurn } from './refinement-codex';
 import { runExternalRefinementTurn } from './external-agent';
 import { TEXT_REFINEMENT_REASONING_EFFORT } from './agent-harness';
@@ -314,28 +314,24 @@ export async function processClaimedRefinement(context: RefinementContext, signa
     await processClaimedVisualRefinement(context, signal);
     return;
   }
-  runtimeLogger.info('refinement master sync started', {
-    refinement_id: context.id,
-    task_id: context.taskId,
-    task_key: context.taskKey,
-    round: context.round,
+  const workspace = context.agentHarness === 'claude'
+    ? await prepareTaskWorktree({
+        projectPath: context.projectFolderPath,
+        worktreePath: appDataDir('worktrees', context.projectId, context.taskId, 'tree'),
+        taskId: context.taskId,
+        taskKey: context.taskKey,
+        signal,
+      })
+    : await syncMasterForRefinement(context.projectFolderPath, signal);
+  recordRefinementWorkspaceSync(context.id, workspace.revision, context.leaseToken, {
+    branch: workspace.branchName,
+    dirty: 'dirty' in workspace ? workspace.dirty : Boolean(workspace.recoveryRef),
   });
-  const syncedWorkspace = await syncMasterForRefinement(context.projectFolderPath, signal);
-  recordRefinementWorkspaceSync(context.id, syncedWorkspace.revision, context.leaseToken, {
-    branch: syncedWorkspace.branchName,
-    dirty: syncedWorkspace.dirty,
-  });
-  context.sourceCodeRevision = syncedWorkspace.revision;
-  runtimeLogger.info('refinement master sync completed', {
-    refinement_id: context.id,
-    task_id: context.taskId,
-    revision: syncedWorkspace.revision,
-    dirty: syncedWorkspace.dirty,
-  });
+  context.sourceCodeRevision = workspace.revision;
 
   const workflow = await loadWorkflow();
   const config = resolveServiceConfig(workflow);
-  const agentsContext = await loadAgentsContext(syncedWorkspace.projectPath, syncedWorkspace.gitRoot);
+  const agentsContext = await loadAgentsContext(workspace.projectPath, 'worktreeRoot' in workspace ? workspace.worktreeRoot : workspace.gitRoot);
   const usedQuestionRounds = new Set(context.questions.map((question) => question.round)).size;
   const outputLanguage = inferRefinementLanguage(context.taskTitle, context.taskDescription, context.brief);
   const prompt = buildRefinementPrompt(context, {
@@ -387,7 +383,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
           model: context.agentModel,
           reasoningEffort: TEXT_REFINEMENT_REASONING_EFFORT,
         },
-        workspacePath: context.projectFolderPath,
+        workspacePath: workspace.projectPath,
         prompt,
         outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
         threadId: context.threadId,
@@ -396,8 +392,9 @@ export async function processClaimedRefinement(context: RefinementContext, signa
       })
       : await runExternalRefinementTurn({
         harness: context.agentHarness,
+        model: context.agentModel,
         reasoningEffort: TEXT_REFINEMENT_REASONING_EFFORT,
-        workspacePath: context.projectFolderPath,
+        workspacePath: workspace.projectPath,
         prompt,
         outputSchema: REFINEMENT_OUTPUT_JSON_SCHEMA,
         validateOutput: value => parseRefinementOutput(value, outputLanguage),
@@ -441,7 +438,7 @@ export async function processClaimedRefinement(context: RefinementContext, signa
     complexity: output.complexity,
     visuals,
     threadId: turn.threadId,
-    codeRevision: readCodeRevision(context.projectFolderPath),
+    codeRevision: readCodeRevision(workspace.projectPath),
   }, context.leaseToken);
   runtimeLogger.info('refinement completed', {
     refinement_id: context.id,

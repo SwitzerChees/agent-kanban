@@ -97,7 +97,7 @@ describe('project E2E test catalog', () => {
       suiteId: suite.id,
       title: 'Incomplete role journey',
     }, admin);
-    expect(draft).toMatchObject({ executionMode: 'browser_harness', agentHarness: 'codex', reasoningEffort: 'xhigh' });
+    expect(draft).toMatchObject({ executionMode: 'browser_harness', agentHarness: 'claude', reasoningEffort: 'xhigh' });
     expectStatusMessage(() => e2e.queueE2eCase(draft.id, {}, admin), 'e2e_browser_definition_incomplete');
 
     const journey = e2e.createE2eCase(projectId, {

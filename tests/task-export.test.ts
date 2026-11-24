@@ -95,8 +95,8 @@ describe('task ZIP export', () => {
     expect(bundleJson).toContain('Complete archive');
     expect(bundleJson).toContain('Keep the source material together.');
     expect(bundle.manifest.task).toMatchObject({
-      agentHarness: 'codex',
-      agentModel: 'gpt-6.2-sol',
+      agentHarness: 'claude',
+      agentModel: 'claude-opus-5-5',
       reasoningEffort: 'xhigh',
     });
     expect(bundleJson).not.toContain('must-never-be-exported');

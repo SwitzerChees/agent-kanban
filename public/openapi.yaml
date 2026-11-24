@@ -1132,6 +1132,7 @@ components:
           type: object
           required: [codex, opencode, prime-agent]
           properties:
+            claude: { type: integer, minimum: 0, maximum: 100, default: 1 }
             codex: { type: integer, minimum: 0, maximum: 100, default: 1 }
             opencode: { type: integer, minimum: 0, maximum: 100, default: 1 }
             prime-agent: { type: integer, minimum: 0, maximum: 100, default: 1 }
@@ -1223,7 +1224,7 @@ components:
         assigneeId: { type: [string, 'null'], format: uuid }
         agentEnabled: { type: boolean, default: false }
         agentHarness: { $ref: '#/components/schemas/AgentHarness' }
-        agentModel: { $ref: '#/components/schemas/CodexModel' }
+        agentModel: { $ref: '#/components/schemas/AgentModel' }
         reasoningEffort: { $ref: '#/components/schemas/TaskReasoningEffort' }
         clientRequestId: { type: string, minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' }
         priority: { $ref: '#/components/schemas/Priority' }
@@ -1240,7 +1241,7 @@ components:
         assigneeId: { type: [string, 'null'], format: uuid }
         agentEnabled: { type: boolean }
         agentHarness: { $ref: '#/components/schemas/AgentHarness' }
-        agentModel: { $ref: '#/components/schemas/CodexModel' }
+        agentModel: { $ref: '#/components/schemas/AgentModel' }
         reasoningEffort: { $ref: '#/components/schemas/TaskReasoningEffort' }
         priority: { $ref: '#/components/schemas/Priority' }
         tags: { type: array, items: { type: string } }
@@ -1261,12 +1262,12 @@ components:
         position: { type: integer, minimum: 0 }
     AgentHarness:
       type: string
-      enum: [codex, opencode, prime-agent]
-      default: codex
-    CodexModel:
+      enum: [claude, codex, opencode, prime-agent]
+      default: claude
+    AgentModel:
       type: string
-      enum: [gpt-6.2-sol, gpt-6.2-astra]
-      default: gpt-6.2-sol
+      enum: [claude-opus-5-5, claude-fable-5-2, gpt-6.2-sol, gpt-6.2-astra]
+      default: claude-opus-5-5
     TaskReasoningEffort:
       type: string
       enum: [low, medium, high, xhigh, max, ultra]
@@ -1276,8 +1277,8 @@ components:
       properties:
         harness:
           allOf: [{ $ref: '#/components/schemas/AgentHarness' }]
-          default: prime-agent
-        agentModel: { $ref: '#/components/schemas/CodexModel' }
+          default: claude
+        agentModel: { $ref: '#/components/schemas/AgentModel' }
         reasoningEffort:
           allOf: [{ $ref: '#/components/schemas/TaskReasoningEffort' }]
           default: low

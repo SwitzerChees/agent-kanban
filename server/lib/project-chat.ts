@@ -6,21 +6,25 @@ import type { User } from './db/schema';
 import {
   AGENT_HARNESSES,
   CODEX_MODELS,
-  DEFAULT_CODEX_MODEL,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_AGENT_HARNESS,
+  CLAUDE_MODELS,
+  modelForHarness,
+  harnessForModel,
   REASONING_EFFORTS,
   TASK_REASONING_EFFORTS,
   harnessExecutable,
   isAgentHarness,
-  isCodexModel,
+  isAgentModel,
   isTaskRuntimeSelectionSupported,
   isTaskReasoningEffort,
   type AgentHarness,
-  type CodexModel,
+  type AgentModel,
   type TaskReasoningEffort,
 } from './agent-harness';
 import { getProject } from './kanban';
 
-const DEFAULT_CHAT_HARNESS: AgentHarness = 'prime-agent';
+const DEFAULT_CHAT_HARNESS = DEFAULT_AGENT_HARNESS;
 const DEFAULT_CHAT_EFFORT: TaskReasoningEffort = 'low';
 const MAX_HISTORY = 100;
 
@@ -95,10 +99,10 @@ export function createProjectChat(projectId: string, input: CreateProjectChatInp
     .where(eq(schema.projectChatPreferences.userId, user.id))
     .get();
   const harness = input.harness === undefined
-    ? preferredHarness(preference?.harness)
+    ? (input.agentModel === undefined ? preferredHarness(preference?.harness) : harnessForModel(requireModel(input.agentModel)))
     : requireHarness(input.harness);
   const agentModel = input.agentModel === undefined
-    ? preference?.agentModel ?? DEFAULT_CODEX_MODEL
+    ? modelForHarness(harness, preference?.agentModel)
     : requireModel(input.agentModel);
   const preferredEffort = input.reasoningEffort === undefined
     ? preference?.reasoningEffort ?? DEFAULT_CHAT_EFFORT
@@ -171,7 +175,7 @@ export function updateProjectChat(threadId: string, input: UpdateProjectChatInpu
     }
   }
   const harness = input.harness === undefined ? thread.harness : requireHarness(input.harness);
-  const agentModel = input.agentModel === undefined ? thread.agentModel : requireModel(input.agentModel);
+  const agentModel = input.agentModel === undefined ? modelForHarness(harness, thread.agentModel) : requireModel(input.agentModel);
   const reasoningEffort = input.reasoningEffort === undefined
     ? (isTaskRuntimeSelectionSupported(harness, agentModel, thread.reasoningEffort) ? thread.reasoningEffort : DEFAULT_CHAT_EFFORT)
     : requireEffort(input.reasoningEffort);
@@ -325,10 +329,11 @@ export function projectChatCapabilities() {
       available: isHarnessAvailable(harness),
     })),
     reasoningEfforts: [...REASONING_EFFORTS],
+    claudeModels: [...CLAUDE_MODELS],
     codexModels: [...CODEX_MODELS],
     codexReasoningEfforts: [...TASK_REASONING_EFFORTS],
     defaultHarness: DEFAULT_CHAT_HARNESS,
-    defaultAgentModel: DEFAULT_CODEX_MODEL,
+    defaultAgentModel: DEFAULT_CLAUDE_MODEL,
     defaultReasoningEffort: DEFAULT_CHAT_EFFORT,
   };
 }
@@ -390,8 +395,8 @@ function requireHarness(value: unknown) {
   return value;
 }
 
-function requireModel(value: unknown): CodexModel {
-  if (!isCodexModel(value)) {
+function requireModel(value: unknown): AgentModel {
+  if (!isAgentModel(value)) {
     throw createError({ statusCode: 400, statusMessage: 'invalid_chat_model' });
   }
   return value;
@@ -404,7 +409,7 @@ function requireEffort(value: unknown): TaskReasoningEffort {
   return value;
 }
 
-function requireSelection(harness: AgentHarness, model: CodexModel, effort: TaskReasoningEffort) {
+function requireSelection(harness: AgentHarness, model: AgentModel, effort: TaskReasoningEffort) {
   if (!isTaskRuntimeSelectionSupported(harness, model, effort)) {
     throw createError({ statusCode: 400, statusMessage: 'invalid_chat_effort' });
   }
