@@ -1,6 +1,7 @@
 import { claudeArgs, claudeTextDelta, claudeToolTracker, claudeResultError, claudeCredentialPath, claudeEnvironment, prepareClaudeSession, CLAUDE_TASK_TOOLS } from './claude';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import { chmod, copyFile, cp, mkdir, readdir, symlink } from 'node:fs/promises';
 import os from 'node:os';
@@ -88,11 +89,15 @@ export async function runProjectChatHarnessTurn(
   assertNotAborted(options.signal);
   const session = await prepareSessionDirectories(options.sessionRoot);
 
-  if (options.harness === 'claude') await prepareClaudeSession(options.sessionRoot, path.dirname(session.skillDirectory));
   const localCodex = path.join(os.homedir(), '.local', 'bin', 'codex');
   const executable = options.harness === 'codex'
     ? process.env.KANBAN_CODEX_EXEC_COMMAND || (fs.existsSync(localCodex) ? localCodex : 'codex')
     : harnessExecutable(options.harness);
+  if (options.harness === 'claude') {
+    await prepareClaudeSession(options.sessionRoot, path.dirname(session.skillDirectory));
+    await refreshClaudeChatLogin(executable, options.signal);
+  }
+  assertNotAborted(options.signal);
   const args = buildProjectChatArgs(options);
   const unitName = `agent-kanban-chat-${safeUnitPart(options.threadId)}-${randomUUID().slice(0, 8)}`;
   const runner = buildSandboxRunner({
@@ -120,6 +125,7 @@ export async function runProjectChatHarnessTurn(
     ? options.prompt
     : `${systemPrompt}\n\n---\n\n${options.prompt}`);
   const trackTools = claudeToolTracker();
+  let claudeAuthFailed = false;
   let terminalResult: Record<string, unknown> | null = null;
   let stdoutBuffer = '';
   let stderrTail = '';
@@ -137,7 +143,10 @@ export async function runProjectChatHarnessTurn(
       return;
     }
 
-    if (options.harness === 'claude' && event.type === 'result') terminalResult = event;
+    if (options.harness === 'claude') {
+      if (event.type === 'result') terminalResult = event;
+      if (event.type === 'assistant' && event.error === 'authentication_failed') claudeAuthFailed = true;
+    }
     nativeSessionId = sessionIdFromEvent(event, options.harness) ?? nativeSessionId;
     for (const update of options.harness === 'claude' ? trackTools(event) : [event]) {
       const activity = activityFromEvent(update);
@@ -176,6 +185,7 @@ export async function runProjectChatHarnessTurn(
     if (stdoutBuffer.trim()) consumeLine(stdoutBuffer);
     const error = terminalResult && claudeResultError(terminalResult);
     if (exit.code !== 0 || error || (options.harness === 'claude' && !terminalResult)) {
+      if (claudeAuthFailed) throw new Error('chat_claude_auth_failed');
       const detail = sanitizeHarnessError(error || stderrTail);
       throw new Error(`${options.harness}_exit_${exit.code ?? exit.signal ?? 'unknown'}${detail ? `: ${detail}` : ''}`);
     }
@@ -190,6 +200,23 @@ export async function runProjectChatHarnessTurn(
     return { text: text.trim(), nativeSessionId };
   } finally {
     options.onUnit?.(null);
+  }
+}
+
+async function refreshClaudeChatLogin(executable: string, signal: AbortSignal) {
+  if (!fs.existsSync(claudeCredentialPath())) return;
+  // The native CLI needs a shared lock beside its credential file to refresh
+  // OAuth. Run only the fixed auth command on the host, outside project and
+  // chat-owned directories. Send the prompt only to the sandboxed process.
+  try {
+    await promisify(execFile)(executable, ['--setting-sources', '', 'auth', 'status', '--json'], {
+      cwd: '/',
+      signal,
+      timeout: 60_000,
+    });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) throw new Error('chat_claude_auth_failed');
+    throw error;
   }
 }
 
@@ -283,7 +310,6 @@ export function buildSandboxRunner(options: SandboxRunnerOptions) {
     options.mode === 'orchestrator'
       ? `ReadWritePaths=${options.workspacePath}`
       : `BindReadOnlyPaths=${options.workspacePath}`,
-    ...(options.harness === 'claude' && fs.existsSync(claudeCredentialPath()) ? [`ReadWritePaths=${claudeCredentialPath()}`] : []),
     'NoNewPrivileges=yes',
     'RestrictSUIDSGID=yes',
     'PrivateDevices=yes',

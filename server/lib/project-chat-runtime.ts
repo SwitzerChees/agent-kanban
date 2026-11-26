@@ -732,6 +732,7 @@ function conversationTitle(value: string) {
 
 function publicChatError(error: unknown) {
   const message = errorMessage(error);
+  if (message === 'chat_claude_auth_failed') return message;
   if (message.includes('read_only_violation')) return 'chat_read_only_violation';
   if (message.includes('executable_not_found') || message.includes('ENOENT')) return 'chat_harness_unavailable';
   if (message.includes('empty_response')) return 'chat_empty_response';

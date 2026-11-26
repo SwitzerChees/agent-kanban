@@ -380,6 +380,8 @@ async function ensureCurrentChat() {
 function applyPayload(payload: ChatPayload) {
   stopStreamAnimation();
   chat.value = payload.chat;
+  errorMessage.value = payload.chat?.status === 'failed' && payload.chat.lastError
+    ? errorLabel(payload.chat.lastError) : '';
   messages.value = payload.messages;
   latestEventId.value = payload.latestEventId;
   currentActivity.value = chat.value?.status === 'running' ? 'project' : null;
@@ -982,6 +984,7 @@ function errorLabel(code: string) {
   const de = props.locale === 'de';
   const labels: Record<string, [string, string]> = {
     chat_harness_unavailable: ['The selected harness is unavailable.', 'Der gewählte Harness ist nicht verfügbar.'],
+    chat_claude_auth_failed: ['Claude could not sign in. Check the Claude Code login on the Kanban server.', 'Die Anmeldung bei Claude ist fehlgeschlagen. Prüfe die Claude-Code-Anmeldung auf dem Kanban-Server.'],
     chat_workspace_failed: ['The project context could not be prepared.', 'Der Projektkontext konnte nicht vorbereitet werden.'],
     chat_read_only_violation: ['The response was stopped by the read-only guard.', 'Die Antwort wurde vom Read-only-Schutz gestoppt.'],
     chat_empty_response: ['The harness returned no answer.', 'Der Harness hat keine Antwort geliefert.'],
